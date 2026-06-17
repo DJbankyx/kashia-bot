@@ -1,0 +1,261 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Kashia Bot - AI Transaction Allocator for Nigerian Business Owners
+
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: python3.12
+    MemorySize: 256
+    Environment:
+      Variables:
+        TABLE_PREFIX: kashia
+        AWS_REGION_NAME: !Ref AWS::Region
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+
+Resources:
+
+  # ============================================
+  # API GATEWAY
+  # ============================================
+  WebhookApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref Stage
+      Description: Kashia WhatsApp Webhook API
+
+  # ============================================
+  # LAMBDA FUNCTIONS
+  # ============================================
+  WebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub kashia-webhook-${Stage}
+      Handler: src/handlers/webhook.lambda_handler
+      CodeUri: .
+      Layers:
+        - !Ref DependenciesLayer
+      Description: Handles incoming WhatsApp messages
+      Events:
+        WebhookPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /webhook
+            Method: post
+        WebhookGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /webhook
+            Method: get
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UsersTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TransactionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ConversationStateTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MLFeedbackTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MerchantMemoryTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ContactsTable
+        - S3CrudPolicy:
+            BucketName: !Ref GeneratedFilesBucket
+        - SSMParameterReadPolicy:
+            ParameterName: "kashia/*"
+
+  ScheduledReportsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub kashia-scheduled-reports-${Stage}
+      Handler: src/handlers/scheduled_reports.lambda_handler
+      CodeUri: .
+      Layers:
+        - !Ref DependenciesLayer
+      Description: Sends daily and weekly reports to users
+      Timeout: 300
+      Events:
+        DailyReport:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 19 * * ? *)
+            Description: Daily report at 8PM WAT (7PM UTC)
+            Enabled: true
+        WeeklyReport:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 17 ? * SUN *)
+            Description: Weekly report on Sundays at 6PM WAT (5PM UTC)
+            Enabled: true
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UsersTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TransactionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ContactsTable
+        - S3CrudPolicy:
+            BucketName: !Ref GeneratedFilesBucket
+        - SSMParameterReadPolicy:
+            ParameterName: "kashia/*"
+
+  # ============================================
+  # DYNAMODB TABLES
+  # ============================================
+
+  # Table 1: Users
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub kashia-users-${Stage}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: phone_number
+          AttributeType: S
+      KeySchema:
+        - AttributeName: phone_number
+          KeyType: HASH
+
+  # Table 2: Transactions
+  TransactionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub kashia-transactions-${Stage}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: phone_number
+          AttributeType: S
+        - AttributeName: transaction_id
+          AttributeType: S
+        - AttributeName: date
+          AttributeType: S
+      KeySchema:
+        - AttributeName: phone_number
+          KeyType: HASH
+        - AttributeName: transaction_id
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: date-index
+          KeySchema:
+            - AttributeName: phone_number
+              KeyType: HASH
+            - AttributeName: date
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  # Table 3: Conversation State
+  ConversationStateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub kashia-conversation-state-${Stage}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: phone_number
+          AttributeType: S
+      KeySchema:
+        - AttributeName: phone_number
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # Table 4: ML Feedback (corrections for AI learning)
+  MLFeedbackTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub kashia-ml-feedback-${Stage}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: phone_number
+          AttributeType: S
+        - AttributeName: feedback_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: phone_number
+          KeyType: HASH
+        - AttributeName: feedback_id
+          KeyType: RANGE
+
+  # Table 5: Merchant Memory (vendor → category cache)
+  MerchantMemoryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub kashia-merchant-memory-${Stage}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: phone_number
+          AttributeType: S
+        - AttributeName: vendor_normalized
+          AttributeType: S
+      KeySchema:
+        - AttributeName: phone_number
+          KeyType: HASH
+        - AttributeName: vendor_normalized
+          KeyType: RANGE
+
+  # Table 6: Contacts (CRM)
+  ContactsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub kashia-contacts-${Stage}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: phone_number
+          AttributeType: S
+        - AttributeName: contact_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: phone_number
+          KeyType: HASH
+        - AttributeName: contact_id
+          KeyType: RANGE
+
+  # ============================================
+  # S3 BUCKET (generated files — auto-delete after 1 day)
+  # ============================================
+  GeneratedFilesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub kashia-generated-files-${Stage}-${AWS::AccountId}
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteAfter1Day
+            Status: Enabled
+            ExpirationInDays: 1
+
+  # ============================================
+  # LAMBDA LAYER (extra Python packages)
+  # ============================================
+  DependenciesLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub kashia-dependencies-${Stage}
+      Description: Python packages for Kashia (openai, openpyxl, reportlab, requests)
+      ContentUri: layers/dependencies/layer.zip
+      CompatibleRuntimes:
+        - python3.12
+
+# ============================================
+# OUTPUTS (shows you the important URLs after deploy)
+# ============================================
+Outputs:
+  WebhookUrl:
+    Description: WhatsApp Webhook URL (use this in Meta Developer Portal)
+    Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/webhook"
+  WebhookFunctionArn:
+    Description: Webhook Lambda ARN
+    Value: !GetAtt WebhookFunction.Arn
+  ScheduledReportsFunctionArn:
+    Description: Scheduled Reports Lambda ARN
+    Value: !GetAtt ScheduledReportsFunction.Arn

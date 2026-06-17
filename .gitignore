@@ -1,0 +1,13 @@
+sam-installation/
+layers/
+venv/
+__pycache__/
+*.pyc
+.env
+.aws-sam/
+node_modules/
+.pytest_cache/
+*.zip
+
+
+aws/
