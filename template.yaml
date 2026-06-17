@@ -38,8 +38,8 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub kashia-webhook-${Stage}
-      Handler: src/handlers/webhook.lambda_handler
-      CodeUri: .
+      Handler: handlers/webhook.lambda_handler
+      CodeUri: src/
       Layers:
         - !Ref DependenciesLayer
       Description: Handles incoming WhatsApp messages
@@ -78,8 +78,8 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub kashia-scheduled-reports-${Stage}
-      Handler: src/handlers/scheduled_reports.lambda_handler
-      CodeUri: .
+      Handler: handlers/scheduled_reports.lambda_handler
+      CodeUri: src/
       Layers:
         - !Ref DependenciesLayer
       Description: Sends daily and weekly reports to users

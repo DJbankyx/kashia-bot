@@ -1,0 +1,11 @@
+sam-installation/
+venv/
+aws/
+layers/
+.git/
+.aws-sam/
+__pycache__/
+tests/
+*.zip
+node_modules/
+.pytest_cache/

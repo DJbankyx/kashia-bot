@@ -1,10 +1,13 @@
 version = 0.1
 
 [default.deploy.parameters]
-stack_name = "kashia-bot-dev"
+stack_name = "kashia-bot"
 resolve_s3 = true
 s3_prefix = "kashia-bot"
-region = "eu-west-1"
 confirm_changeset = true
 capabilities = "CAPABILITY_IAM"
-parameter_overrides = "Stage=dev"
+parameter_overrides = "Stage=\"dev\""
+image_repositories = []
+
+[default.global.parameters]
+region = "eu-west-1"
