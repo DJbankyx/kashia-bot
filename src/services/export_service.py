@@ -10,8 +10,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-from src.services.database import Database
-from src.services.whatsapp_client import WhatsAppClient
+from services.database import Database
+from services.whatsapp_client import WhatsAppClient
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)

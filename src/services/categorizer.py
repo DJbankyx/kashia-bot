@@ -5,8 +5,8 @@ import json
 import logging
 from openai import OpenAI
 
-from src.utils.config import get_openai_key
-from src.utils.parser import extract_vendor_name, normalize_name
+from utils.config import get_openai_key
+from utils.parser import extract_vendor_name, normalize_name
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)

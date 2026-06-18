@@ -3,12 +3,12 @@
 
 import logging
 
-from src.services.conversation_engine import ConversationEngine
-from src.services.whatsapp_client import WhatsAppClient
-from src.services.tier_manager import TierManager
-from src.services.export_service import ExportService
-from src.services.pdf_generator import PDFGenerator
-from src.services.crm import ContactService
+from services.conversation_engine import ConversationEngine
+from services.whatsapp_client import WhatsAppClient
+from services.tier_manager import TierManager
+from services.export_service import ExportService
+from services.pdf_generator import PDFGenerator
+from services.crm import ContactService
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)

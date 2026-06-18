@@ -4,9 +4,9 @@
 import logging
 from datetime import datetime, timedelta
 
-from src.services.database import Database
-from src.services.reports import ReportGenerator
-from src.services.whatsapp_client import WhatsAppClient
+from services.database import Database
+from services.reports import ReportGenerator
+from services.whatsapp_client import WhatsAppClient
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)

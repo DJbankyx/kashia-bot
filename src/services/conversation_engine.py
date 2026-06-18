@@ -4,9 +4,9 @@
 import logging
 from datetime import datetime
 
-from src.utils.parser import parse_amount, detect_transaction_type, extract_vendor_name
-from src.services.database import Database
-from src.services.categorizer import TransactionCategorizer
+from utils.parser import parse_amount, detect_transaction_type, extract_vendor_name
+from services.database import Database
+from services.categorizer import TransactionCategorizer
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)

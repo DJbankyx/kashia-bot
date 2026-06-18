@@ -5,7 +5,7 @@ import json
 import logging
 import requests
 
-from src.utils.config import get_whatsapp_token, get_phone_number_id
+from utils.config import get_whatsapp_token, get_phone_number_id
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)

@@ -4,7 +4,7 @@
 import logging
 from datetime import datetime
 
-from src.services.database import Database
+from services.database import Database
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)

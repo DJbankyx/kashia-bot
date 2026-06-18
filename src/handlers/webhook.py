@@ -38,7 +38,7 @@ def handle_verification(event):
     challenge = params.get('hub.challenge', '')
 
     # Import here to avoid loading SSM on every cold start
-    from src.utils.config import get_verify_token
+    from utils.config import get_verify_token
 
     if mode == 'subscribe' and token == get_verify_token():
         logger.info('Webhook verified successfully!')
@@ -120,7 +120,7 @@ def process_message(phone_number, text, message_type):
     """
     Process a single message using the main bot router.
     """
-    from src.main import get_bot
+    from main import get_bot
     bot = get_bot()
     bot.handle_message(phone_number, text, message_type)
 
@@ -130,7 +130,7 @@ def verify_signature(event):
     Uses HMAC-SHA256 with your App Secret.
     Returns True if valid, False if not.
     """
-    from src.utils.config import get_app_secret
+    from utils.config import get_app_secret
 
     app_secret = get_app_secret()
     if not app_secret:

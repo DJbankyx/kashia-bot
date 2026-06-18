@@ -14,9 +14,9 @@ from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 )
 
-from src.services.database import Database
-from src.services.whatsapp_client import WhatsAppClient
-from src.services.export_service import ExportService
+from services.database import Database
+from services.whatsapp_client import WhatsAppClient
+from services.export_service import ExportService
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
