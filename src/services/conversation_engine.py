@@ -31,6 +31,7 @@ STATE_INVOICING = "INVOICING"
 # ==========================================
 
 COMMANDS = {
+    'greeting': ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'how are you', 'sup', 'whats up'],
     'report': ['report', 'summary', 'how much', 'balance'],
     'today': ['today', 'today report'],
     'week': ['this week', 'week', 'weekly'],
@@ -200,7 +201,10 @@ class ConversationEngine:
         # Check for commands
         command = self._detect_command(text_lower)
 
-        if command == 'help':
+        if command == 'greeting':
+            return self._handle_greeting(phone_number)
+
+        elif command == 'help':
             return self._show_help()
 
         elif command == 'report' or command == 'today' or command == 'week' or command == 'month':
@@ -520,6 +524,25 @@ class ConversationEngine:
                 if text_lower == keyword or text_lower.startswith(keyword):
                     return command
         return None
+
+    def _handle_greeting(self, phone_number):
+        """Handle greetings like Hi, Hello, Hey"""
+        user = self.db.get_user(phone_number)
+        if user:
+            name = user.get('business_name', '').strip()
+            greeting = 'Hey ' + name + '! 👋' if name else 'Hey! 👋'
+        else:
+            greeting = 'Hey there! 👋'
+
+        msg = greeting + chr(10) + chr(10)
+        msg += 'What would you like to do?' + chr(10) + chr(10)
+        msg += '📝 *Record a transaction* — just type it' + chr(10)
+        msg += '📊 *Report* — type "report"' + chr(10)
+        msg += '📋 *Contacts* — type "customers" or "suppliers"' + chr(10)
+        msg += '📎 *Export* — type "export"' + chr(10)
+        msg += '❓ *Help* — type "help"'
+
+        return [{'type': 'text', 'content': msg}]
 
     def _show_help(self):
         """Show available commands"""
