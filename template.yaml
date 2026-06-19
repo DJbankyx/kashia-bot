@@ -116,6 +116,7 @@ Resources:
   # Table 1: Users
   UsersTable:
     Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
     Properties:
       TableName: !Sub kashia-users-${Stage}
       BillingMode: PAY_PER_REQUEST
@@ -129,6 +130,7 @@ Resources:
   # Table 2: Transactions
   TransactionsTable:
     Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
     Properties:
       TableName: !Sub kashia-transactions-${Stage}
       BillingMode: PAY_PER_REQUEST
@@ -157,6 +159,7 @@ Resources:
   # Table 3: Conversation State
   ConversationStateTable:
     Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
     Properties:
       TableName: !Sub kashia-conversation-state-${Stage}
       BillingMode: PAY_PER_REQUEST
@@ -172,6 +175,7 @@ Resources:
 
   # Table 4: ML Feedback (corrections for AI learning)
   MLFeedbackTable:
+    DeletionPolicy: Retain
     Type: AWS::DynamoDB::Table
     Properties:
       TableName: !Sub kashia-ml-feedback-${Stage}
@@ -188,6 +192,7 @@ Resources:
           KeyType: RANGE
 
   # Table 5: Merchant Memory (vendor → category cache)
+    DeletionPolicy: Retain
   MerchantMemoryTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -204,6 +209,7 @@ Resources:
         - AttributeName: vendor_normalized
           KeyType: RANGE
 
+    DeletionPolicy: Retain
   # Table 6: Contacts (CRM)
   ContactsTable:
     Type: AWS::DynamoDB::Table
