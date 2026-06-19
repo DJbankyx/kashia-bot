@@ -46,7 +46,6 @@ COMMANDS = {
     'contacts': ['contacts', 'contact', 'crm'],
     'undo': ['undo', 'delete last', 'cancel last', 'remove last'],
     'upgrade': ['upgrade', 'plan', 'pricing', 'subscribe'],
-    'change_category': ['change category', 'update category', 'change business type', 'update business'],
 }
 
 
@@ -111,9 +110,6 @@ class ConversationEngine:
         elif state == STATE_INVOICING:
             return self._handle_invoice_input(phone_number, text, context)
 
-        elif state == "CHANGING_CATEGORY":
-            return self._handle_category_change_response(phone_number, text)
-
         else:
             # Unknown state — reset to idle
             self.db.clear_session(phone_number)
@@ -125,245 +121,74 @@ class ConversationEngine:
 
     def _handle_new_user(self, phone_number, text):
         """Welcome a new user and start onboarding"""
-        self.db.save_session(phone_number, STATE_ONBOARDING, {"step": "ask_business_name"})
+        # Save session as onboarding
+        self.db.save_session(phone_number, STATE_ONBOARDING, {"step": 1})
 
         return [
             {"type": "text", "content": (
-                "Welcome to *Kashia*! \U0001f389\n\n"
-                "I'm your AI bookkeeper \u2014 I help you record and organize "
-                "your business money automatically.\n\n"
-                "Let's get you set up real quick (3 quick questions).\n\n"
-                "\U0001f449 *What's your business name?*"
-            )}
+                "Welcome to *Kashia*! 🎉\n\n"
+                "I help you record and organize your business money.\n\n"
+                "Just tell me what you spent or received — in your own words — "
+                "and I'll handle the accounting for you."
+            )},
+            {"type": "buttons", "content": {
+                "body": "What type of business do you run?",
+                "buttons": [
+                    {"id": "biz_trading", "title": "Buy & Sell Goods"},
+                    {"id": "biz_services", "title": "I Offer Services"},
+                    {"id": "biz_food", "title": "Food & Drinks"},
+                ]
+            }}
         ]
 
     def _handle_onboarding(self, phone_number, text, context):
-        """Handle multi-step conversational onboarding"""
-        step = context.get("step", "ask_business_name")
+        """Handle onboarding flow (business type selection)"""
+        # Map responses to business types
+        business_types = {
+            "biz_trading": "trading",
+            "buy & sell goods": "trading",
+            "biz_services": "services",
+            "i offer services": "services",
+            "biz_food": "food",
+            "food & drinks": "food",
+            "1": "trading",
+            "2": "services",
+            "3": "food",
+        }
 
-        if step == "ask_business_name":
-            business_name = text.strip()
+        # Normalize input
+        business_type = business_types.get(text.lower().strip(), None)
 
-            if len(business_name) < 2:
-                return [
-                    {"type": "text", "content": "Please type your business name (e.g. \"Mama T Foods\", \"TechFix Solutions\"):"}
-                ]
-
-            self.db.save_session(phone_number, STATE_ONBOARDING, {
-                "step": "ask_business_description",
-                "business_name": business_name
-            })
-
-            return [
-                {"type": "text", "content": (
-                    f"Nice to meet you, *{business_name}*! \U0001f91d\n\n"
-                    "\U0001f449 *What does your business do?*\n\n"
-                    "Just describe it briefly, e.g.:\n"
-                    "\u2022 \"I sell clothes and bags\"\n"
-                    "\u2022 \"We do catering and event planning\"\n"
-                    "\u2022 \"I repair phones and laptops\""
-                )}
-            ]
-
-        elif step == "ask_business_description":
-            business_name = context.get("business_name", "Your Business")
-            description = text.strip()
-
-            if len(description) < 3:
-                return [
-                    {"type": "text", "content": (
-                        "Just give me a short description of what "
-                        f"*{business_name}* does \u2014 even one sentence is fine!"
-                    )}
-                ]
-
-            # Infer business type from description
-            suggested_type = self._infer_business_type(description)
-
-            # Save context and ask for confirmation
-            self.db.save_session(phone_number, STATE_ONBOARDING, {
-                "step": "confirm_category",
-                "business_name": business_name,
-                "description": description,
-                "suggested_type": suggested_type
-            })
-
-            return [
-                {"type": "text", "content": (
-                    f"Based on your description, I'd categorize *{business_name}* "
-                    f"as: *{suggested_type}*\n\n"
-                    "Is that correct?\n\n"
-                    "1\ufe0f\u20e3 Yes, that's right\n"
-                    "2\ufe0f\u20e3 No \u2014 I buy & sell goods (trading)\n"
-                    "3\ufe0f\u20e3 No \u2014 I offer services\n"
-                    "4\ufe0f\u20e3 No \u2014 I'm in food & drinks\n"
-                    "5\ufe0f\u20e3 None of these \u2014 let me type my own"
-                )}
-            ]
-
-        elif step == "confirm_category":
-            business_name = context.get("business_name", "Your Business")
-            description = context.get("description", "")
-            suggested_type = context.get("suggested_type", "trading")
-            choice = text.strip().lower()
-
-            # Map responses
-            if choice in ['1', 'yes', 'yeah', 'correct', 'right', 'yep']:
-                business_type = suggested_type
-            elif choice in ['2', 'trading', 'buy and sell', 'buy & sell']:
+        if not business_type:
+            # Try to match partial
+            text_lower = text.lower()
+            if any(w in text_lower for w in ['buy', 'sell', 'trad', 'goods']):
                 business_type = "trading"
-            elif choice in ['3', 'services', 'service']:
+            elif any(w in text_lower for w in ['service', 'barb', 'tailor', 'repair']):
                 business_type = "services"
-            elif choice in ['4', 'food', 'food & drinks', 'food and drinks']:
+            elif any(w in text_lower for w in ['food', 'drink', 'cook', 'restaurant']):
                 business_type = "food"
-            elif choice in ['5', 'none', 'other', 'custom', 'type my own']:
-                # Move to custom category step
-                self.db.save_session(phone_number, STATE_ONBOARDING, {
-                    "step": "custom_category",
-                    "business_name": business_name,
-                    "description": description
-                })
-                return [
-                    {"type": "text", "content": (
-                        "\U0001f4dd No problem! Type your business category.\n\n"
-                        "Examples: \"event planning\", \"logistics\", \"agro\", "
-                        "\"real estate\", \"fashion\", \"crypto\", \"construction\""
-                    )}
-                ]
             else:
-                # Try to match what they typed as a category directly
-                business_type = choice if len(choice) >= 3 else suggested_type
+                business_type = "trading"  # Default
 
-            # Create user and finish onboarding
-            return self._complete_onboarding(phone_number, business_name, business_type, description)
-
-        elif step == "custom_category":
-            business_name = context.get("business_name", "Your Business")
-            description = context.get("description", "")
-            custom_type = text.strip().lower()
-
-            if len(custom_type) < 2:
-                return [
-                    {"type": "text", "content": "Please type a category name (e.g. \"logistics\", \"fashion\", \"construction\"):"}
-                ]
-
-            return self._complete_onboarding(phone_number, business_name, custom_type, description)
-
-        else:
-            # Unknown step — restart onboarding
-            self.db.save_session(phone_number, STATE_ONBOARDING, {"step": "ask_business_name"})
-            return [
-                {"type": "text", "content": "Let's start over \u2014 *What's your business name?*"}
-            ]
-
-    def _complete_onboarding(self, phone_number, business_name, business_type, description=""):
-        """Finish onboarding — create user and show welcome"""
-        self.db.create_user(
-            phone_number,
-            business_type=business_type,
-            business_name=business_name
-        )
+        # Create the user
+        self.db.create_user(phone_number, business_type=business_type)
         self.db.save_session(phone_number, STATE_IDLE, {})
 
         return [
             {"type": "text", "content": (
-                f"\u2705 All set, *{business_name}*! You're good to go.\n\n"
-                f"Category: *{business_type}*\n"
-                "This helps me sort your transactions accurately.\n\n"
-                "Here's how to use me:\n\n"
-                "\U0001f4dd *Record a transaction:*\n"
+                f"✅ Great! I've set you up as a *{business_type}* business.\n\n"
+                "You're ready to go! Here's how to use me:\n\n"
+                "📝 *Record a transaction:*\n"
                 "Just type naturally, e.g.:\n"
-                "\u2022 \"I buy rice 3 bags 95K\"\n"
-                "\u2022 \"Sold goods to Alhaji 350,000\"\n"
-                "\u2022 \"Paid Femi 40K salary\"\n\n"
-                "\U0001f4ca *See reports:* Type \"report\"\n"
-                "\U0001f4cb *See contacts:* Type \"customers\" or \"suppliers\"\n"
-                "\U0001f4ce *Export:* Type \"export\"\n"
-                "\u2753 *Help:* Type \"help\"\n\n"
-                "\U0001f504 *Change category later:* Type \"change category\"\n\n"
-                "Try recording your first transaction now! \U0001f447"
-            )}
-        ]
-
-    def _infer_business_type(self, description):
-        """Infer business type from user description"""
-        desc = description.lower()
-
-        if any(w in desc for w in ['food', 'cook', 'restaurant', 'catering', 'drink',
-                                     'bakery', 'bake', 'snack', 'shawarma', 'grill',
-                                     'kitchen', 'eat', 'suya', 'pepper soup']):
-            return "food"
-
-        if any(w in desc for w in ['service', 'repair', 'fix', 'barb', 'salon',
-                                     'hair', 'nail', 'tailor', 'sew', 'design',
-                                     'clean', 'wash', 'laundry', 'teach', 'tutor',
-                                     'consult', 'freelance', 'photography', 'event',
-                                     'logistics', 'delivery', 'transport', 'tech',
-                                     'software', 'web', 'digital', 'print', 'media']):
-            return "services"
-
-        if any(w in desc for w in ['sell', 'buy', 'trade', 'shop', 'store',
-                                     'goods', 'product', 'wholesale', 'retail',
-                                     'import', 'export', 'supply', 'cloth',
-                                     'phone', 'provision', 'market', 'bag',
-                                     'shoe', 'accessori', 'cosmetic', 'electronic']):
-            return "trading"
-
-        return "general"
-
-    def _handle_change_category(self, phone_number, text):
-        """Allow existing user to change their business category"""
-        user = self.db.get_user(phone_number)
-        business_name = user.get('business_name', 'your business') if user else 'your business'
-        current_type = user.get('business_type', 'unknown') if user else 'unknown'
-
-        self.db.save_session(phone_number, 'CHANGING_CATEGORY', {"awaiting": "new_category"})
-
-        return [
-            {"type": "text", "content": (
-                f"*{business_name}* is currently set as: *{current_type}*\n\n"
-                "What would you like to change it to?\n\n"
-                "1\ufe0f\u20e3 Trading (buy & sell goods)\n"
-                "2\ufe0f\u20e3 Services\n"
-                "3\ufe0f\u20e3 Food & Drinks\n"
-                "4\ufe0f\u20e3 Let me type a custom category"
-            )}
-        ]
-
-    def _handle_category_change_response(self, phone_number, text):
-        """Process the user's category change choice"""
-        user = self.db.get_user(phone_number)
-        business_name = user.get('business_name', 'your business') if user else 'your business'
-        choice = text.strip().lower()
-
-        if choice in ['1', 'trading', 'buy and sell', 'buy & sell']:
-            new_type = "trading"
-        elif choice in ['2', 'services', 'service']:
-            new_type = "services"
-        elif choice in ['3', 'food', 'food & drinks', 'food and drinks']:
-            new_type = "food"
-        elif choice in ['4', 'custom', 'type', 'other']:
-            self.db.save_session(phone_number, 'CHANGING_CATEGORY', {"awaiting": "custom_input"})
-            return [
-                {"type": "text", "content": "Type your new business category (e.g. \"logistics\", \"fashion\", \"construction\"):"}
-            ]
-        else:
-            # Treat whatever they typed as the custom category
-            if len(choice) >= 3:
-                new_type = choice
-            else:
-                return [
-                    {"type": "text", "content": "Please pick 1-4 or type your custom category:"}
-                ]
-
-        # Update user
-        self.db.update_user(phone_number, {"business_type": new_type})
-        self.db.save_session(phone_number, STATE_IDLE, {})
-
-        return [
-            {"type": "text", "content": (
-                f"\u2705 Done! *{business_name}* is now categorized as: *{new_type}*\n\n"
-                "This will affect how I sort your future transactions."
+                '• "I buy rice 3 bags 95K"\n'
+                '• "Sold goods to Alhaji 350,000"\n'
+                '• "Paid Femi 40K salary"\n\n'
+                "📊 *See reports:* Type \"report\"\n"
+                "📋 *See contacts:* Type \"customers\" or \"suppliers\"\n"
+                "📎 *Export:* Type \"export\"\n"
+                "❓ *Help:* Type \"help\"\n\n"
+                "Try recording your first transaction now! 👇"
             )}
         ]
 
@@ -416,8 +241,6 @@ class ConversationEngine:
 
         elif command == 'upgrade':
             return self._show_upgrade_options()
-        elif command == 'change_category':
-            return self._handle_change_category(phone_number, text)
 
         # No command detected → treat as a transaction
         return self._handle_transaction(phone_number, text)
