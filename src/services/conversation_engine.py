@@ -423,63 +423,123 @@ class ConversationEngine:
         return self._handle_transaction(phone_number, text)
 
     def _handle_transaction(self, phone_number, text):
-        """Parse a transaction and show AI suggestion for confirmation"""
-        # Parse the message
+        """Parse a transaction with rich AI extraction and show confirmation"""
+        # Parse amount from text
         amount = parse_amount(text)
 
         if not amount:
             # Couldn't find an amount — ask for it
             self.db.save_session(phone_number, STATE_RECORDING, {"description": text})
             return [{"type": "text", "content": (
-                "💰 How much was it? (Just type the amount)\n\n"
-                "E.g.: 95000 or 95K or ₦95,000"
+                "\U0001f4b0 How much was it? (Just type the amount)\n\n"
+                "E.g.: 95000 or 95K or \u20a695,000"
             )}]
 
-        # Got amount — categorize
-        tx_type = detect_transaction_type(text)
-        vendor = extract_vendor_name(text)
-        result = self.categorizer.categorize(text, phone_number)
+        # Get user's business type for tailored parsing
+        user = self.db.get_user(phone_number)
+        business_type = user.get('business_type', 'trading') if user else 'trading'
 
-        category = result['category']
+        # Rich AI parsing — extracts everything
+        result = self.categorizer.parse_transaction(text, phone_number, business_type)
+
+        # Use AI's transaction type if available, fallback to rule-based
+        tx_type = result.get('transaction_type') or detect_transaction_type(text)
+        vendor = result.get('vendor_or_customer') or extract_vendor_name(text) or ""
+        category = result.get('category', 'Uncategorized')
         sub_category = result.get('sub_category', '')
         confidence = result.get('confidence', 0)
 
-        # Store pending transaction in session
+        # Use AI's amount if it parsed one and we trust it
+        ai_amount = result.get('total_amount')
+        if ai_amount and abs(ai_amount - amount) < 100:
+            amount = ai_amount
+
+        # Store ALL rich data in pending session
         pending = {
             "amount": amount,
             "type": tx_type,
             "description": text,
             "category": category,
             "sub_category": sub_category,
-            "vendor": vendor or "",
+            "vendor": vendor,
             "confidence": confidence,
+            "item_name": result.get('item_name'),
+            "brand": result.get('brand'),
+            "model": result.get('model'),
+            "size": result.get('size'),
+            "color": result.get('color'),
+            "quantity": result.get('quantity'),
+            "unit_cost": result.get('unit_cost'),
+            "payment_method": result.get('payment_method'),
+            "payment_status": result.get('payment_status'),
+            "extra_details": result.get('extra_details', {}),
+            "tags": result.get('tags', []),
         }
         self.db.save_session(phone_number, STATE_AWAITING_CONFIRMATION, pending)
 
-        # Format response
-        type_emoji = "💰" if tx_type == "income" else "💸"
+        # Build rich confirmation message
+        type_emoji = "\U0001f4b0" if tx_type == "income" else "\U0001f4b8"
         cat_emoji = self._get_category_emoji(category)
 
-        response_text = (
-            f"📝 Recorded!\n\n"
-            f"{type_emoji} *₦{amount:,}* ({tx_type.title()})\n"
-            f"{cat_emoji} {category}"
-        )
-        if sub_category:
-            response_text += f" → {sub_category}"
-        if vendor:
-            response_text += f"\n🏪 {vendor}"
+        response_text = f"\U0001f4dd Got it!\n\n"
+        response_text += f"{type_emoji} *\u20a6{amount:,}* ({tx_type.title()})\n"
 
-        response_text += "\n\n✅ Correct?"
+        # Show item details
+        item_name = result.get('item_name')
+        brand = result.get('brand')
+        model = result.get('model')
+
+        if item_name:
+            response_text += f"\U0001f4e6 {item_name}\n"
+        if brand or model:
+            brand_line = "\U0001f3f7\ufe0f "
+            if brand:
+                brand_line += brand
+            if brand and model:
+                brand_line += " | "
+            if model:
+                brand_line += model
+            response_text += brand_line + "\n"
+
+        # Show size/color/quantity
+        # Show size/color/quantity
+        details = []
+        if result.get('size'):
+            details.append(f"Size: {result['size']}")
+        if result.get('color'):
+            details.append(f"Color: {result['color']}")
+        if result.get('quantity'):
+            details.append(f"Qty: {result['quantity']}")
+        if result.get('unit_cost'):
+            details.append(f"Unit: \u20a6{int(result['unit_cost']):,}")
+        if details:
+            response_text += "\U0001f4cb " + " | ".join(details) + "\n"
+
+        # Category
+        response_text += f"{cat_emoji} {category}"
+        if sub_category:
+            response_text += f" \u2192 {sub_category}"
+        response_text += "\n"
+
+        # Vendor/Customer
+        if vendor:
+            response_text += f"\U0001f3ea {vendor}\n"
+
+        # Payment method
+        if result.get('payment_method'):
+            response_text += f"\U0001f4b3 {result['payment_method'].title()}\n"
+
+        response_text += "\n\u2705 Correct?"
 
         return [{"type": "buttons", "content": {
             "body": response_text,
             "buttons": [
-                {"id": "confirm_yes", "title": "✅ Yes"},
-                {"id": "confirm_change", "title": "✏️ Change"},
-                {"id": "confirm_undo", "title": "↩️ Cancel"},
+                {"id": "confirm_yes", "title": "\u2705 Yes"},
+                {"id": "confirm_change", "title": "\u270f\ufe0f Change"},
+                {"id": "confirm_undo", "title": "\u21a9\ufe0f Cancel"},
             ]
         }}]
+
 
     def _handle_confirmation(self, phone_number, text, context):
         """Handle user confirming or rejecting AI suggestion"""
@@ -487,7 +547,7 @@ class ConversationEngine:
 
         # Accept
         if text_lower in ['yes', 'y', 'correct', '✅ yes', 'confirm_yes', '1']:
-            # Save the transaction
+            # Save the transaction with all rich data
             tx = self.db.save_transaction(
                 phone_number=phone_number,
                 amount=context['amount'],
@@ -496,7 +556,18 @@ class ConversationEngine:
                 category=context['category'],
                 sub_category=context.get('sub_category', ''),
                 vendor=context.get('vendor', ''),
-                confidence=context.get('confidence', 0)
+                confidence=context.get('confidence', 0),
+                item_name=context.get('item_name'),
+                brand=context.get('brand'),
+                model=context.get('model'),
+                size=context.get('size'),
+                color=context.get('color'),
+                quantity=context.get('quantity'),
+                unit_cost=context.get('unit_cost'),
+                payment_method=context.get('payment_method'),
+                payment_status=context.get('payment_status'),
+                extra_details=context.get('extra_details'),
+                tags=context.get('tags'),
             )
 
             # Save merchant memory

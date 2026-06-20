@@ -42,8 +42,8 @@ def parse_amount(text):
     if match:
         return int(float(match.group(1)) * 1_000_000)
 
-    # Pattern 2: "95K" or "95k" or "95 thousand"
-    match = re.search(r'(\d+\.?\d*)\s*[kK](?:thousand)?', cleaned)
+    # Pattern 2: "95K" or "95k" or "95 thousand" (but NOT 50kg, 5km, etc.)
+    match = re.search(r'(\d+\.?\d*)\s*[kK](?!g|m|l|w)(?:thousand)?', cleaned)
     if match:
         return int(float(match.group(1)) * 1_000)
 

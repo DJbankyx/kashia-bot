@@ -96,8 +96,12 @@ class Database:
     # ==========================================
 
     def save_transaction(self, phone_number, amount, tx_type, description,
-                         category, sub_category="", vendor="", confidence=0):
-        """Save a new transaction"""
+                         category, sub_category="", vendor="", confidence=0,
+                         item_name=None, brand=None, model=None, size=None,
+                         color=None, quantity=None, unit_cost=None,
+                         payment_method=None, payment_status=None,
+                         extra_details=None, tags=None):
+        """Save a new transaction with rich parsed data"""
         transaction_id = generate_id()
         item = {
             'phone_number': phone_number,
@@ -113,6 +117,31 @@ class Database:
             'created_at': datetime.now().isoformat(),
             'corrected': False,
         }
+
+        # Add rich fields (only if they have values — keeps DynamoDB lean)
+        if item_name:
+            item['item_name'] = item_name
+        if brand:
+            item['brand'] = brand
+        if model:
+            item['model'] = model
+        if size:
+            item['size'] = size
+        if color:
+            item['color'] = color
+        if quantity:
+            item['quantity'] = quantity
+        if unit_cost:
+            item['unit_cost'] = int(unit_cost)
+        if payment_method:
+            item['payment_method'] = payment_method
+        if payment_status:
+            item['payment_status'] = payment_status
+        if extra_details:
+            item['extra_details'] = extra_details
+        if tags:
+            item['tags'] = tags
+
         self.transactions.put_item(Item=item)
 
         # Increment user's transaction count
