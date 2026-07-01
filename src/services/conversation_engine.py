@@ -22,6 +22,7 @@ STATE_IDLE = "IDLE"
 STATE_RECORDING = "RECORDING"
 STATE_AWAITING_CONFIRMATION = "AWAITING_CONFIRMATION"
 STATE_AWAITING_CORRECTION = "AWAITING_CORRECTION"
+STATE_AWAITING_CRM_HINT = "AWAITING_CRM_HINT"
 STATE_VIEWING_REPORT = "VIEWING_REPORT"
 STATE_EXPORTING = "EXPORTING"
 STATE_INVOICING = "INVOICING"
@@ -228,6 +229,9 @@ class ConversationEngine:
 
         elif state == STATE_AWAITING_CORRECTION:
             return self._handle_correction(phone_number, text, context)
+
+        elif state == STATE_AWAITING_CRM_HINT:
+            return self._handle_crm_hint(phone_number, text, context)
 
         elif state == STATE_VIEWING_REPORT:
             return self._handle_report_selection(phone_number, text)
@@ -668,8 +672,22 @@ class ConversationEngine:
         has_financial_signal = any(re.search(p, text_lower) for p in financial_patterns)
 
         if not has_financial_signal:
-            # No numbers, no transaction verbs — treat as casual chat
-            return self._handle_emotion(phone_number, 'compliment')
+            # No numbers, no transaction verbs — check if it's actually
+            # an emotion/compliment, or just an unrecognized command
+            emotion_cmd = self._detect_command(text_lower)
+            if emotion_cmd in ['compliment', 'sad', 'excited']:
+                return self._handle_emotion(phone_number, emotion_cmd)
+
+            # Check if text contains known emotion keywords before defaulting
+            compliment_words = ['thanks', 'thank you', 'well done', 'good job', 'nice', 'great', 'perfect', 'love it', 'fire', 'sharp']
+            if any(w in text_lower for w in compliment_words):
+                return self._handle_emotion(phone_number, 'compliment')
+
+            # Truly unrecognized — give helpful response
+            return [{"type": "text", "content": (
+                "🤔 I'm not sure what to do with that.\n\n"
+                "Try recording a transaction (e.g. _sold shoes 15K_) or type *help* for all commands."
+            )}]
 
         # Check if message is an emoji or reaction
         if text_lower.startswith('reaction:') or self._is_emoji(text_lower):
@@ -1264,12 +1282,32 @@ class ConversationEngine:
                     context['amount'], context['type']
                 )
 
-            self.db.save_session(phone_number, STATE_IDLE, {})
+            # Smart CRM prompt: if amount >= 10K and no vendor/customer, ask
+            amount = context['amount']
+            tx_type = context['type']
+            has_vendor = bool(vendor)
 
-            return [{"type": "text", "content": (
-                f"✅ Saved!\n\n"
-                f"Record another transaction or type *help* for options."
-            )}]
+            if not has_vendor and amount >= 10000:
+                # Save state with transaction ID so we can attach the name later
+                tx_id = tx.get('transaction_id', '') if isinstance(tx, dict) else ''
+                self.db.save_session(phone_number, STATE_AWAITING_CRM_HINT, {
+                    'transaction_id': tx_id,
+                    'tx_type': tx_type,
+                    'amount': amount,
+                    'crm_step': 'ask_name',
+                })
+                prompt = "sell to" if tx_type == "income" else "buy from"
+                return [{"type": "text", "content": (
+                    f"✅ Saved!\n\n"
+                    f"💡 Who did you {prompt}?\n"
+                    f"_Type their name, or just send your next transaction._"
+                )}]
+            else:
+                self.db.save_session(phone_number, STATE_IDLE, {})
+                return [{"type": "text", "content": (
+                    f"✅ Saved!\n\n"
+                    f"Record another transaction or type *help* for options."
+                )}]
         # Change — show correction menu
         elif text_lower in ['change', 'no', 'n', 'wrong', '\u270f\ufe0f change', 'confirm_change', '2']:
             context['correction_step'] = 'choose_field'
@@ -1317,6 +1355,118 @@ class ConversationEngine:
                     {"id": "confirm_undo", "title": "↩️ Cancel"},
                 ]
             }}]
+
+    def _handle_crm_hint(self, phone_number, text, context):
+        """Handle the soft CRM prompts after a large transaction.
+        Step 1: Ask for name → Step 2: Ask for payment method.
+        User can skip, send a new transaction, or a command at any point."""
+        text_lower = text.lower().strip()
+        step = context.get('crm_step', 'ask_name')
+
+        # Skip / dismiss
+        if text_lower in ['skip', 'no', 'nah', 'none', 'no one', 'next']:
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return [{"type": "text", "content": "👍 No problem. Send your next transaction."}]
+
+        # Check if it's a command — break out
+        command = self._detect_command(text_lower)
+        if command:
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return self._handle_idle(phone_number, text)
+
+        # Check if it's a new transaction (has amount) — break out
+        potential_amount = parse_amount(text)
+        if potential_amount and potential_amount > 0:
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return self._handle_idle(phone_number, text)
+
+        tx_id = context.get('transaction_id', '')
+        tx_type = context.get('tx_type', 'expense')
+        amount = context.get('amount', 0)
+
+        # ---- STEP 1: User provides a name ----
+        if step == 'ask_name':
+            name = text.strip().title()
+            if len(name) < 2 or len(name) > 50:
+                self.db.save_session(phone_number, STATE_IDLE, {})
+                return [{"type": "text", "content": "👍 Got it. Send your next transaction."}]
+
+            # Attach name to the transaction
+            if tx_id:
+                try:
+                    self.db.transactions.update_item(
+                        Key={'phone_number': phone_number, 'transaction_id': tx_id},
+                        UpdateExpression="SET vendor = :v",
+                        ExpressionAttributeValues={':v': name}
+                    )
+                except Exception as e:
+                    logger.error(f"Error attaching vendor to tx: {e}")
+
+            # Update contact totals & merchant memory
+            self.db.update_contact_totals(phone_number, name, amount, tx_type)
+            self.db.save_merchant(phone_number, name, '', '')
+
+            # Move to step 2: ask payment method
+            context['crm_step'] = 'ask_payment'
+            context['vendor_name'] = name
+            self.db.save_session(phone_number, STATE_AWAITING_CRM_HINT, context)
+
+            emoji = "👤" if tx_type == "income" else "🏪"
+            # For large amounts (≥50K), include credit option
+            if amount >= 50000:
+                return [{"type": "text", "content": (
+                    f"✅ {emoji} *{name}* noted.\n\n"
+                    f"💳 How were you paid?\n"
+                    f"_Cash / Transfer / POS / On credit_\n"
+                    f"_Or just send your next transaction._"
+                )}]
+            else:
+                return [{"type": "text", "content": (
+                    f"✅ {emoji} *{name}* noted.\n\n"
+                    f"💳 Cash or transfer?\n"
+                    f"_Or just send your next transaction._"
+                )}]
+
+        # ---- STEP 2: User provides payment method ----
+        elif step == 'ask_payment':
+            payment_map = {
+                'cash': 'cash', 'transfer': 'transfer', 'bank': 'transfer',
+                'pos': 'POS', 'card': 'POS',
+                'credit': 'credit', 'on credit': 'credit',
+            }
+            payment = payment_map.get(text_lower, text_lower if len(text_lower) <= 15 else None)
+
+            if payment and tx_id:
+                try:
+                    update_expr = "SET payment_method = :pm"
+                    expr_values = {':pm': payment}
+                    # If on credit, also set payment_status
+                    if payment == 'credit':
+                        update_expr += ", payment_status = :ps"
+                        expr_values[':ps'] = 'credit'
+                    self.db.transactions.update_item(
+                        Key={'phone_number': phone_number, 'transaction_id': tx_id},
+                        UpdateExpression=update_expr,
+                        ExpressionAttributeValues=expr_values
+                    )
+                except Exception as e:
+                    logger.error(f"Error attaching payment method to tx: {e}")
+
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            if payment == 'credit':
+                vendor_name = context.get('vendor_name', '')
+                # Also record as debt
+                if vendor_name and tx_type == 'income':
+                    self.db.record_debt(phone_number, vendor_name, amount, 'owed_to_me')
+                    return [{"type": "text", "content": f"✅ 💳 On credit — *{vendor_name}* now owes you ₦{int(amount):,}.\n\n_Send your next transaction._"}]
+                elif vendor_name and tx_type == 'expense':
+                    self.db.record_debt(phone_number, vendor_name, amount, 'i_owe')
+                    return [{"type": "text", "content": f"✅ 💳 On credit — you owe *{vendor_name}* ₦{int(amount):,}.\n\n_Send your next transaction._"}]
+            return [{"type": "text", "content": f"✅ 💳 *{payment.title() if payment else 'Noted'}*. Send your next transaction."}]
+
+        # Fallback — reset
+        self.db.save_session(phone_number, STATE_IDLE, {})
+        return self._handle_idle(phone_number, text)
 
     def _handle_correction(self, phone_number, text, context):
         """Handle multi-field corrections"""
