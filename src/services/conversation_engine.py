@@ -2058,47 +2058,55 @@ class ConversationEngine:
     def _handle_confirming_credit_sale_state(self, phone_number, text, context):
         """Handle confirmation of a rich credit sale/purchase before saving"""
         text_lower = text.lower().strip()
+        import traceback
 
         if text_lower in ['no', 'cancel', 'confirm_undo', '\u21a9\ufe0f cancel', 'undo']:
             self.db.save_session(phone_number, STATE_IDLE, {})
             return [{"type": "text", "content": "\u274c Cancelled. Credit transaction not saved."}]
 
         if text_lower in ['yes', 'y', 'confirm_yes', '\u2705 yes', 'correct', 'ok']:
-            amount = context.get('amount', 0)
-            name = context.get('name', '')
-            debt_type = context.get('debt_type', 'owed_to_me')
-            description = context.get('description', '')
+            try:
+                amount = context.get('amount', 0)
+                name = context.get('name', '')
+                debt_type = context.get('debt_type') or 'owed_to_me'
+                description = context.get('description', '')
 
-            # Build a clean description from the rich details instead of
-            # the raw typed sentence (so debt lists show structured info)
-            parts = []
-            if context.get('item_name'):
-                parts.append(context['item_name'])
-            if context.get('brand'):
-                parts.append(context['brand'])
-            if context.get('color'):
-                parts.append(f"({context['color']})")
-            if context.get('quantity'):
-                parts.append(f"x{context['quantity']}")
-            clean_description = ' '.join(str(p) for p in parts) if parts else description
+                # Build a clean description from the rich details instead of
+                # the raw typed sentence (so debt lists show structured info)
+                parts = []
+                if context.get('item_name'):
+                    parts.append(context['item_name'])
+                if context.get('brand'):
+                    parts.append(context['brand'])
+                if context.get('color'):
+                    parts.append(f"({context['color']})")
+                if context.get('quantity'):
+                    parts.append(f"x{context['quantity']}")
+                clean_description = ' '.join(str(p) for p in parts) if parts else description
 
-            self.db.record_debt(
-                phone_number, name, amount, debt_type,
-                description=clean_description
-            )
-            self.db.save_session(phone_number, STATE_IDLE, {})
+                self.db.record_debt(
+                    phone_number, name, int(amount), debt_type,
+                    description=clean_description
+                )
+                self.db.save_session(phone_number, STATE_IDLE, {})
 
-            if debt_type == 'owed_to_me':
-                msg = f"\u2705 *Credit Sale Recorded*\n\n\U0001f464 *{name}* owes you *\u20a6{amount:,}*\n"
-                if clean_description and clean_description != description:
-                    msg += f"_{clean_description}_\n"
-                msg += "\n_Type \"who owes me\" to see all debtors_"
-            else:
-                msg = f"\u2705 *Credit Purchase Recorded*\n\n\U0001f3ea You owe *{name}* \u20a6{amount:,}\n"
-                if clean_description and clean_description != description:
-                    msg += f"_{clean_description}_\n"
-                msg += "\n_Type \"i owe\" to see all your debts_"
-            return [{"type": "text", "content": msg}]
+                if debt_type == 'owed_to_me':
+                    msg = f"\u2705 *Credit Sale Recorded*\n\n\U0001f464 *{name}* owes you *\u20a6{int(amount):,}*\n"
+                    if clean_description and clean_description != description:
+                        msg += f"_{clean_description}_\n"
+                    msg += "\n_Type \"who owes me\" to see all debtors_"
+                else:
+                    msg = f"\u2705 *Credit Purchase Recorded*\n\n\U0001f3ea You owe *{name}* \u20a6{int(amount):,}\n"
+                    if clean_description and clean_description != description:
+                        msg += f"_{clean_description}_\n"
+                    msg += "\n_Type \"i owe\" to see all your debts_"
+                return [{"type": "text", "content": msg}]
+
+            except Exception as e:
+                tb = traceback.format_exc()
+                logger.error(f"CREDIT CONFIRM ERROR: {e}\n{tb}")
+                self.db.save_session(phone_number, STATE_IDLE, {})
+                return [{"type": "text", "content": f"\u274c Credit save failed:\n_{str(e)[:100]}_\n\nPlease try again."}]
 
         return [{"type": "text", "content": "Please reply *yes* to confirm or *cancel* to discard."}]
 
