@@ -2255,6 +2255,8 @@ class ConversationEngine:
         # Priority 1: number directly after ₦/# or before/after "worth"/"for"
         priority_patterns = [
             r'(?:worth|for|is|of)\s*[\u20a6#]?\s*(\d+)(k|K)?\b',
+            r'(?:paid|pay|received|settled|cleared)\s+(?:\w+\s+){0,2}[\u20a6#]?\s*(\d{4,})(k|K)?\b',
+            r'(?:paid|pay|received|settled|cleared)\s+(?:\w+\s+){0,2}[\u20a6#]?\s*(\d+)(k|K)\b',
             r'[\u20a6#]\s*(\d+)(k|K)?\b',
         ]
         for pattern in priority_patterns:
@@ -2348,7 +2350,8 @@ class ConversationEngine:
                 return [{"type": "text", "content": f"How much did *{name}* take on credit? _Type the amount_"}]
 
         elif step == 'ask_amount':
-            amount = self._extract_amount_from_text(text, strict=True)
+            # User is directly answering "how much?" — don't use strict mode
+            amount = self._extract_amount_from_text(text, strict=False)
             name = context.get('name', '')
             if amount == 0:
                 return [{"type": "text", "content": "Please type a valid amount. _Example: 15000_"}]
@@ -2592,10 +2595,13 @@ class ConversationEngine:
     def _handle_save_contact_phone(self, phone_number, text):
         """Save a phone number for a contact e.g. 'save number Bola 2348012345678' """
         import re
-        phone_match = re.search(r'\b(\d{10,14})\b', text.replace(' ', ''))
+        # Search for phone number in original text (don't strip all spaces)
+        phone_match = re.search(r'(\d[\d\s]{9,15}\d)', text)
         if not phone_match:
             return [{"type": "text", "content": "\u2753 No valid number found.\n\n_Format: save number [name] [phone]_\n_Example: save number Bola 2348012345678_"}]
-        contact_phone = phone_match.group(1)
+        contact_phone = phone_match.group(1).replace(' ', '')
+        if len(contact_phone) < 10 or len(contact_phone) > 14:
+            return [{"type": "text", "content": "\u2753 No valid number found.\n\n_Format: save number [name] [phone]_\n_Example: save number Bola 2348012345678_"}]
         name_text = text.lower()
         for word in ['save', 'number', 'add', 'phone', 'for', contact_phone]:
             name_text = name_text.replace(word.lower(), '')
