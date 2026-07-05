@@ -174,6 +174,8 @@ class TierManager:
         Check if user can generate PDF statements.
         Returns: (allowed: bool, message: str or None)
         """
+        # TODO: Re-enable tier check after beta testing
+        return True, None
         tier = self.get_user_tier(phone_number)
         limits = self.get_tier_limits(tier)
 

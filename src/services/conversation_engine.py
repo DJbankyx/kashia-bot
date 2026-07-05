@@ -58,30 +58,35 @@ CATALOG_ALLOWED_COMMANDS = {'cancel', 'edit', 'delete_entry', 'undo', 'redo'}
 COMMANDS = {
     # Greetings (English + Pidgin + Yoruba + Igbo + Hausa)
     'greeting': [
-        'hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening',
+        'hi', 'hello', 'hey', 'start', 'begin', 'good morning', 'good afternoon', 'good evening',
         'how are you', 'sup', 'whats up', 'how far', 'how you dey', 'wetin dey',
         'howdy', 'whats good', 'hows it going', 'morning', 'evening', 'afternoon',
         'e kaaro', 'e kaasan', 'bawo ni', 'kedu', 'sannu', 'nagode',
         'omo whats up', 'guy whats up', 'bro', 'bros', 'oga', 'boss',
+        'menu', 'main menu', 'open menu', 'show menu',
     ],
     # Reports
     'report': ['report', 'summary', 'how much', 'balance', 'overview', 'dashboard'],
     'today': ['today', 'today report', 'todays record', 'what did i do today'],
     'week': ['this week', 'week', 'weekly', 'last 7 days'],
     'month': ['this month', 'month', 'monthly', 'last 30 days'],
+    'my_sales': ['my sales', 'sales report', 'all sales', 'show sales', 'show my sales', 'today sales', 'todays sales', 'sales today', 'week sales', 'sales this week'],
+    'my_purchases': ['my purchases', 'purchase report', 'all purchases', 'show purchases', 'show my purchases', 'today purchases', 'purchases today', 'week purchases', 'purchases this week'],
+    'my_expenses': ['my expenses', 'expenses', 'expense report', 'show expenses', 'business expenses', 'operating expenses', 'today expenses', 'expenses today', 'week expenses', 'expenses this week'],
     # Help
     'help': ['help', 'menu', 'commands', 'what can you do', 'how does this work', 'guide', 'tutorial'],
     # Export
     'export': ['export', 'excel', 'csv', 'download', 'spreadsheet', 'send me file'],
     'invoice': ['invoice', 'generate invoice', 'create invoice'],
     'receipt': ['receipt', 'generate receipt'],
-    'statement': ['statement', 'financial statement', 'account statement'],
+    'statement': ['statement', 'my statement', 'financial statement', 'account statement'],
     # CRM
-    'customers': ['customers', 'customer', 'who buy from me', 'my buyers', 'client', 'clients'],
+    'customers': ['customers', 'customer', 'who buy from me', 'my buyers', 'client', 'clients', 'my customers', 'customer catalog'],
     'suppliers': ['suppliers', 'supplier', 'who i buy from', 'my vendors', 'vendor', 'vendors'],
     'contacts': ['contacts', 'contact', 'crm', 'people'],
     'who_owes_me': ['who owes me', 'who owe me', 'my debtors', 'outstanding debts', 'debtors', 'who hasn\'t paid', 'debt list', 'owes me', 'owe me'],
-    'i_owe': ['i owe', 'my debts', 'what i owe', 'my creditors', 'i am owing', 'i dey owe', 'creditors'],
+    'who_i_owe': ['who i owe', 'i owe', 'my creditors', 'what i owe', 'people i owe', 'suppliers i owe'],
+    'i_owe': ['i owe', 'my debts', 'my debt', 'what i owe', 'who do i owe', 'what do i owe', 'my creditors', 'i am owing', 'i dey owe', 'creditors'],
     'debt_summary': ['debt summary', 'debt report', 'credit report', 'all debts', 'debt overview'],
     'remind_debtor': ['remind', 'send reminder', 'chase', 'follow up', 'ping', 'message debtor', 'remind debtor'],
     'remind_all_debtors': ['remind all', 'send reminders to all', 'chase everyone', 'remind everyone who owes'],
@@ -102,6 +107,15 @@ COMMANDS = {
     'redo': ['redo', 'restore last', 'bring back', 'i didnt mean that', 'restore deleted', 'undo the undo'],
     'upgrade': ['upgrade', 'plan', 'pricing', 'subscribe', 'premium', 'pro'],
     'change_category': ['change category', 'update category', 'change business type', 'update business'],
+    'set_bank': ['set bank', 'bank details', 'my bank', 'payment details', 'set account', 'bank account'],
+    'set_tax': ['set tax', 'set vat', 'default tax', 'tax rate', 'my tax rate', 'vat rate'],
+    'set_unit': ['set unit', 'set units', 'set conversion', '1 carton', '1 pack', '1 dozen', '1 bag', '1 box', '1 crate'],
+    'set_bank': ['set bank', 'bank details', 'my bank', 'add bank', 'payment details', 'account details'],
+    'change_industry': ['change industry', 'switch industry', 'update industry', 'my industry', 'industry type'],
+    'set_recipe': ['set recipe', 'add recipe', 'new recipe', 'create recipe', 'define recipe', 'bom', 'bill of materials'],
+    'organize_product': ['organize', 'organize product', 'set attributes', 'product attributes', 'setup product'],
+    'production': ['produced', 'production', 'manufactured', 'made', 'baked', 'produced today', 'production run'],
+    'my_recipes': ['my recipes', 'recipes', 'show recipes', 'view recipes', 'all recipes'],
     # Compliments & Gratitude
     'compliment': [
         'well done', 'good job', 'nice one', 'you try', 'thanks', 'thank you',
@@ -151,6 +165,75 @@ COMMANDS = {
 }
 
 
+# ==========================================
+# INTERACTIVE MENU ID → COMMAND MAPPING
+# When user taps a list menu item, WhatsApp sends the row ID.
+# Map these to the text commands the engine already handles.
+# ==========================================
+MENU_ID_MAP = {
+    # Main menu items
+    "menu_record_sale": "__PROMPT_RECORD_SALE__",
+    "menu_record_purchase": "__PROMPT_RECORD_PURCHASE__",
+    "menu_record_payment": "__PROMPT_RECORD_PAYMENT__",
+    "menu_set_recipe": "__PROMPT_SET_RECIPE__",
+    "menu_production": "__PROMPT_PRODUCTION__",
+    "menu_my_recipes": "my recipes",
+    "menu_record_service": "__PROMPT_RECORD_SERVICE__",
+    # Guided flow IDs
+    "guided_cash_sale": "__GUIDED_START_cash_sale__",
+    "guided_credit_sale": "__GUIDED_START_credit_sale__",
+    "guided_type_sale": "__PROMPT_TYPE_SALE__",
+    "guided_cash_purchase": "__GUIDED_START_cash_purchase__",
+    "guided_credit_purchase": "__GUIDED_START_credit_purchase__",
+    "guided_type_purchase": "__PROMPT_TYPE_PURCHASE__",
+    "guided_cash_expense": "__GUIDED_START_cash_expense__",
+    "guided_type_expense": "__PROMPT_TYPE_EXPENSE__",
+    "guided_skip": "__GUIDED_SKIP__",
+    "menu_record_expense": "__PROMPT_RECORD_EXPENSE__",
+    "menu_reports": "__REPORTS_MENU__",
+    "menu_documents": "__DOCUMENTS_MENU__",
+    "menu_debts": "__DEBTS_MENU__",
+    "menu_contacts": "__CONTACTS_MENU__",
+    "menu_catalog": "__CATALOG_MENU__",
+    # Debts sub-menu
+    "debt_who_owes_me": "who owes me",
+    "debt_who_i_owe": "who i owe",
+    # Contacts sub-menu
+    "contacts_customers": "__SHOW_CUSTOMERS__",
+    "contacts_suppliers": "__SHOW_SUPPLIERS__",
+    "contacts_all": "contacts",
+    # Reports sub-menu (choose type → then choose period)
+    "rpt_sales": "__RPT_CHOOSE_PERIOD_sales__",
+    "rpt_purchases": "__RPT_CHOOSE_PERIOD_purchases__",
+    "rpt_expenses": "__RPT_CHOOSE_PERIOD_expenses__",
+    "rpt_summary": "report",
+    # Report period buttons
+    "rpt_sales_today": "__RPT_EXEC_my_sales_today__",
+    "rpt_sales_week": "__RPT_EXEC_my_sales_week__",
+    "rpt_sales_month": "__RPT_EXEC_my_sales_month__",
+    "rpt_sales_custom": "__RPT_CUSTOM_sales__",
+    "rpt_purchases_today": "__RPT_EXEC_my_purchases_today__",
+    "rpt_purchases_week": "__RPT_EXEC_my_purchases_week__",
+    "rpt_purchases_month": "__RPT_EXEC_my_purchases_month__",
+    "rpt_purchases_custom": "__RPT_CUSTOM_purchases__",
+    "rpt_expenses_today": "__RPT_EXEC_my_expenses_today__",
+    "rpt_expenses_week": "__RPT_EXEC_my_expenses_week__",
+    "rpt_expenses_month": "__RPT_EXEC_my_expenses_month__",
+    "rpt_expenses_custom": "__RPT_CUSTOM_expenses__",
+    # Documents sub-menu options
+    "doc_invoice": "invoice",
+    "doc_receipt": "receipt",
+    "doc_statement": "statement",
+    "doc_export": "export",
+    "doc_bank_details": "set bank",
+    # Catalog sub-menu options
+    "cat_all_products": "my catalog",
+    "cat_customers": "customers",
+    "cat_by_brand": "__CATALOG_BY_BRAND__",
+    "cat_top_sellers": "__CATALOG_TOP_SELLERS__",
+}
+
+
 class ConversationEngine:
     """Manages the chat flow state machine"""
 
@@ -171,28 +254,300 @@ class ConversationEngine:
             list of response dicts:
             [{"type": "text", "content": "..."}, {"type": "buttons", ...}]
         """
+        # ─── RATE LIMITING ───
+        # Prevent spam/abuse that burns OpenAI credits
+        # Only apply to existing users (don't block onboarding)
+        from datetime import datetime
+        import time as _time
+        
+        _user_exists = self.db.user_exists(phone_number)
+        rate_data = self.db.get_rate_limit(phone_number) if _user_exists else None
+        now_ts = int(_time.time())
+        
+        if rate_data:
+            # Check per-minute limit (30 msgs/min)
+            minute_count = rate_data.get('minute_count', 0)
+            minute_reset = rate_data.get('minute_reset', 0)
+            if now_ts - minute_reset > 60:
+                minute_count = 0
+                minute_reset = now_ts
+            
+            # Check per-hour limit (200 msgs/hour)
+            hour_count = rate_data.get('hour_count', 0)
+            hour_reset = rate_data.get('hour_reset', 0)
+            if now_ts - hour_reset > 3600:
+                hour_count = 0
+                hour_reset = now_ts
+
+            # Check per-day limit (500 msgs/day)
+            day_count = rate_data.get('day_count', 0)
+            day_reset = rate_data.get('day_reset', 0)
+            if now_ts - day_reset > 86400:
+                day_count = 0
+                day_reset = now_ts
+
+            # Enforce limits
+            if minute_count >= 30:
+                return [{"type": "text", "content": "\u23f3 Slow down! You\'re sending messages too fast.\nPlease wait a moment and try again."}]
+            if hour_count >= 200:
+                return [{"type": "text", "content": "\u26a0\ufe0f You\'ve reached the hourly message limit (200).\nPlease wait a while before sending more."}]
+            if day_count >= 500:
+                return [{"type": "text", "content": "\u26a0\ufe0f Daily message limit reached (500).\nYour limit resets tomorrow. Contact support if you need more."}]
+
+            # Update counts
+            self.db.update_rate_limit(phone_number, {
+                'minute_count': minute_count + 1,
+                'minute_reset': minute_reset,
+                'hour_count': hour_count + 1,
+                'hour_reset': hour_reset,
+                'day_count': day_count + 1,
+                'day_reset': day_reset,
+            })
+        elif _user_exists:
+            # First tracked message — initialize rate limit
+            self.db.update_rate_limit(phone_number, {
+                'minute_count': 1,
+                'minute_reset': now_ts,
+                'hour_count': 1,
+                'hour_reset': now_ts,
+                'day_count': 1,
+                'day_reset': now_ts,
+            })
+        # else: new user, skip rate limiting (let them onboard)
+
         # Get or create session
         session = self.db.get_session(phone_number)
 
         # Determine state
-        if session is None:
-            # Check if user exists but session expired
-            if self.db.user_exists(phone_number):
-                state = STATE_IDLE
-                context = {}
-            else:
-                state = STATE_NEW_USER
-                context = {}
+        if session and session.get('state') == STATE_ONBOARDING:
+            # Mid-onboarding — trust the session (user hasn't finished setup yet)
+            state = STATE_ONBOARDING
+            context = session.get('context', {})
+        elif not self.db.user_exists(phone_number):
+            # New user or wiped data — start onboarding
+            state = STATE_NEW_USER
+            context = {}
+        elif session is None:
+            state = STATE_IDLE
+            context = {}
         else:
             state = session.get('state', STATE_IDLE)
             context = session.get('context', {})
 
         # Route to correct handler based on state
+        # MENU ITEM TAP — always route to idle handler regardless of state
+        text_check = text.lower().strip()
+        if text_check in MENU_ID_MAP or text_check.startswith('filter_'):
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return self._handle_idle(phone_number, text)
+
+        # DYNAMIC CATALOG IDs (product/variant drill-down)
+        if text_check.startswith('cat_product_'):
+            product_key = text_check.replace('cat_product_', '')
+            return self._show_product_detail(phone_number, product_key)
+        elif text_check.startswith('cat_variant_'):
+            parts = text_check.replace('cat_variant_', '').split('__')
+            if len(parts) == 2:
+                return self._show_variant_detail(phone_number, parts[0], parts[1])
+        elif text_check.startswith('cat_sell_'):
+            product_key = text_check.replace('cat_sell_', '')
+            user = self.db.get_user(phone_number)
+            cat = user.get('auto_catalog', {}).get('products', {}) if user else {}
+            prod_name = cat.get(product_key, {}).get('name', 'product')
+            self.db.save_session(phone_number, 'STATE_GUIDED', {
+                'step': 'ask_quantity', 'flow_type': 'cash_sale',
+                'tx_type': 'income', 'payment': 'cash', 'item': prod_name
+            })
+            return [{"type": "text", "content": f"\U0001f4b0 *Selling {prod_name}* \u2014 How many?"}]
+        elif text_check.startswith('cat_restock_'):
+            product_key = text_check.replace('cat_restock_', '')
+            user = self.db.get_user(phone_number)
+            cat = user.get('auto_catalog', {}).get('products', {}) if user else {}
+            prod_name = cat.get(product_key, {}).get('name', 'product')
+            self.db.save_session(phone_number, 'STATE_GUIDED', {
+                'step': 'ask_quantity', 'flow_type': 'cash_purchase',
+                'tx_type': 'expense', 'payment': 'cash', 'item': prod_name
+            })
+            return [{"type": "text", "content": f"\U0001f4e6 *Restocking {prod_name}* \u2014 How many?"}]
+        elif text_check.startswith('cat_edit_'):
+            product_key = text_check.replace('cat_edit_', '')
+            user = self.db.get_user(phone_number)
+            cat = user.get('auto_catalog', {}).get('products', {}) if user else {}
+            prod = cat.get(product_key, {})
+            prod_name = prod.get('name', 'product')
+            return [{"type": "text", "content": (
+                f"\u270f\ufe0f *Edit {prod_name}*\n\n"
+                f"What would you like to update?\n\n"
+                f"\u2022 *set unit {prod_name}: 1 carton = 12*\n"
+                f"\u2022 *set tax {prod_name} 7.5%*\n"
+                f"\u2022 *set recipe {prod_name}* (manufacturing)\n"
+                f"\u2022 Type *add variant {prod_name}: Red, Large*"
+            )}]
+        elif text_check == 'cat_organize':
+            # Show list of products to organize
+            user = self.db.get_user(phone_number)
+            catalog = user.get('auto_catalog', {}) if user else {}
+            products = catalog.get('products', {})
+            # Also check old product_catalog field and merge
+            old_catalog = user.get('product_catalog', {}) if user else {}
+            if old_catalog and isinstance(old_catalog, dict):
+                for old_key, old_val in old_catalog.items():
+                    if not isinstance(old_val, dict) or old_key in ('products', 'brands', 'categories', 'settings'):
+                        continue
+                    norm_key = old_key.lower().replace(' ', '-')
+                    if norm_key not in products:
+                        products[norm_key] = {'name': old_key.replace('-', ' ').title(), 'brand': '', 'item': old_key.title(),
+                                           'category': '', 'sell_prices': [], 'buy_prices': [],
+                                           'total_sold': 0, 'total_bought': 0, 'customers': [], 'suppliers': [],
+                                           'last_activity': '', 'variants': {}}
+            if not products:
+                # Show add option instead of dead-end text
+                self.db.save_session(phone_number, 'STATE_ADD_PRODUCT', {})
+                return [{"type": "text", "content": (
+                    "\U0001f4e6 *No products yet!*\n\n"
+                    "Add a product first, then organize it.\n\n"
+                    "\U0001f449 *Type your product name:*\n"
+                    "_(e.g. Socks, Caps, Slides, Bags)_"
+                )}]
+            rows_org = []
+            for key, prod in list(products.items())[:8]:
+                name = prod.get('name', key.title())
+                has_hierarchy = '\u2705 ' if prod.get('hierarchy') else ''
+                hierarchy_info = ' > '.join(prod.get('hierarchy', [])).title() if prod.get('hierarchy') else 'Not organized yet'
+                rows_org.append({"id": f"cat_org_{key}", "title": f"{has_hierarchy}{name}"[:24], "description": hierarchy_info[:72]})
+            rows_org.append({"id": "cat_org_new", "title": "\u2795 New Product", "description": "Add & organize a new product"})
+            return [{"type": "list", "content": {
+                "header": "\u2699\ufe0f Organize Products",
+                "body": "Choose a product to set up its attribute levels.\n\n\u2705 = already organized\n\nEach level is a drill-down: Pattern \u2192 Brand \u2192 Color \u2192 Size",
+                "button_text": "\u2699\ufe0f Choose Product",
+                "sections": [{"title": "Your Products", "rows": rows_org}]
+            }}]
+        elif text_check.startswith('cat_org_'):
+            # User picked a product to organize
+            key = text_check.replace('cat_org_', '')
+            if key == 'new':
+                self.db.save_session(phone_number, 'STATE_ORGANIZE', {'step': 'ask_product'})
+                return [{"type": "text", "content": "\u2795 *New Product*\n\nType the product name:\n_Example: Socks, Caps, Slides, Bags_"}]
+            return self._handle_organize_product(phone_number, f"organize {key}")
+        elif text_check == 'cat_add_product':
+            self.db.save_session(phone_number, 'STATE_ADD_PRODUCT', {})
+            return [{"type": "text", "content": (
+                "\u2795 *Add a Product*\n\n"
+                "Type the product name:\n"
+                "_Example: Nike Socks, Gucci Slides, iPhone 15_"
+            )}]
+        elif text_check == 'cat_all_products' or text_check == 'cat_browse':
+            return self._show_product_list(phone_number)
+        elif text_check == 'cat_top_sellers':
+            return self._show_top_sellers(phone_number)
+        elif text_check.startswith('org_attr_'):
+            # Attribute selection during organize flow
+            attr_name = text_check.replace('org_attr_', '')
+            return self._handle_organize_attr_pick(phone_number, attr_name)
+        elif text_check.startswith('org_done'):
+            return self._handle_organize_done(phone_number)
+        elif text_check.startswith('cat_tree_'):
+            # Tree drill-down navigation
+            return self._handle_tree_drilldown(phone_number, text_check)
+        elif text_check.startswith('cat_add_'):
+            # Add item at a tree level
+            raw = text_check.replace('cat_add_', '')
+            parts = raw.split('__')
+            product_key = parts[0]
+            path = [p for p in parts[1:] if p]
+            # Save state and ask user what to add
+            user = self.db.get_user(phone_number)
+            catalog = user.get('auto_catalog', {}) if user else {}
+            product = catalog.get('products', {}).get(product_key, {})
+            hierarchy = product.get('hierarchy', [])
+            depth = len(path)
+            attr_labels = {'pattern': 'Pattern', 'brand': 'Brand', 'color': 'Color', 'size': 'Size', 'material': 'Material'}
+            next_attr = hierarchy[depth] if depth < len(hierarchy) else 'item'
+            attr_label = attr_labels.get(next_attr, next_attr.title())
+            breadcrumb = product.get('name', 'Product')
+            for p in path:
+                breadcrumb += f" > {p.title()}"
+            self.db.save_session(phone_number, 'STATE_TREE_ADD', {
+                'product_key': product_key, 'path': path, 'attr_name': next_attr
+            })
+            return [{"type": "text", "content": (
+                f"\u2795 *Add {attr_label}* to *{breadcrumb}*\n\n"
+                f"Type the new {attr_label.lower()} name:\n"
+                f"_(e.g. Nike, Blue, Size 15, Striped)_\n\n"
+                f"Or type *cancel* to go back."
+            )}]
+        elif text_check.startswith('cat_editlvl_'):
+            # Remove item from a tree level — show what can be removed
+            raw = text_check.replace('cat_editlvl_', '')
+            parts = raw.split('__')
+            product_key = parts[0]
+            path = [p for p in parts[1:] if p]
+            user = self.db.get_user(phone_number)
+            catalog = user.get('auto_catalog', {}) if user else {}
+            product = catalog.get('products', {}).get(product_key, {})
+            tree = product.get('tree', {})
+            # Navigate to current node
+            current = tree
+            for p in path:
+                if p in current:
+                    current = current[p]
+            # List children for removal
+            children = [k for k in current.keys() if k != '_meta']
+            if not children:
+                return [{"type": "text", "content": "\u26a0\ufe0f Nothing to remove at this level."}]
+            breadcrumb = product.get('name', 'Product')
+            for p in path:
+                breadcrumb += f" > {p.title()}"
+            # Build removal list
+            rows = []
+            for child in children[:10]:
+                child_meta = current[child].get('_meta', {}) if isinstance(current[child], dict) else {}
+                stock = child_meta.get('stock', 0)
+                path_str = '__'.join(path + [child]) if path else child
+                rows.append({
+                    "id": f"cat_rm_{product_key}__{path_str}"[:200],
+                    "title": f"\U0001f5d1 {child.title()}"[:24],
+                    "description": f"Stock: {stock} (will be deleted)"[:72]
+                })
+            return [{"type": "list", "content": {
+                "header": f"\U0001f5d1 Remove from {breadcrumb}"[:60],
+                "body": "Tap an item to remove it (and everything under it).",
+                "button_text": "\U0001f5d1 Remove"[:20],
+                "sections": [{"title": "Select to Remove", "rows": rows}]
+            }}]
+        elif text_check.startswith('cat_rm_'):
+            # Confirm and execute removal
+            raw = text_check.replace('cat_rm_', '')
+            parts = raw.split('__')
+            product_key = parts[0]
+            path_to_remove = [p for p in parts[1:] if p]
+            if not path_to_remove:
+                return [{"type": "text", "content": "\u26a0\ufe0f Nothing to remove."}]
+            item_to_remove = path_to_remove[-1]
+            parent_path = path_to_remove[:-1]
+            # Navigate to parent and delete child
+            user = self.db.get_user(phone_number)
+            catalog = user.get('auto_catalog', {}) if user else {}
+            products = catalog.get('products', {})
+            product = products.get(product_key, {})
+            tree = product.get('tree', {})
+            current = tree
+            for p in parent_path:
+                if p in current:
+                    current = current[p]
+            if item_to_remove in current:
+                del current[item_to_remove]
+                product['tree'] = tree
+                catalog['products'][product_key] = product
+                self.db.update_user_field(phone_number, 'auto_catalog', catalog)
+                return [{"type": "text", "content": f"\u2705 *{item_to_remove.title()}* removed from catalog.\n\nType *catalog* to view updated tree."}]
+            return [{"type": "text", "content": "\u26a0\ufe0f Item not found."}]
+
         # COMMAND BREAKOUT: escape stuck states with any known command
         # BUT during catalog setup, only allow cancel/edit/delete/undo
         if state not in [STATE_NEW_USER, STATE_ONBOARDING, STATE_IDLE, None, '']:
             cmd_check = self._detect_command(text.lower().strip())
-            if cmd_check and cmd_check not in ['greeting']:
+            if cmd_check:
                 # During catalog setup — block all commands except essentials
                 if state in CATALOG_ACTIVE_STATES:
                     if cmd_check not in CATALOG_ALLOWED_COMMANDS:
@@ -233,6 +588,462 @@ class ConversationEngine:
         elif state == STATE_AWAITING_CRM_HINT:
             return self._handle_crm_hint(phone_number, text, context)
 
+        elif state == 'STATE_REPORT_CUSTOM':
+            # User is typing a custom filter for a report
+            text_lower = text.lower().strip()
+            # Allow escape
+            if text_lower in ('cancel', 'hi', 'hello', 'start', 'help', 'menu', 'back'):
+                self.db.save_session(phone_number, STATE_IDLE, {})
+                if text_lower in ('hi', 'hello', 'start', 'menu', 'help'):
+                    return self._handle_greeting(phone_number)
+                return [{"type": "text", "content": "👍 Cancelled. What else can I help with?"}]
+            # Execute report with whatever they typed as the time_text
+            report_type = context.get('report_type', 'my_sales')
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return self._handle_filtered_report(phone_number, report_type, time_text=text)
+
+        elif state == 'STATE_CHANGE_INDUSTRY':
+            # User picked new industry from list
+            text_lower = text.lower().strip()
+            industry_map = {
+                'industry_trading': 'trading', 'industry_manufacturing': 'manufacturing',
+                'industry_services': 'services', 'industry_hybrid': 'hybrid',
+                'trading': 'trading', 'manufacturing': 'manufacturing',
+                'services': 'services', 'hybrid': 'hybrid',
+                'cancel': None, 'back': None,
+            }
+            new_industry = industry_map.get(text_lower, '')
+            if new_industry is None:
+                self.db.save_session(phone_number, STATE_IDLE, {})
+                return [{"type": "text", "content": "\U0001f44d Cancelled. Industry unchanged."}]
+            if not new_industry:
+                # Try partial match
+                if any(w in text_lower for w in ['trad', 'retail', 'sell', 'buy']):
+                    new_industry = 'trading'
+                elif any(w in text_lower for w in ['manufact', 'produc', 'factory']):
+                    new_industry = 'manufacturing'
+                elif any(w in text_lower for w in ['service', 'consult', 'profess']):
+                    new_industry = 'services'
+                else:
+                    new_industry = 'hybrid'
+            
+            self.db.update_user_field(phone_number, 'industry_class', new_industry)
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            
+            labels = {'trading': '\U0001f6cd\ufe0f Trading & Retail', 'manufacturing': '\U0001f3ed Manufacturing',
+                     'services': '\U0001f4bc Services', 'hybrid': '\U0001f504 Hybrid'}
+            
+            return [{"type": "text", "content": (
+                f"\u2705 Industry updated to: *{labels[new_industry]}*\n\n"
+                f"Your categories, reports, and P&L are now tailored for this industry.\n\n"
+                f"\U0001f4a1 Your existing transactions are preserved \u2014 only future categorization and reports change."
+            )}]
+
+
+        elif state == 'STATE_GUIDED':
+            return self._handle_guided_step(phone_number, text, context)
+
+        elif state == 'STATE_ORGANIZE':
+            step = context.get('step', '')
+            if step == 'ask_product':
+                if text.lower().strip() in ('cancel', 'back'):
+                    self.db.save_session(phone_number, STATE_IDLE, {})
+                    return [{"type": "text", "content": "\U0001f44d Cancelled."}]
+                return self._handle_organize_product(phone_number, f"organize {text}")
+            elif step == 'custom_attr':
+                if text.lower().strip() in ('cancel', 'back'):
+                    self.db.save_session(phone_number, STATE_IDLE, {})
+                    return [{"type": "text", "content": "\U0001f44d Cancelled."}]
+                return self._handle_organize_attr_pick(phone_number, text.strip().lower())
+            else:
+                self.db.save_session(phone_number, STATE_IDLE, {})
+                return self._handle_organize_product(phone_number, f"organize {text}")
+
+        elif state == 'STATE_TREE_ADD':
+            # User typing new value to add at a tree level
+            if text.lower().strip() in ('cancel', 'back', 'exit'):
+                self.db.save_session(phone_number, STATE_IDLE, {})
+                return [{"type": "text", "content": "\U0001f44d Cancelled."}]
+            
+            new_value = text.strip().lower()
+            if len(new_value) < 1:
+                return [{"type": "text", "content": "Please type a name to add:"}]
+            
+            product_key = context.get('product_key', '')
+            path = context.get('path', [])
+            attr_name = context.get('attr_name', '')
+            
+            # Navigate to parent node and add child
+            user = self.db.get_user(phone_number)
+            catalog = user.get('auto_catalog', {}) if user else {}
+            products = catalog.get('products', {})
+            product = products.get(product_key, {})
+            tree = product.get('tree', {})
+            
+            current = tree
+            for p in path:
+                if p not in current:
+                    current[p] = {'_meta': {'stock': 0, 'total_sold': 0, 'total_bought': 0}}
+                current = current[p]
+            
+            # Add new child with empty _meta
+            if new_value not in current:
+                current[new_value] = {'_meta': {'stock': 0, 'total_sold': 0, 'total_bought': 0, 'sell_price': 0, 'buy_price': 0}}
+            
+            product['tree'] = tree
+            catalog['products'][product_key] = product
+            self.db.update_user_field(phone_number, 'auto_catalog', catalog)
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            
+            breadcrumb = product.get('name', 'Product')
+            for p in path:
+                breadcrumb += f" > {p.title()}"
+            
+            attr_labels = {'pattern': 'Pattern', 'brand': 'Brand', 'color': 'Color', 'size': 'Size', 'material': 'Material'}
+            attr_label = attr_labels.get(attr_name, attr_name.title())
+            
+            return [{"type": "text", "content": (
+                f"\u2705 *{new_value.title()}* added to *{breadcrumb}*\n\n"
+                f"\U0001f4a1 Type *catalog* to see the updated tree.\n"
+                f"Or add more: type the next {attr_label.lower()} name."
+            )}]
+
+        elif state == 'STATE_ADD_PRODUCT':
+            # Manual product addition
+            if text.lower().strip() in ('cancel', 'back', 'exit'):
+                self.db.save_session(phone_number, STATE_IDLE, {})
+                return [{"type": "text", "content": "\U0001f44d Cancelled."}]
+            
+            product_name = text.strip().title()
+            if len(product_name) < 2:
+                return [{"type": "text", "content": "Please type a product name (e.g. \"Nike Socks\"):"}]
+            
+            # Create product in catalog
+            user = self.db.get_user(phone_number)
+            catalog = user.get('auto_catalog', {}) if user else {}
+            products = catalog.get('products', {})
+            
+            product_key = product_name.lower().replace(' ', '-')
+            if product_key in products:
+                self.db.save_session(phone_number, STATE_IDLE, {})
+                return [{"type": "text", "content": f"\U0001f4e6 *{product_name}* already exists in your catalog!\n\nType *catalog* to view it."}]
+            
+            # Extract brand if multi-word (first word often is brand)
+            words = product_name.split()
+            brand = words[0] if len(words) >= 2 else ''
+            item = ' '.join(words[1:]) if len(words) >= 2 else product_name
+            
+            products[product_key] = {
+                'name': product_name,
+                'brand': brand,
+                'item': item,
+                'category': '',
+                'sell_prices': [],
+                'buy_prices': [],
+                'total_sold': 0,
+                'total_bought': 0,
+                'customers': [],
+                'suppliers': [],
+                'last_activity': '',
+                'variants': {},
+            }
+            catalog['products'] = products
+            self.db.update_user_field(phone_number, 'auto_catalog', catalog)
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            
+            return [{"type": "text", "content": (
+                f"\u2705 *{product_name}* added to your catalog!\n\n"
+                f"\U0001f4a1 It will auto-fill with prices and stats as you record transactions.\n\n"
+                f"Optional next steps:\n"
+                f"\u2022 *set unit {product_name}: 1 carton = 12*\n"
+                f"\u2022 *set tax {product_name} 7.5%*\n"
+                f"\u2022 Type *catalog* to view it"
+            )}]
+
+        elif state == 'STATE_RECIPE_NAME':
+            # User is providing the product name for the recipe
+            product_name = text.strip()
+            if len(product_name) < 2:
+                return [{"type": "text", "content": "Please type the product name (e.g. \"Bread\", \"Furniture\"):"}]
+            if product_name.lower() in ('cancel', 'back', 'exit'):
+                self.db.save_session(phone_number, STATE_IDLE, {})
+                return [{"type": "text", "content": "\U0001f44d Recipe setup cancelled."}]
+            self.db.save_session(phone_number, 'STATE_RECIPE_MATERIALS', {
+                'product_name': product_name,
+                'materials': []
+            })
+            return [{"type": "text", "content": (
+                f"\U0001f4cb *Recipe for: {product_name}*\n\n"
+                f"\U0001f449 List the raw materials needed for ONE BATCH.\n"
+                f"Include quantity and unit for each.\n\n"
+                f"_Example:_\n"
+                f"1 bag flour\n"
+                f"2kg sugar\n"
+                f"1 litre oil\n"
+                f"500g butter\n\n"
+                f"\U0001f4a1 Type all materials (one per line or comma-separated)"
+            )}]
+
+        elif state == 'STATE_RECIPE_MATERIALS':
+            # User listing raw materials
+            if text.lower().strip() in ('cancel', 'back', 'exit'):
+                self.db.save_session(phone_number, STATE_IDLE, {})
+                return [{"type": "text", "content": "\U0001f44d Recipe setup cancelled."}]
+            
+            import re as _re
+            product_name = context.get('product_name', 'Product')
+            
+            # Parse materials from text (one per line or comma-separated)
+            raw_lines = _re.split(r'[,\n]', text)
+            materials = []
+            for line in raw_lines:
+                line = line.strip()
+                if not line:
+                    continue
+                # Try to parse: "1 bag flour", "2kg sugar", "500g butter"
+                match = _re.match(r'(\d+\.?\d*)\s*([a-zA-Z]+)?\s+(.+)', line)
+                if match:
+                    qty = float(match.group(1))
+                    unit = match.group(2) or 'units'
+                    name = match.group(3).strip().title()
+                    materials.append({'name': name, 'qty': qty, 'unit': unit, 'cost': 0})
+                else:
+                    # Just a name, no qty
+                    materials.append({'name': line.title(), 'qty': 1, 'unit': 'units', 'cost': 0})
+
+            if not materials:
+                return [{"type": "text", "content": "I couldn't parse that. Try:\n_1 bag flour, 2kg sugar, 1 litre oil_"}]
+
+            self.db.save_session(phone_number, 'STATE_RECIPE_COSTS', {
+                'product_name': product_name,
+                'materials': materials,
+                'current_material_idx': 0
+            })
+
+            # Ask cost for first material
+            mat = materials[0]
+            return [{"type": "text", "content": (
+                f"\u2705 Got {len(materials)} materials!\n\n"
+                f"Now I need the cost of each.\n\n"
+                f"\U0001f4b0 How much does *{mat['qty']} {mat['unit']} {mat['name']}* cost?\n"
+                f"_(Just type the amount, e.g. 40000 or 40K)_"
+            )}]
+
+        elif state == 'STATE_RECIPE_COSTS':
+            # User providing costs for each material one by one
+            if text.lower().strip() in ('cancel', 'back', 'exit'):
+                self.db.save_session(phone_number, STATE_IDLE, {})
+                return [{"type": "text", "content": "\U0001f44d Recipe setup cancelled."}]
+
+            from utils.parser import parse_amount
+            product_name = context.get('product_name', 'Product')
+            materials = context.get('materials', [])
+            idx = context.get('current_material_idx', 0)
+
+            # Parse the cost
+            cost = parse_amount(text)
+            if cost == 0:
+                mat = materials[idx]
+                return [{"type": "text", "content": f"\u26a0\ufe0f Couldn't get a number. How much does *{mat['qty']} {mat['unit']} {mat['name']}* cost?"}]
+
+            materials[idx]['cost'] = cost
+
+            # Move to next material or ask labour
+            if idx + 1 < len(materials):
+                next_mat = materials[idx + 1]
+                self.db.save_session(phone_number, 'STATE_RECIPE_COSTS', {
+                    'product_name': product_name,
+                    'materials': materials,
+                    'current_material_idx': idx + 1
+                })
+                return [{"type": "text", "content": (
+                    f"\u2705 {materials[idx]['name']}: \u20a6{cost:,}\n\n"
+                    f"\U0001f4b0 How much does *{next_mat['qty']} {next_mat['unit']} {next_mat['name']}* cost?"
+                )}]
+            else:
+                # All materials costed — ask for labour
+                self.db.save_session(phone_number, 'STATE_RECIPE_LABOUR', {
+                    'product_name': product_name,
+                    'materials': materials,
+                })
+                return [{"type": "text", "content": (
+                    f"\u2705 {materials[idx]['name']}: \u20a6{cost:,}\n\n"
+                    f"\U0001f4b0 *Labour cost* per batch?\n"
+                    f"_(Workers, artisans, bakers, etc. Type 0 if none)_"
+                )}]
+
+        elif state == 'STATE_RECIPE_LABOUR':
+            if text.lower().strip() in ('cancel', 'back', 'exit'):
+                self.db.save_session(phone_number, STATE_IDLE, {})
+                return [{"type": "text", "content": "\U0001f44d Recipe setup cancelled."}]
+
+            from utils.parser import parse_amount
+            product_name = context.get('product_name', 'Product')
+            materials = context.get('materials', [])
+            
+            labour_cost = parse_amount(text) if text.strip() != '0' else 0
+
+            self.db.save_session(phone_number, 'STATE_RECIPE_OVERHEAD', {
+                'product_name': product_name,
+                'materials': materials,
+                'labour_cost': labour_cost,
+            })
+            return [{"type": "text", "content": (
+                f"\U0001f4b0 *Overhead cost* per batch?\n"
+                f"_(Power, gas, fuel, equipment wear, etc. Type 0 if none)_"
+            )}]
+
+        elif state == 'STATE_RECIPE_OVERHEAD':
+            if text.lower().strip() in ('cancel', 'back', 'exit'):
+                self.db.save_session(phone_number, STATE_IDLE, {})
+                return [{"type": "text", "content": "\U0001f44d Recipe setup cancelled."}]
+
+            from utils.parser import parse_amount
+            product_name = context.get('product_name', 'Product')
+            materials = context.get('materials', [])
+            labour_cost = context.get('labour_cost', 0)
+            
+            overhead_cost = parse_amount(text) if text.strip() != '0' else 0
+
+            self.db.save_session(phone_number, 'STATE_RECIPE_BATCH_SIZE', {
+                'product_name': product_name,
+                'materials': materials,
+                'labour_cost': labour_cost,
+                'overhead_cost': overhead_cost,
+            })
+            return [{"type": "text", "content": (
+                f"\U0001f4e6 *How many units does one batch produce?*\n\n"
+                f"_Example: 100 loaves, 50 chairs, 200 pieces_\n"
+                f"_(Type number and unit, e.g. \"100 loaves\")_"
+            )}]
+
+        elif state == 'STATE_RECIPE_BATCH_SIZE':
+            if text.lower().strip() in ('cancel', 'back', 'exit'):
+                self.db.save_session(phone_number, STATE_IDLE, {})
+                return [{"type": "text", "content": "\U0001f44d Recipe setup cancelled."}]
+
+            import re as _re
+            product_name = context.get('product_name', 'Product')
+            materials = context.get('materials', [])
+            labour_cost = context.get('labour_cost', 0)
+            overhead_cost = context.get('overhead_cost', 0)
+
+            # Parse: "100 loaves" or "100" or "50 pieces"
+            match = _re.match(r'(\d+)\s*(\w+)?', text.strip())
+            if not match:
+                return [{"type": "text", "content": "Please type a number (e.g. \"100 loaves\" or just \"100\"):"}]
+
+            batch_size = int(match.group(1))
+            batch_unit = match.group(2) or 'units'
+            if batch_size == 0:
+                return [{"type": "text", "content": "Batch size can't be 0. How many units per batch?"}]
+
+            # Calculate totals
+            material_cost = sum(m['cost'] for m in materials)
+            total_batch_cost = material_cost + labour_cost + overhead_cost
+            cost_per_unit = round(total_batch_cost / batch_size)
+
+            # Save recipe to catalog
+            recipe = {
+                'batch_size': batch_size,
+                'batch_unit': batch_unit,
+                'materials': materials,
+                'labour_cost': labour_cost,
+                'overhead_cost': overhead_cost,
+                'total_batch_cost': total_batch_cost,
+                'cost_per_unit': cost_per_unit,
+            }
+
+            # Store in auto_catalog
+            user = self.db.get_user(phone_number)
+            catalog = user.get('auto_catalog', {}) if user else {}
+            products = catalog.get('products', {})
+            
+            product_key = product_name.lower().replace(' ', '-')
+            product = products.get(product_key, {
+                'name': product_name.title(),
+                'brand': '', 'item': product_name.title(),
+                'category': 'Production & Manufacturing',
+                'sell_prices': [], 'buy_prices': [],
+                'total_sold': 0, 'total_bought': 0,
+                'customers': [], 'suppliers': [], 'last_activity': '',
+            })
+            product['recipe'] = recipe
+            product['inventory'] = product.get('inventory', {'finished_goods': 0, 'last_production': ''})
+            products[product_key] = product
+            catalog['products'] = products
+            self.db.update_user_field(phone_number, 'auto_catalog', catalog)
+            self.db.save_session(phone_number, STATE_IDLE, {})
+
+            # Build confirmation message
+            mat_lines = []
+            for m in materials:
+                mat_lines.append(f"  \u2022 {m['qty']} {m['unit']} {m['name']} \u2014 \u20a6{m['cost']:,}")
+
+            msg = (
+                f"\u2705 *Recipe Saved: {product_name.title()}*\n"
+                f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+                f"\U0001f4e6 *Batch: {batch_size} {batch_unit}*\n\n"
+                f"\U0001f9f1 *Raw Materials:*\n{'\n'.join(mat_lines)}\n\n"
+            )
+            if labour_cost:
+                msg += f"\U0001f477 *Labour:* \u20a6{labour_cost:,}\n"
+            if overhead_cost:
+                msg += f"\u26a1 *Overhead:* \u20a6{overhead_cost:,}\n"
+            msg += (
+                f"\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                f"\U0001f4b0 *Total Batch Cost:* \u20a6{total_batch_cost:,}\n"
+                f"\U0001f4ca *Cost Per Unit:* \u20a6{cost_per_unit:,}/{batch_unit[:-1] if batch_unit.endswith('s') else batch_unit}\n\n"
+                f"\U0001f4a1 Now say \"produced {batch_size} {batch_unit}\" when you produce a batch!\n"
+                f"Sales will auto-show your profit per unit."
+            )
+
+            return [{"type": "text", "content": msg}]
+
+
+        elif state == STATE_RECORDING:
+            # Allow user to escape this state with common commands
+            text_check = text.lower().strip()
+            if text_check in ('cancel', 'stop', 'exit', 'hi', 'hello', 'hey', 'start', 'begin', 'menu', 'help'):
+                self.db.save_session(phone_number, STATE_IDLE, {})
+                return self._handle_idle(phone_number, text)
+            # User is providing the amount for a transaction we couldn't parse amount for
+            amount = parse_amount(text)
+            if not amount:
+                return [{"type": "text", "content": (
+                    "\U0001f4b0 I need the amount. Just type a number:\n\n"
+                    "E.g.: 95000 or 95K or \u20a695,000\n\n"
+                    "_Or type *cancel* to start over._"
+                )}]
+            # Got amount — now re-process the original description with amount
+            original_desc = context.get('description', '')
+            is_credit = context.get('is_credit', False)
+            name_hint = context.get('name_hint', '')
+            
+            if is_credit:
+                # Credit sale with full details — use rich credit confirmation
+                name = name_hint or self._extract_contact_name_from_text(original_desc, amount)
+                if name:
+                    self.db.save_session(phone_number, STATE_IDLE, {})
+                    debt_type = 'owed_to_me'  # default for credit sales
+                    if any(sig in original_desc.lower() for sig in ['i bought', 'i purchased', 'i owe', 'i took']):
+                        debt_type = 'i_owe'
+                    return self._build_rich_credit_confirmation(phone_number, original_desc, amount, name, debt_type)
+                else:
+                    # No name found — ask for it
+                    self.db.save_session(phone_number, 'RECORDING_DEBT', {
+                        'debt_type': 'owed_to_me',
+                        'step': 'ask_name',
+                        'amount': amount,
+                        'description': original_desc,
+                    })
+                    return [{"type": "text", "content": "\U0001f4b0 \u20a6" + f"{amount:,} on credit.\n\nWho took goods on credit?\n_Type the customer's name_"}]
+            else:
+                # Normal transaction — re-run with amount in the text
+                self.db.save_session(phone_number, STATE_IDLE, {})
+                combined = f"{original_desc} {amount}"
+                return self._handle_transaction(phone_number, combined)
+
         elif state == STATE_VIEWING_REPORT:
             return self._handle_report_selection(phone_number, text)
 
@@ -244,8 +1055,18 @@ class ConversationEngine:
 
         elif state == "CHANGING_CATEGORY":
             return self._handle_category_change_response(phone_number, text)
+        elif state == 'SETTING_BANK':
+            return self._handle_setting_bank_state(phone_number, text, context)
+        elif state == 'GENERATING_RECEIPT':
+            return self._handle_receipt_selection(phone_number, text, context)
+        elif state == 'CONFIRM_FORWARD':
+            return self._handle_confirm_forward(phone_number, text, context)
         elif state == STATE_REG_PRODUCTS:
             return self._handle_reg_products(phone_number, text)
+        elif state == 'CATALOG_SETUP_PRODUCTS':
+            return self._handle_catalog_setup_products(phone_number, text, context)
+        elif state == 'CATALOG_SETUP_DETAILS':
+            return self._handle_catalog_setup_details(phone_number, text, context)
         elif state == STATE_REG_SUBCATEGORIES:
             return self._handle_reg_subcategories(phone_number, text)
         elif state == STATE_REG_SERIES:
@@ -292,152 +1113,207 @@ class ConversationEngine:
         ]
 
     def _handle_onboarding(self, phone_number, text, context):
-        """Handle multi-step conversational onboarding"""
+        """Handle multi-step conversational onboarding with industry classification"""
         step = context.get("step", "ask_business_name")
 
         if step == "ask_business_name":
             business_name = text.strip()
-
             if len(business_name) < 2:
-                return [
-                    {"type": "text", "content": "Please type your business name (e.g. \"Mama T Foods\", \"TechFix Solutions\"):"}
-                ]
+                return [{"type": "text", "content": "Please type your business name (e.g. \"Mama T Foods\", \"TechFix Solutions\"):"}]
 
             self.db.save_session(phone_number, STATE_ONBOARDING, {
-                "step": "ask_business_description",
+                "step": "ask_industry",
                 "business_name": business_name
             })
 
-            return [
-                {"type": "text", "content": (
-                    f"Nice to meet you, *{business_name}*! \U0001f91d\n\n"
-                    "\U0001f449 *What does your business do?*\n\n"
-                    "Just describe it briefly, e.g.:\n"
-                    "\u2022 \"I sell clothes and bags\"\n"
-                    "\u2022 \"We do catering and event planning\"\n"
-                    "\u2022 \"I repair phones and laptops\""
-                )}
-            ]
+            return [{"type": "list", "content": {
+                "header": f"\U0001f91d Nice, {business_name}!",
+                "body": "What type of business are you running?\n\nThis helps me tailor your bookkeeping, reports, and categories specifically for your industry.",
+                "button_text": "\U0001f3ed Choose Industry",
+                "sections": [
+                    {
+                        "title": "Choose Your Industry",
+                        "rows": [
+                            {"id": "industry_trading", "title": "\U0001f6cd\ufe0f Trading & Retail", "description": "Buy finished goods \u2192 sell to customers"},
+                            {"id": "industry_manufacturing", "title": "\U0001f3ed Manufacturing", "description": "Buy raw materials \u2192 produce \u2192 sell"},
+                            {"id": "industry_services", "title": "\U0001f4bc Services", "description": "Sell expertise, skills, or time"},
+                            {"id": "industry_hybrid", "title": "\U0001f504 Hybrid / Mixed", "description": "Combination (e.g. sell goods + offer services)"},
+                        ]
+                    }
+                ]
+            }}]
 
-        elif step == "ask_business_description":
+        elif step == "ask_industry":
             business_name = context.get("business_name", "Your Business")
+            text_lower = text.lower().strip()
+
+            # Map responses to industry_class
+            industry_map = {
+                'industry_trading': 'trading',
+                'industry_manufacturing': 'manufacturing', 
+                'industry_services': 'services',
+                'industry_hybrid': 'hybrid',
+                # Also handle typed responses
+                'trading': 'trading', 'retail': 'trading', 'buy and sell': 'trading',
+                '1': 'trading', 'sell goods': 'trading', 'shop': 'trading',
+                'manufacturing': 'manufacturing', 'production': 'manufacturing',
+                'factory': 'manufacturing', '2': 'manufacturing', 'produce': 'manufacturing',
+                'services': 'services', 'service': 'services', 'professional': 'services',
+                '3': 'services', 'consulting': 'services', 'freelance': 'services',
+                'hybrid': 'hybrid', 'mixed': 'hybrid', 'both': 'hybrid', '4': 'hybrid',
+            }
+
+            industry_class = industry_map.get(text_lower, '')
+            if not industry_class:
+                # Try partial matching
+                if any(w in text_lower for w in ['sell', 'buy', 'trad', 'retail', 'shop', 'fashion', 'cloth', 'shoe', 'phone']):
+                    industry_class = 'trading'
+                elif any(w in text_lower for w in ['make', 'produc', 'manufactur', 'bak', 'factory', 'build']):
+                    industry_class = 'manufacturing'
+                elif any(w in text_lower for w in ['service', 'consult', 'repair', 'clean', 'salon', 'barb', 'tech', 'design', 'transport']):
+                    industry_class = 'services'
+                else:
+                    industry_class = 'hybrid'  # Default if unclear
+
+            self.db.save_session(phone_number, STATE_ONBOARDING, {
+                "step": "ask_description",
+                "business_name": business_name,
+                "industry_class": industry_class
+            })
+
+            # Industry-specific follow-up question
+            prompts = {
+                'trading': "What do you sell? (e.g. \"fashion & shoes\", \"electronics\", \"groceries\")",
+                'manufacturing': "What do you produce? (e.g. \"furniture\", \"bread & pastries\", \"clothing\")",
+                'services': "What services do you offer? (e.g. \"phone repair\", \"catering\", \"logistics\")",
+                'hybrid': "Describe your business briefly (e.g. \"sell phones + repair them\")",
+            }
+
+            industry_labels = {
+                'trading': '\U0001f6cd\ufe0f Trading & Retail',
+                'manufacturing': '\U0001f3ed Manufacturing',
+                'services': '\U0001f4bc Services',
+                'hybrid': '\U0001f504 Hybrid',
+            }
+
+            return [{"type": "text", "content": (
+                f"\u2705 Industry: *{industry_labels[industry_class]}*\n\n"
+                f"\U0001f449 *{prompts[industry_class]}*"
+            )}]
+
+        elif step == "ask_description":
+            business_name = context.get("business_name", "Your Business")
+            industry_class = context.get("industry_class", "trading")
             description = text.strip()
 
             if len(description) < 3:
-                return [
-                    {"type": "text", "content": (
-                        "Just give me a short description of what "
-                        f"*{business_name}* does \u2014 even one sentence is fine!"
-                    )}
-                ]
+                return [{"type": "text", "content": "Just give me a brief description \u2014 even a few words is fine!"}]
 
-            # Infer business type from description
-            suggested_type = self._infer_business_type(description)
+            # Infer specific business type from description
+            business_type = self._infer_business_type(description)
 
-            # Save context and ask for confirmation
-            self.db.save_session(phone_number, STATE_ONBOARDING, {
-                "step": "confirm_category",
-                "business_name": business_name,
-                "description": description,
-                "suggested_type": suggested_type
-            })
-
-            return [
-                {"type": "text", "content": (
-                    f"Based on your description, I'd categorize *{business_name}* "
-                    f"as: *{suggested_type}*\n\n"
-                    "Is that correct?\n\n"
-                    "1\ufe0f\u20e3 Yes, that's right\n"
-                    "2\ufe0f\u20e3 No \u2014 I buy & sell goods (trading)\n"
-                    "3\ufe0f\u20e3 No \u2014 I offer services\n"
-                    "4\ufe0f\u20e3 No \u2014 I'm in food & drinks\n"
-                    "5\ufe0f\u20e3 None of these \u2014 let me type my own"
-                )}
-            ]
-
-        elif step == "confirm_category":
-            business_name = context.get("business_name", "Your Business")
-            description = context.get("description", "")
-            suggested_type = context.get("suggested_type", "trading")
-            choice = text.strip().lower()
-
-            # Map responses
-            if choice in ['1', 'yes', 'yeah', 'correct', 'right', 'yep']:
-                business_type = suggested_type
-            elif choice in ['2', 'trading', 'buy and sell', 'buy & sell']:
-                business_type = "trading"
-            elif choice in ['3', 'services', 'service']:
-                business_type = "services"
-            elif choice in ['4', 'food', 'food & drinks', 'food and drinks']:
-                business_type = "food"
-            elif choice in ['5', 'none', 'other', 'custom', 'type my own']:
-                # Move to custom category step
-                self.db.save_session(phone_number, STATE_ONBOARDING, {
-                    "step": "custom_category",
-                    "business_name": business_name,
-                    "description": description
-                })
-                return [
-                    {"type": "text", "content": (
-                        "\U0001f4dd No problem! Type your business category.\n\n"
-                        "Examples: \"event planning\", \"logistics\", \"agro\", "
-                        "\"real estate\", \"fashion\", \"crypto\", \"construction\""
-                    )}
-                ]
-            else:
-                # Try to match what they typed as a category directly
-                business_type = choice if len(choice) >= 3 else suggested_type
-
-            # Create user and finish onboarding
-            return self._complete_onboarding(phone_number, business_name, business_type, description)
-
-        elif step == "custom_category":
-            business_name = context.get("business_name", "Your Business")
-            description = context.get("description", "")
-            custom_type = text.strip().lower()
-
-            if len(custom_type) < 2:
-                return [
-                    {"type": "text", "content": "Please type a category name (e.g. \"logistics\", \"fashion\", \"construction\"):"}
-                ]
-
-            return self._complete_onboarding(phone_number, business_name, custom_type, description)
+            # Complete onboarding
+            return self._complete_onboarding(phone_number, business_name, business_type, industry_class, description)
 
         else:
-            # Unknown step — restart onboarding
+            # Unknown step — restart
             self.db.save_session(phone_number, STATE_ONBOARDING, {"step": "ask_business_name"})
-            return [
-                {"type": "text", "content": "Let's start over \u2014 *What's your business name?*"}
-            ]
+            return [{"type": "text", "content": "Let\'s start over \u2014 *What\'s your business name?*"}]
 
-    def _complete_onboarding(self, phone_number, business_name, business_type, description=""):
-        """Finish onboarding — create user and show welcome"""
+    def _complete_onboarding(self, phone_number, business_name, business_type, industry_class, description=""):
+        """Finish onboarding — create user with industry classification and show tailored welcome"""
         self.db.create_user(
             phone_number,
             business_type=business_type,
             business_name=business_name
         )
+        # Save industry_class separately (create_user may not support it)
+        self.db.update_user_field(phone_number, 'industry_class', industry_class)
+        self.db.update_user_field(phone_number, 'business_description', description)
         self.db.save_session(phone_number, STATE_IDLE, {})
 
-        return [
-            {"type": "text", "content": (
-                f"\u2705 All set, *{business_name}*! You're good to go.\n\n"
-                f"Category: *{business_type}*\n"
-                "This helps me sort your transactions accurately.\n\n"
-                "Here's how to use me:\n\n"
-                "\U0001f4dd *Record a transaction:*\n"
-                "Just type naturally, e.g.:\n"
-                "\u2022 \"I buy rice 3 bags 95K\"\n"
-                "\u2022 \"Sold goods to Alhaji 350,000\"\n"
-                "\u2022 \"Paid Femi 40K salary\"\n\n"
-                "\U0001f4ca *See reports:* Type \"report\"\n"
-                "\U0001f4cb *See contacts:* Type \"customers\" or \"suppliers\"\n"
-                "\U0001f4ce *Export:* Type \"export\"\n"
-                "\u2753 *Help:* Type \"help\"\n\n"
-                "\U0001f504 *Change category later:* Type \"change category\"\n\n"
-                "Try recording your first transaction now! \U0001f447"
-            )}
-        ]
+        # Industry-specific welcome and examples
+        industry_configs = {
+            'trading': {
+                'emoji': '\U0001f6cd\ufe0f',
+                'label': 'Trading & Retail',
+                'features': [
+                    '\U0001f4e6 *Stock tracking* \u2014 buy/sell prices, markup, turnover',
+                    '\U0001f4ca *COGS reports* \u2014 what it cost vs what you earned',
+                    '\U0001f465 *Customer catalog* \u2014 who buys what, how often',
+                    '\U0001f4b3 *Credit sales* \u2014 track who owes you',
+                ],
+                'examples': [
+                    'sold 10 Nike socks to Sandra 150K',
+                    'bought 50 shirts from Alhaji 200K',
+                    'Sandra owes me 50K',
+                ],
+            },
+            'manufacturing': {
+                'emoji': '\U0001f3ed',
+                'label': 'Manufacturing',
+                'features': [
+                    '\U0001f9f1 *Raw material tracking* \u2014 inputs, quantities, costs',
+                    '\u2699\ufe0f *Production costs* \u2014 labour, overhead, per-unit cost',
+                    '\U0001f4ca *Yield reports* \u2014 input cost vs output revenue',
+                    '\U0001f4b0 *Gross margin* \u2014 Revenue - (Materials + Labour + Overhead)',
+                ],
+                'examples': [
+                    'bought 5 bags flour 60K',
+                    'paid 3 bakers 45K salary',
+                    'sold 200 loaves to Shoprite 80K',
+                ],
+            },
+            'services': {
+                'emoji': '\U0001f4bc',
+                'label': 'Services',
+                'features': [
+                    '\U0001f4b0 *Revenue tracking* \u2014 by client, project, or service',
+                    '\U0001f4b8 *Direct costs* \u2014 subcontractors, tools, materials',
+                    '\U0001f465 *Client management* \u2014 who pays what, outstanding',
+                    '\U0001f4ca *Profit per service* \u2014 what you earn after costs',
+                ],
+                'examples': [
+                    'received 200K from GTBank for consulting',
+                    'paid freelancer 50K for design work',
+                    'bought fuel 15K for delivery',
+                ],
+            },
+            'hybrid': {
+                'emoji': '\U0001f504',
+                'label': 'Hybrid Business',
+                'features': [
+                    '\U0001f6cd\ufe0f *Product sales* \u2014 buy/sell goods with stock tracking',
+                    '\U0001f4bc *Service revenue* \u2014 track earnings from services',
+                    '\U0001f4ca *Combined P&L* \u2014 goods margin + service margin',
+                    '\U0001f4b3 *Full credit tracking* \u2014 debtors + creditors',
+                ],
+                'examples': [
+                    'sold 2 phones to Bola 300K',
+                    'received 15K from Femi for phone repair',
+                    'bought screen protectors 40K',
+                ],
+            },
+        }
+
+        config = industry_configs.get(industry_class, industry_configs['trading'])
+        
+        features_text = '\n'.join(config['features'])
+        examples_text = '\n'.join([f'\u2022 _\"{ex}\"_' for ex in config['examples']])
+
+        msg = (
+            f"\u2705 *{business_name} is ready!* \U0001f389\n\n"
+            f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+            f"{config['emoji']} Industry: *{config['label']}*\n"
+            f"\U0001f3f7\ufe0f Category: *{business_type}*\n"
+            f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+            f"\U0001f31f *Tailored for you:*\n{features_text}\n\n"
+            f"\U0001f4dd *Try recording a transaction:*\n{examples_text}\n\n"
+            f"\U0001f4a1 Or tap *Menu* below to explore all features."
+        )
+
+        return [{"type": "text", "content": msg}]
+
 
     def _infer_business_type(self, description):
         """Infer business type from user description"""
@@ -484,6 +1360,990 @@ class ConversationEngine:
             )}
         ]
 
+    def _handle_set_bank(self, phone_number, text):
+        """Handle setting bank details for invoices"""
+        # Check if user already has bank details
+        user = self.db.get_user(phone_number)
+        bank_name = user.get('bank_name', '') if user else ''
+        account_number = user.get('account_number', '') if user else ''
+        account_name = user.get('account_name', '') if user else ''
+
+        if bank_name and account_number:
+            # Show current and ask to update
+            self.db.save_session(phone_number, 'SETTING_BANK', {'step': 'confirm_update'})
+            return [{"type": "text", "content": (
+                f"🏦 *Your Payment Details:*\n\n"
+                f"Bank: {bank_name}\n"
+                f"Account: {account_number}\n"
+                f"Name: {account_name}\n\n"
+                "Want to update? Type your new details:\n"
+                "*[Bank name] [Account number] [Account name]*\n\n"
+                "Or type *cancel* to keep current."
+            )}]
+        else:
+            self.db.save_session(phone_number, 'SETTING_BANK', {'step': 'ask_details'})
+            return [{"type": "text", "content": (
+                "🏦 *Set Your Bank Details*\n\n"
+                "This will appear on your invoices.\n\n"
+                "Type it like this:\n"
+                "*[Bank name] [Account number] [Account name]*\n\n"
+                "Example:\n"
+                "_GTBank 0123456789 Banky Fashion House_\n\n"
+                "Or type *cancel* to skip."
+            )}]
+
+    def _handle_setting_bank_state(self, phone_number, text, context):
+        """Process bank details input — guided step by step"""
+        if text.lower().strip() in ['cancel', 'exit', 'stop', 'back']:
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return [{"type": "text", "content": "✅ No changes made."}]
+
+        step = context.get('step', 'ask_bank_name')
+
+        if step == 'ask_bank_name':
+            bank_name = text.strip()
+            # Check if they typed everything in one go: "GTBank 0123456789 Iyiola"
+            acc_match = re.search(r'(\d{10,})', text)
+            if acc_match:
+                account_number = acc_match.group(1)
+                before = text[:acc_match.start()].strip()
+                after = text[acc_match.end():].strip()
+                bank_name = before if before else "Bank"
+                user = self.db.get_user(phone_number)
+                account_name = after if after else (user.get('business_name', '') if user else '')
+                bank_details = {'bank_name': bank_name, 'account_number': account_number, 'account_name': account_name}
+                self.db.update_user_field(phone_number, 'bank_details', bank_details)
+                self.db.save_session(phone_number, STATE_IDLE, {})
+                return [{"type": "text", "content": (
+                    f"✅ *Bank Details Saved!*\n\n"
+                    f"🏦 {bank_name}\n"
+                    f"💳 {account_number}\n"
+                    f"👤 {account_name}\n\n"
+                    "This will now appear on your invoices."
+                )}]
+            self.db.save_session(phone_number, 'SETTING_BANK', {'step': 'ask_account', 'bank_name': bank_name})
+            return [{"type": "text", "content": f"🏦 Bank: *{bank_name}*\n\n👉 *What\'s your account number?*"}]
+
+        elif step == 'ask_account':
+            acc_match = re.search(r'(\d{8,})', text)
+            if not acc_match:
+                return [{"type": "text", "content": "Please type your account number (8-10 digits):"}]
+            account_number = acc_match.group(1)
+            bank_name = context.get('bank_name', 'Bank')
+            self.db.save_session(phone_number, 'SETTING_BANK', {
+                'step': 'ask_name', 'bank_name': bank_name, 'account_number': account_number
+            })
+            return [{"type": "text", "content": (
+                f"💳 Account: *{account_number}*\n\n"
+                f"👉 *Account holder name?*\n"
+                f"_(Type \"skip\" to use your business name)_"
+            )}]
+
+        elif step == 'ask_name':
+            bank_name = context.get('bank_name', 'Bank')
+            account_number = context.get('account_number', '')
+            if text.lower().strip() in ('skip', 'same', 'business name'):
+                user = self.db.get_user(phone_number)
+                account_name = user.get('business_name', 'Account Holder') if user else 'Account Holder'
+            else:
+                account_name = text.strip().title()
+
+            bank_details = {'bank_name': bank_name, 'account_number': account_number, 'account_name': account_name}
+            self.db.update_user_field(phone_number, 'bank_details', bank_details)
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return [{"type": "text", "content": (
+                f"✅ *Bank Details Saved!*\n\n"
+                f"🏦 {bank_name}\n"
+                f"💳 {account_number}\n"
+                f"👤 {account_name}\n\n"
+                "💡 This appears on your invoices automatically."
+            )}]
+
+        else:
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return [{"type": "text", "content": "Something went wrong. Type *set bank* to try again."}]
+
+
+    def _handle_set_tax(self, phone_number, text):
+        """Handle 'set tax' command — sets default or product-specific tax rate.
+        
+        Default: "set tax 7.5% VAT" → applies to all transactions
+        Product: "set tax Nike Socks 7.5%" → applies only to Nike Socks transactions
+        """
+        import re as _re
+        user = self.db.get_user(phone_number)
+        current_tax = user.get('default_tax_percent') if user else None
+        current_tax_type = user.get('default_tax_type', 'VAT') if user else 'VAT'
+
+        # Remove command keywords
+        text_lower = text.lower()
+        remainder = text
+        for kw in ['set tax', 'set vat', 'default tax', 'tax rate', 'vat rate']:
+            if text_lower.startswith(kw):
+                remainder = text[len(kw):].strip()
+                break
+        else:
+            remainder = ""
+
+        if not remainder:
+            # No args — show current rate
+            if current_tax:
+                msg = (
+                    f"\U0001f4b1 *Your Default Tax Rate:* {current_tax}% {current_tax_type}\n\n"
+                    f"To change: *set tax [rate]% [type]*\n"
+                    f"For a product: *set tax [product] [rate]%*\n\n"
+                    f"\u2022 set tax 7.5% VAT\n"
+                    f"\u2022 set tax Nike Socks 7.5%\n"
+                    f"\u2022 set tax 0 (disable)"
+                )
+            else:
+                msg = (
+                    "\U0001f4b1 *Set Tax Rate*\n\n"
+                    "\u2022 *set tax 7.5% VAT* \u2014 default for all\n"
+                    "\u2022 *set tax Nike Socks 7.5%* \u2014 product-specific\n"
+                    "\u2022 *set tax 0* \u2014 disable"
+                )
+            return [{"type": "text", "content": msg}]
+
+        # Check if it's product-specific: "Nike Socks 7.5% VAT"
+        # Pattern: [product_name] [rate]% [type]?
+        product_match = _re.match(r'(.+?)\s+([\d.]+)\s*%?\s*(vat|wht|withholding)?$', remainder, _re.IGNORECASE)
+        
+        # Also check for plain rate: "7.5% VAT" (no product name)
+        plain_match = _re.match(r'([\d.]+)\s*%?\s*(vat|wht|withholding)?$', remainder, _re.IGNORECASE)
+
+        if plain_match and (not product_match or product_match.group(1).strip().replace('.','').isdigit()):
+            # It's a default rate (no product name, just number + type)
+            rate = float(plain_match.group(1))
+            tax_type_raw = (plain_match.group(2) or '').upper()
+            tax_type = 'WHT' if tax_type_raw in ('WHT', 'WITHHOLDING') else 'VAT'
+
+            self.db.update_user(phone_number, {
+                'default_tax_percent': str(rate),
+                'default_tax_type': tax_type
+            })
+            return [{"type": "text", "content": (
+                f"\u2705 Default tax set: *{rate}% {tax_type}*\n\n"
+                f"Now '+ tax' or '+ VAT' auto-applies {rate}%.\n\n"
+                f"To change: *set tax [rate]%*\n"
+                f"To remove: *set tax 0*"
+            )}]
+
+        elif product_match:
+            # Product-specific tax
+            product_name = product_match.group(1).strip()
+            rate = float(product_match.group(2))
+            tax_type_raw = (product_match.group(3) or '').upper()
+            tax_type = 'WHT' if tax_type_raw in ('WHT', 'WITHHOLDING') else 'VAT'
+
+            # Find product in catalog
+            catalog = user.get('auto_catalog', {}) if user else {}
+            products = catalog.get('products', {})
+            
+            # Fuzzy match
+            product_lower = product_name.lower().replace(' ', '-')
+            matched_key = None
+            for key, prod in products.items():
+                if product_lower in key or key in product_lower:
+                    matched_key = key
+                    break
+                if product_lower in prod.get('name', '').lower():
+                    matched_key = key
+                    break
+
+            if not matched_key:
+                # Create entry
+                matched_key = product_lower
+                products[matched_key] = {
+                    'name': product_name.title(),
+                    'brand': '', 'item': product_name.title(),
+                    'category': '', 'sell_prices': [], 'buy_prices': [],
+                    'total_sold': 0, 'total_bought': 0,
+                    'customers': [], 'suppliers': [], 'last_activity': '',
+                }
+
+            # Set product tax
+            products[matched_key]['tax_rate'] = rate
+            products[matched_key]['tax_type'] = tax_type
+            catalog['products'] = products
+            self.db.update_user_field(phone_number, 'auto_catalog', catalog)
+
+            display_name = products[matched_key]['name']
+            return [{"type": "text", "content": (
+                f"\u2705 *Tax set for {display_name}:* {rate}% {tax_type}\n\n"
+                f"Transactions with {display_name} will auto-apply {rate}% {tax_type}.\n"
+                f"To remove: *set tax {product_name} 0*"
+            )}]
+
+        # Couldn't parse
+        return [{"type": "text", "content": (
+            "\u2699\ufe0f *Set Tax Rate*\n\n"
+            "\u2022 *set tax 7.5% VAT* \u2014 default for all\n"
+            "\u2022 *set tax Nike Socks 7.5%* \u2014 for specific product\n"
+            "\u2022 *set tax 0* \u2014 disable"
+        )}]
+
+    def _handle_set_unit(self, phone_number, text):
+        """Handle 'set unit' command — sets unit conversions for products.
+        
+        Examples:
+            "set unit Nike Socks: 1 carton = 12 pairs"
+            "1 carton Nike Socks = 12"
+            "set unit: 1 bag cement = 50kg"
+            "set conversion socks: dozen = 12"
+        """
+        import re as _re
+
+        # Parse: "set unit [PRODUCT]: 1 [BULK_UNIT] = [QTY] [BASE_UNIT]"
+        # or: "1 [BULK_UNIT] [PRODUCT] = [QTY] [BASE_UNIT]"
+        text_clean = text.lower().strip()
+        
+        # Remove trigger keywords
+        for kw in ['set unit', 'set units', 'set conversion']:
+            text_clean = text_clean.replace(kw, '').strip()
+        text_clean = text_clean.strip(':').strip()
+
+        # Pattern 1: "Nike Socks: 1 carton = 12 pairs"
+        # Pattern 2: "1 carton Nike Socks = 12 pairs"
+        # Pattern 3: "Nike Socks 1 carton = 12"
+        
+        match = _re.search(
+            r'(.+?)[:\s]+1\s*(\w+)\s*=\s*(\d+)\s*(\w+)?',
+            text_clean
+        )
+        if not match:
+            # Try: "1 carton product = 12"
+            match = _re.search(
+                r'1\s*(\w+)\s+(.+?)\s*=\s*(\d+)\s*(\w+)?',
+                text_clean
+            )
+            if match:
+                bulk_unit = match.group(1)
+                product_name = match.group(2).strip()
+                qty = int(match.group(3))
+                base_unit = match.group(4) or 'pieces'
+            else:
+                return [{"type": "text", "content": (
+                    "\u2699\ufe0f *Set Unit Conversion*\n\n"
+                    "Format: *set unit [product]: 1 [bulk] = [qty] [unit]*\n\n"
+                    "Examples:\n"
+                    "\u2022 set unit Nike Socks: 1 carton = 12 pairs\n"
+                    "\u2022 set unit Cement: 1 bag = 50 kg\n"
+                    "\u2022 set unit Rice: 1 bag = 25 kg\n"
+                    "\u2022 1 dozen socks = 12 pairs\n"
+                    "\u2022 1 crate drinks = 24 bottles"
+                )}]
+        else:
+            product_name = match.group(1).strip()
+            bulk_unit = match.group(2)
+            qty = int(match.group(3))
+            base_unit = match.group(4) or 'pieces'
+
+        # Find matching product in catalog
+        user = self.db.get_user(phone_number)
+        catalog = user.get('auto_catalog', {}) if user else {}
+        products = catalog.get('products', {})
+
+        # Fuzzy match product name
+        matched_key = None
+        product_lower = product_name.lower().replace(' ', '-')
+        for key, prod in products.items():
+            if product_lower in key or key in product_lower:
+                matched_key = key
+                break
+            if product_lower in prod.get('name', '').lower():
+                matched_key = key
+                break
+
+        if not matched_key:
+            # Create a new product entry just for the unit
+            matched_key = product_lower
+            products[matched_key] = {
+                'name': product_name.title(),
+                'brand': '',
+                'item': product_name.title(),
+                'category': '',
+                'sell_prices': [],
+                'buy_prices': [],
+                'total_sold': 0,
+                'total_bought': 0,
+                'customers': [],
+                'suppliers': [],
+                'last_activity': '',
+            }
+
+        # Set units on the product
+        units = products[matched_key].get('units', {'base_unit': 'pieces', 'conversions': {}})
+        units['base_unit'] = base_unit
+        units['conversions'][bulk_unit] = qty
+        products[matched_key]['units'] = units
+
+        # Save back
+        catalog['products'] = products
+        self.db.update_user_field(phone_number, 'auto_catalog', catalog)
+
+        product_display = products[matched_key]['name']
+        # Show all conversions for this product
+        conv_lines = []
+        for unit, count in units['conversions'].items():
+            conv_lines.append(f"\u2022 1 {unit} = {count} {units['base_unit']}")
+
+        return [{"type": "text", "content": (
+            f"\u2705 *Unit set for {product_display}*\n\n"
+            f"Base unit: *{units['base_unit']}*\n"
+            f"{'\n'.join(conv_lines)}\n\n"
+            f"\U0001f4a1 Now when you record \"bought 3 {bulk_unit}s {product_display}\", "
+            f"I\'ll know that\'s {qty * 3} {base_unit}."
+        )}]
+
+
+    def _handle_set_bank(self, phone_number, text):
+        """Handle 'set bank' — save payment details for invoices"""
+        user = self.db.get_user(phone_number)
+        bank = user.get('bank_details', {}) if user else {}
+
+        # Check if they included details inline: "set bank GTBank 0123456789 Iyiola Bankole"
+        import re as _re
+        text_clean = text.lower().strip()
+        for kw in ['set bank', 'bank details', 'my bank', 'add bank', 'payment details', 'account details']:
+            if text_clean.startswith(kw):
+                text_clean = text[len(kw):].strip()
+                break
+
+        if text_clean and len(text_clean) > 5:
+            # Try to parse: "GTBank 0123456789 Iyiola Bankole"
+            # or "0123456789 GTBank Iyiola Bankole"
+            parts = text_clean.strip().split()
+            account_number = ''
+            bank_name = ''
+            account_name = ''
+            
+            for part in parts:
+                if part.replace('-','').isdigit() and len(part) >= 8:
+                    account_number = part
+                elif not bank_name and not part[0:1].isdigit():
+                    bank_name = part.title()
+                else:
+                    account_name += ' ' + part
+            
+            if not account_name.strip():
+                account_name = user.get('business_name', '') if user else ''
+            
+            if account_number and bank_name:
+                bank_details = {
+                    'bank_name': bank_name,
+                    'account_number': account_number,
+                    'account_name': account_name.strip().title() or bank_name,
+                }
+                self.db.update_user_field(phone_number, 'bank_details', bank_details)
+                return [{"type": "text", "content": (
+                    f"\u2705 *Bank details saved!*\n\n"
+                    f"\U0001f3e6 {bank_details['bank_name']}\n"
+                    f"\U0001f4b3 {bank_details['account_number']}\n"
+                    f"\U0001f464 {bank_details['account_name']}\n\n"
+                    f"This will appear on your invoices automatically."
+                )}]
+
+        # No inline details — start guided flow
+        self.db.save_session(phone_number, 'SETTING_BANK', {'step': 'ask_bank_name'})
+        
+        if bank:
+            return [{"type": "text", "content": (
+                f"\U0001f3e6 *Current Bank Details:*\n"
+                f"Bank: {bank.get('bank_name', 'Not set')}\n"
+                f"Account: {bank.get('account_number', 'Not set')}\n"
+                f"Name: {bank.get('account_name', 'Not set')}\n\n"
+                f"\U0001f449 Type your bank name to update (or \"cancel\"):"
+            )}]
+        else:
+            return [{"type": "text", "content": (
+                "\U0001f3e6 *Set Bank Details*\n\n"
+                "This shows on your invoices so customers know where to pay.\n\n"
+                "\U0001f449 *What bank do you use?*\n"
+                "_(e.g. GTBank, Access, First Bank, Zenith, Opay, Moniepoint)_"
+            )}]
+
+
+    def _handle_change_industry(self, phone_number):
+        """Let user change their industry classification"""
+        user = self.db.get_user(phone_number)
+        current = user.get('industry_class', 'Not set') if user else 'Not set'
+        labels = {'trading': '\U0001f6cd\ufe0f Trading & Retail', 'manufacturing': '\U0001f3ed Manufacturing',
+                 'services': '\U0001f4bc Services', 'hybrid': '\U0001f504 Hybrid'}
+        current_label = labels.get(current, current)
+
+        self.db.save_session(phone_number, 'STATE_CHANGE_INDUSTRY', {})
+        return [{"type": "list", "content": {
+            "header": "\u2699\ufe0f Change Industry",
+            "body": f"Current: *{current_label}*\n\nThis affects your categories, reports, and P&L structure.\n\nChoose your industry:",
+            "button_text": "\U0001f3ed Choose Industry",
+            "sections": [
+                {
+                    "title": "Industry Types",
+                    "rows": [
+                        {"id": "industry_trading", "title": "\U0001f6cd\ufe0f Trading & Retail", "description": "Buy finished goods \u2192 sell to customers"},
+                        {"id": "industry_manufacturing", "title": "\U0001f3ed Manufacturing", "description": "Buy raw materials \u2192 produce \u2192 sell"},
+                        {"id": "industry_services", "title": "\U0001f4bc Services", "description": "Sell expertise, skills, or time"},
+                        {"id": "industry_hybrid", "title": "\U0001f504 Hybrid / Mixed", "description": "Combination (sell goods + offer services)"},
+                    ]
+                }
+            ]
+        }}]
+
+
+    def _handle_organize_attr_pick(self, phone_number, attr_name):
+        """User picked an attribute level — add to hierarchy and ask for next"""
+        session = self.db.get_session(phone_number)
+        context = session.get('context', {}) if session else {}
+        product_key = context.get('product_key', '')
+        product_name = context.get('product_name', 'Product')
+        selected = context.get('selected_attrs', [])
+
+        # Handle custom attribute
+        if attr_name == 'custom':
+            self.db.save_session(phone_number, 'STATE_ORGANIZE', {
+                'step': 'custom_attr',
+                'product_key': product_key,
+                'product_name': product_name,
+                'selected_attrs': selected,
+            })
+            return [{"type": "text", "content": "\u270d\ufe0f Type your custom attribute name:\n_(e.g. \"flavor\", \"grade\", \"finish\")_"}]
+
+        # Map attr IDs to display names
+        attr_labels = {
+            'pattern': 'Pattern/Style', 'brand': 'Brand', 'color': 'Color',
+            'size': 'Size', 'material': 'Material',
+        }
+        attr_label = attr_labels.get(attr_name, attr_name.title())
+
+        # Add to selected list
+        selected.append(attr_name)
+
+        # Show current hierarchy + ask to add more or finish
+        hierarchy_display = ' \u2192 '.join([attr_labels.get(a, a.title()) for a in selected])
+
+        self.db.save_session(phone_number, 'STATE_ORGANIZE', {
+            'step': 'pick_attributes',
+            'product_key': product_key,
+            'product_name': product_name,
+            'selected_attrs': selected,
+        })
+
+        # Build remaining attribute options (exclude already selected)
+        all_attrs = ['pattern', 'brand', 'color', 'size', 'material']
+        remaining = [a for a in all_attrs if a not in selected]
+
+        if not remaining or len(selected) >= 5:
+            # Max depth reached — auto-finish
+            return self._handle_organize_done(phone_number)
+
+        rows = []
+        for attr in remaining:
+            rows.append({"id": f"org_attr_{attr}", "title": f"\U0001f3f7\ufe0f {attr_labels.get(attr, attr.title())}", "description": f"Add as level {len(selected)+1}"})
+        rows.append({"id": "org_attr_custom", "title": "\u270d\ufe0f Custom", "description": "Type your own attribute"})
+        rows.append({"id": "org_done", "title": "\u2705 Done", "description": "Finish setup with current levels"})
+
+        return [{"type": "list", "content": {
+            "header": f"\U0001f4e6 {product_name}",
+            "body": f"Current hierarchy:\n*{product_name} \u2192 {hierarchy_display}*\n\nAdd another level or tap Done.",
+            "button_text": "\U0001f3f7\ufe0f Next Level",
+            "sections": [{"title": "Add Level or Finish", "rows": rows}]
+        }}]
+
+    def _handle_organize_done(self, phone_number):
+        """Finish organizing — save hierarchy to product"""
+        session = self.db.get_session(phone_number)
+        context = session.get('context', {}) if session else {}
+        product_key = context.get('product_key', '')
+        product_name = context.get('product_name', 'Product')
+        selected = context.get('selected_attrs', [])
+
+        if not selected:
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return [{"type": "text", "content": "\u26a0\ufe0f No attributes selected. Try again with *organize [product]*"}]
+
+        # Save hierarchy to product
+        user = self.db.get_user(phone_number)
+        catalog = user.get('auto_catalog', {}) if user else {}
+        products = catalog.get('products', {})
+
+        if product_key in products:
+            products[product_key]['hierarchy'] = selected
+            products[product_key]['tree'] = products[product_key].get('tree', {})
+            catalog['products'] = products
+            self.db.update_user_field(phone_number, 'auto_catalog', catalog)
+
+        attr_labels = {'pattern': 'Pattern/Style', 'brand': 'Brand', 'color': 'Color', 'size': 'Size', 'material': 'Material'}
+        hierarchy_display = ' \u2192 '.join([attr_labels.get(a, a.title()) for a in selected])
+
+        self.db.save_session(phone_number, STATE_IDLE, {})
+        return [{"type": "text", "content": (
+            f"\u2705 *{product_name} — Organized!*\n"
+            f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+            f"\U0001f4cb Hierarchy:\n"
+            f"*{product_name} \u2192 {hierarchy_display}*\n\n"
+            f"Now when you record transactions with {product_name}, I\'ll auto-sort them into this tree.\n\n"
+            f"\U0001f4a1 Example: _\"sold 5 blue striped Nike socks size 15\"_\n"
+            f"\u2192 Sorts into: Socks > Striped > Nike > Blue > Size 15\n\n"
+            f"Type *catalog* to see your organized products."
+        )}]
+
+    def _handle_tree_drilldown(self, phone_number, text_check):
+        """Navigate the product tree — each tap goes one level deeper"""
+        # Format: cat_tree_{product_key}__{level1}__{level2}__...
+        parts = text_check.replace('cat_tree_', '').split('__')
+        product_key = parts[0] if parts else ''
+        path = parts[1:] if len(parts) > 1 else []
+        # Remove empty strings
+        path = [p for p in path if p]
+
+        user = self.db.get_user(phone_number)
+        catalog = user.get('auto_catalog', {}) if user else {}
+        products = catalog.get('products', {})
+        product = products.get(product_key)
+
+        if not product:
+            return [{"type": "text", "content": "\u26a0\ufe0f Product not found."}]
+
+        hierarchy = product.get('hierarchy', [])
+        tree = product.get('tree', {})
+        product_name = product.get('name', 'Product')
+
+        if not hierarchy or not tree:
+            # No tree set up — show flat detail
+            return self._show_product_detail(phone_number, product_key)
+
+        # Navigate to current position in tree
+        current_node = tree
+        for p in path:
+            if isinstance(current_node, dict) and p in current_node:
+                current_node = current_node[p]
+            else:
+                return [{"type": "text", "content": f"\u26a0\ufe0f Could not find \'{p}\' in tree."}]
+
+        # Determine current depth and what's at this level
+        current_depth = len(path)
+        current_attr = hierarchy[current_depth] if current_depth < len(hierarchy) else None
+
+        # Build breadcrumb
+        attr_labels = {'pattern': 'Pattern', 'brand': 'Brand', 'color': 'Color', 'size': 'Size', 'material': 'Material'}
+        breadcrumb = product_name
+        for i, p in enumerate(path):
+            breadcrumb += f" > {p.title()}"
+
+        # Get children (exclude _meta)
+        children = {k: v for k, v in current_node.items() if k != '_meta'} if isinstance(current_node, dict) else {}
+        meta = current_node.get('_meta', {}) if isinstance(current_node, dict) else {}
+
+        if not children or current_depth >= len(hierarchy):
+            # Leaf level — show detail with stats
+            stock = meta.get('stock', 0)
+            sold = meta.get('total_sold', 0)
+            sell_price = meta.get('sell_price', 0)
+            buy_price = meta.get('buy_price', 0)
+
+            msg = f"\U0001f4e6 *{breadcrumb}*\n"
+            msg += "\u2501" * 15 + "\n\n"
+            if sell_price:
+                msg += f"\U0001f4b0 Sell: *\u20a6{sell_price:,}*\n"
+            if buy_price:
+                msg += f"\U0001f6d2 Buy: *\u20a6{buy_price:,}*\n"
+            msg += f"\U0001f4e6 Stock: *{stock}*\n"
+            msg += f"\U0001f4c8 Sold: *{sold}*\n"
+
+            # If there are size/sub entries
+            if children:
+                msg += f"\n\U0001f4cf *Breakdown:*\n"
+                for k, v in children.items():
+                    if isinstance(v, dict):
+                        s = v.get('stock', 0)
+                        msg += f"  \u2022 {k.title()}: {s} in stock\n"
+                    else:
+                        msg += f"  \u2022 {k}: {v}\n"
+
+            msg += "\n" + "\u2501" * 15
+            return [
+                {"type": "text", "content": msg},
+                {"type": "buttons", "content": {
+                    "body": f"Actions for {breadcrumb}:",
+                    "buttons": [
+                        {"id": f"cat_sell_{product_key}", "title": "\U0001f4b0 Sell"},
+                        {"id": f"cat_restock_{product_key}", "title": "\U0001f4e6 Restock"},
+                    ]
+                }}
+            ]
+
+        # Non-leaf — show list of children with totals
+        attr_label = attr_labels.get(current_attr, current_attr.title() if current_attr else 'Options')
+        
+        # Calculate totals for this level
+        total_stock = sum(
+            (v.get('_meta', {}).get('stock', 0) if isinstance(v, dict) else 0)
+            for k, v in children.items()
+        )
+        total_sold = sum(
+            (v.get('_meta', {}).get('total_sold', 0) if isinstance(v, dict) else 0)
+            for k, v in children.items()
+        )
+
+        rows = []
+        for key, child in list(children.items())[:10]:
+            child_meta = child.get('_meta', {}) if isinstance(child, dict) else {}
+            child_stock = child_meta.get('stock', 0)
+            child_sold = child_meta.get('total_sold', 0)
+            # Count sub-children
+            sub_count = len([k for k in child.keys() if k != '_meta']) if isinstance(child, dict) else 0
+
+            desc_parts = []
+            if child_stock:
+                desc_parts.append(f"Stock: {child_stock}")
+            if child_sold:
+                desc_parts.append(f"Sold: {child_sold}")
+            if sub_count:
+                desc_parts.append(f"{sub_count} types")
+            description = " \u2022 ".join(desc_parts) if desc_parts else "Tap for details"
+
+            # Build drill-down ID
+            new_path = '__'.join(path + [key])
+            row_id = f"cat_tree_{product_key}__{new_path}"
+
+            rows.append({
+                "id": row_id[:200],  # WhatsApp ID limit
+                "title": key.title()[:24],
+                "description": description[:72]
+            })
+
+        header = f"\U0001f4e6 {breadcrumb}"
+        body = f"Choose {attr_label}:\n\n"
+        if total_stock:
+            body += f"\U0001f4e6 Total stock at this level: *{total_stock}*\n"
+        if total_sold:
+            body += f"\U0001f4c8 Total sold: *{total_sold}*"
+
+        # Add management buttons after the list
+        path_str = '__'.join(path) if path else ''
+        responses = [{"type": "list", "content": {
+            "header": header[:60],
+            "body": body,
+            "button_text": f"\U0001f4cb {attr_label}"[:20],
+            "sections": [{"title": attr_label, "rows": rows}]
+        }}]
+        
+        # Management buttons
+        add_id = f"cat_add_{product_key}__{path_str}" if path_str else f"cat_add_{product_key}__"
+        edit_id = f"cat_editlvl_{product_key}__{path_str}" if path_str else f"cat_editlvl_{product_key}__"
+        responses.append({"type": "buttons", "content": {
+            "body": f"Manage {attr_label}:",
+            "buttons": [
+                {"id": add_id[:200], "title": f"\u2795 Add {attr_label}"[:24]},
+                {"id": edit_id[:200], "title": "\U0001f5d1 Remove Item"},
+                {"id": f"cat_sell_{product_key}", "title": "\U0001f4b0 Sell"},
+            ]
+        }})
+        return responses
+
+    def _handle_organize_product(self, phone_number, text):
+        """Start the product hierarchy setup — define attribute levels for a product"""
+        import re as _re
+        # Extract product name from command: "organize socks" or "organize product socks"
+        text_clean = text.lower().strip()
+        for kw in ['organize product', 'organize', 'set attributes', 'product attributes', 'setup product']:
+            if text_clean.startswith(kw):
+                text_clean = text[len(kw):].strip()
+                break
+
+        if text_clean and len(text_clean) >= 2:
+            product_name = text_clean.title()
+        else:
+            # Ask for product name
+            self.db.save_session(phone_number, 'STATE_ORGANIZE', {'step': 'ask_product'})
+            return [{"type": "text", "content": (
+                "\U0001f4e6 *Organize a Product*\n\n"
+                "Which product do you want to organize with attributes?\n\n"
+                "_Example: Socks, Caps, Slides, Bags_"
+            )}]
+
+        # Find or create product in catalog
+        user = self.db.get_user(phone_number)
+        catalog = user.get('auto_catalog', {}) if user else {}
+        products = catalog.get('products', {})
+
+        # Find matching product
+        product_key = product_name.lower().replace(' ', '-')
+        matched_key = None
+        for key in products:
+            if product_key in key or key in product_key:
+                matched_key = key
+                break
+        
+        if not matched_key:
+            # Create new product
+            matched_key = product_key
+            products[matched_key] = {
+                'name': product_name, 'brand': '', 'item': product_name,
+                'category': '', 'sell_prices': [], 'buy_prices': [],
+                'total_sold': 0, 'total_bought': 0,
+                'customers': [], 'suppliers': [], 'last_activity': '',
+                'variants': {},
+            }
+            catalog['products'] = products
+            self.db.update_user_field(phone_number, 'auto_catalog', catalog)
+
+        # Show attribute selection
+        self.db.save_session(phone_number, 'STATE_ORGANIZE', {
+            'step': 'pick_attributes',
+            'product_key': matched_key,
+            'product_name': products[matched_key].get('name', product_name),
+            'selected_attrs': [],
+        })
+
+        return [{"type": "list", "content": {
+            "header": f"\U0001f4e6 Organize: {products[matched_key].get('name', product_name)}",
+            "body": "Pick the FIRST level of your product tree.\n\nExample: If you sell Socks in different patterns first (Striped, Solid), pick Pattern.\n\nYou can add more levels after.",
+            "button_text": "\U0001f3f7\ufe0f Pick Attribute",
+            "sections": [{
+                "title": "Attribute Levels",
+                "rows": [
+                    {"id": "org_attr_pattern", "title": "\U0001f3a8 Pattern/Style", "description": "Striped, Solid, Sport, Ankara..."},
+                    {"id": "org_attr_brand", "title": "\U0001f3f7\ufe0f Brand", "description": "Nike, Gucci, Polo, Adidas..."},
+                    {"id": "org_attr_color", "title": "\U0001f308 Color", "description": "Blue, Red, Black, White..."},
+                    {"id": "org_attr_size", "title": "\U0001f4cf Size", "description": "14, 15, S, M, L, XL..."},
+                    {"id": "org_attr_material", "title": "\U0001f9f5 Material", "description": "Cotton, Leather, Nylon..."},
+                    {"id": "org_attr_custom", "title": "\u270d\ufe0f Custom", "description": "Type your own attribute name"},
+                ]
+            }]
+        }}]
+
+    def _handle_set_recipe_start(self, phone_number, text):
+        """Start the recipe/BOM setup flow"""
+        import re as _re
+        
+        # Check if product name was included: "set recipe bread"
+        text_clean = text.lower().strip()
+        for kw in ['set recipe', 'add recipe', 'new recipe', 'create recipe', 'define recipe', 'bom', 'bill of materials']:
+            if text_clean.startswith(kw):
+                remainder = text[len(kw):].strip().strip(':').strip()
+                break
+        else:
+            remainder = ""
+
+        if remainder and len(remainder) >= 2:
+            # Product name provided inline — skip name step
+            self.db.save_session(phone_number, 'STATE_RECIPE_MATERIALS', {
+                'product_name': remainder.title(),
+                'materials': []
+            })
+            return [{"type": "text", "content": (
+                f"\U0001f4cb *Recipe for: {remainder.title()}*\n\n"
+                f"\U0001f449 List the raw materials for ONE BATCH.\n"
+                f"Include quantity and unit for each.\n\n"
+                f"_Example:_\n"
+                f"1 bag flour\n"
+                f"2kg sugar\n"
+                f"1 litre oil\n\n"
+                f"\U0001f4a1 Type all materials (one per line or comma-separated)"
+            )}]
+        else:
+            # Ask for product name
+            self.db.save_session(phone_number, 'STATE_RECIPE_NAME', {})
+            return [{"type": "text", "content": (
+                "\U0001f3ed *Set Up Recipe / Bill of Materials*\n\n"
+                "This defines the raw materials and costs needed\n"
+                "to produce your product.\n\n"
+                "\U0001f449 *What product are you making?*\n"
+                "_(e.g. Bread, Furniture, Cake, Shoes, Soap)_"
+            )}]
+
+    def _handle_production_run(self, phone_number, text):
+        """Record a production run — uses recipe to calculate costs and update inventory"""
+        import re as _re
+        
+        # Parse: "produced 200 loaves" or "made 50 chairs" or "baked 100 bread"
+        text_lower = text.lower().strip()
+        for prefix in ['produced', 'manufactured', 'made', 'baked', 'production', 'production run']:
+            if text_lower.startswith(prefix):
+                text_lower = text_lower[len(prefix):].strip()
+                break
+
+        # Extract quantity and product
+        match = _re.match(r'(\d+)\s*(.+)', text_lower)
+        if not match:
+            return [{"type": "text", "content": (
+                "\U0001f3ed *Record Production*\n\n"
+                "Type how many units you produced:\n"
+                "\u2022 _produced 200 loaves_\n"
+                "\u2022 _made 50 chairs_\n"
+                "\u2022 _baked 100 cakes_"
+            )}]
+
+        quantity = int(match.group(1))
+        product_hint = match.group(2).strip()
+
+        # Find matching recipe in catalog
+        user = self.db.get_user(phone_number)
+        catalog = user.get('auto_catalog', {}) if user else {}
+        products = catalog.get('products', {})
+
+        # Fuzzy match
+        matched_key = None
+        for key, prod in products.items():
+            if not prod.get('recipe'):
+                continue
+            if product_hint in key or key in product_hint:
+                matched_key = key
+                break
+            if product_hint in prod.get('name', '').lower():
+                matched_key = key
+                break
+            # Check batch_unit
+            batch_unit = prod.get('recipe', {}).get('batch_unit', '')
+            if batch_unit and product_hint.startswith(batch_unit):
+                matched_key = key
+                break
+
+        if not matched_key:
+            # No recipe found
+            recipe_names = [p['name'] for p in products.values() if p.get('recipe')]
+            if recipe_names:
+                return [{"type": "text", "content": (
+                    f"\u26a0\ufe0f No recipe found for \"{product_hint}\".\n\n"
+                    f"Your recipes: {', '.join(recipe_names)}\n\n"
+                    f"_Try: \"produced {quantity} {recipe_names[0].lower()}\"_\n"
+                    f"Or: *set recipe {product_hint}* to create one."
+                )}]
+            else:
+                return [{"type": "text", "content": (
+                    "\u26a0\ufe0f No recipes set up yet!\n\n"
+                    f"Type *set recipe {product_hint}* to define the raw materials\n"
+                    "and costs needed to produce it."
+                )}]
+
+        product = products[matched_key]
+        recipe = product['recipe']
+        batch_size = recipe['batch_size']
+        cost_per_unit = recipe['cost_per_unit']
+        batch_unit = recipe.get('batch_unit', 'units')
+
+        # Calculate production cost
+        batches_needed = quantity / batch_size
+        total_cost = round(cost_per_unit * quantity)
+        
+        # Materials used
+        materials_used = []
+        for m in recipe.get('materials', []):
+            used_qty = round(m['qty'] * batches_needed, 2)
+            materials_used.append(f"  \u2022 {used_qty} {m['unit']} {m['name']}")
+
+        # Update inventory
+        inventory = product.get('inventory', {'finished_goods': 0, 'last_production': ''})
+        inventory['finished_goods'] = inventory.get('finished_goods', 0) + quantity
+        from datetime import datetime
+        inventory['last_production'] = datetime.now().strftime('%Y-%m-%d')
+        product['inventory'] = inventory
+        products[matched_key] = product
+        catalog['products'] = products
+        self.db.update_user_field(phone_number, 'auto_catalog', catalog)
+
+        # Also record as a transaction (expense - production cost)
+        from datetime import datetime
+        tx_data = {
+            'type': 'expense',
+            'amount': total_cost,
+            'description': f'Production: {quantity} {batch_unit} of {product["name"]}',
+            'category': 'Production & Manufacturing',
+            'sub_category': 'Production run',
+            'item_name': product['name'],
+            'quantity': str(quantity),
+            'unit_cost': str(cost_per_unit),
+            'date': datetime.now().strftime('%Y-%m-%d'),
+        }
+        self.db.save_transaction(phone_number, tx_data)
+
+        msg = (
+            f"\u2705 *Production Recorded!*\n"
+            f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+            f"\U0001f4e6 *{quantity} {batch_unit}* of *{product['name']}*\n"
+            f"\U0001f4b0 Production Cost: *\u20a6{total_cost:,}*\n"
+            f"\U0001f4ca Cost per unit: \u20a6{cost_per_unit:,}\n\n"
+            f"\U0001f9f1 *Materials Used:*\n{'\n'.join(materials_used)}\n"
+        )
+        if recipe.get('labour_cost'):
+            labour_used = round(recipe['labour_cost'] * batches_needed)
+            msg += f"  \U0001f477 Labour: \u20a6{labour_used:,}\n"
+        if recipe.get('overhead_cost'):
+            overhead_used = round(recipe['overhead_cost'] * batches_needed)
+            msg += f"  \u26a1 Overhead: \u20a6{overhead_used:,}\n"
+
+        msg += (
+            f"\n\U0001f4e6 *Inventory: {inventory['finished_goods']} {batch_unit}* in stock\n\n"
+            f"\U0001f4a1 When you sell, I\'ll auto-calculate your profit per unit!"
+        )
+
+        return [{"type": "text", "content": msg}]
+
+    def _show_recipes(self, phone_number):
+        """Display all recipes/BOMs for the user"""
+        user = self.db.get_user(phone_number)
+        catalog = user.get('auto_catalog', {}) if user else {}
+        products = catalog.get('products', {})
+
+        recipes = {k: v for k, v in products.items() if v.get('recipe')}
+
+        if not recipes:
+            return [{"type": "text", "content": (
+                "\U0001f3ed *No recipes yet!*\n\n"
+                "Set up a recipe to track your production costs:\n\n"
+                "*set recipe [product name]*\n\n"
+                "_Example: set recipe Bread_\n"
+                "_Example: set recipe Chair_"
+            )}]
+
+        msg = "\U0001f3ed *Your Recipes / Bill of Materials*\n"
+        msg += "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+
+        for key, prod in recipes.items():
+            recipe = prod['recipe']
+            inventory = prod.get('inventory', {})
+            name = prod['name']
+            batch_size = recipe['batch_size']
+            batch_unit = recipe.get('batch_unit', 'units')
+            cost_per_unit = recipe['cost_per_unit']
+            total_batch = recipe['total_batch_cost']
+            stock = inventory.get('finished_goods', 0)
+
+            msg += f"\U0001f4cb *{name}*\n"
+            msg += f"   Batch: {batch_size} {batch_unit} @ \u20a6{total_batch:,}\n"
+            msg += f"   Cost/unit: *\u20a6{cost_per_unit:,}*\n"
+
+            # Materials summary
+            materials = recipe.get('materials', [])
+            mat_names = [f"{m['qty']}{m['unit']} {m['name']}" for m in materials[:4]]
+            msg += f"   Materials: {', '.join(mat_names)}\n"
+
+            if recipe.get('labour_cost'):
+                msg += f"   Labour: \u20a6{recipe['labour_cost']:,}\n"
+
+            if stock > 0:
+                msg += f"   \U0001f4e6 In stock: *{stock} {batch_unit}*\n"
+
+            # Show sell price and margin if available
+            sell_prices = prod.get('sell_prices', [])
+            if sell_prices:
+                avg_sell = sum(sell_prices) // len(sell_prices)
+                margin = round((avg_sell - cost_per_unit) / avg_sell * 100)
+                msg += f"   \U0001f4b0 Avg sell: \u20a6{avg_sell:,} (margin: {margin}%)\n"
+
+            msg += "\n"
+
+        msg += (
+            "\U0001f4a1 _Commands:_\n"
+            "\u2022 *set recipe [product]* \u2014 new recipe\n"
+            "\u2022 *produced [qty] [product]* \u2014 record production\n"
+        )
+
+        return [{"type": "text", "content": msg}]
+
+
     def _handle_category_change_response(self, phone_number, text):
         """Process the user's category change choice"""
         user = self.db.get_user(phone_number)
@@ -527,6 +2387,192 @@ class ConversationEngine:
         """
         text_lower = text.lower().strip()
 
+        # ---- TIME FILTER BUTTON HANDLING ----
+        # After viewing a report, user can tap Today/Week/Month filter buttons
+        if text_lower.startswith('filter_'):
+            # Parse: filter_my_sales_today, filter_my_purchases_week, etc.
+            parts = text_lower.split('_', 2)  # ['filter', 'my', 'sales_today']
+            if len(parts) >= 2:
+                rest = text_lower[7:]  # Remove "filter_"
+                # Find the filter type and time period
+                for ft in ('my_sales', 'my_purchases', 'my_expenses'):
+                    if rest.startswith(ft + '_'):
+                        period = rest[len(ft)+1:]  # "today", "week", "month"
+                        time_text = period  # "today", "week", "month"
+                        return self._handle_filtered_report(phone_number, ft, time_text=time_text)
+            # Fallback
+            return self._handle_idle(phone_number, 'help')
+
+        # ---- POST-SALE BUTTON HANDLING ----
+        # After saving a sale, user can tap Invoice/Receipt/Done
+        if text_lower == 'post_invoice':
+            session = self.db.get_session(phone_number)
+            ctx = session.get('context', {}) if session else {}
+            tx_id = ctx.get('last_saved_tx_id', '')
+            vendor = ctx.get('last_saved_vendor', 'Customer')
+            amount = ctx.get('last_saved_amount', 0)
+            if tx_id:
+                self.db.save_session(phone_number, STATE_IDLE, {})
+                return [{"type": "invoice_from_transactions", "content": {"transaction_ids": [tx_id]}}]
+            else:
+                # Fallback to manual invoice flow
+                return self._handle_idle(phone_number, 'invoice')
+        elif text_lower == 'post_receipt':
+            session = self.db.get_session(phone_number)
+            ctx = session.get('context', {}) if session else {}
+            tx_id = ctx.get('last_saved_tx_id', '')
+            if tx_id:
+                self.db.save_session(phone_number, STATE_IDLE, {})
+                return [{"type": "receipt_generate", "content": {"mode": "specific", "transaction_ids": [tx_id]}}]
+            else:
+                return [{"type": "receipt_generate", "content": {"mode": "last"}}]
+        elif text_lower == 'post_done':
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return [{"type": "text", "content": "\U0001f44d Ready for the next one! Record another transaction or type *menu*."}]
+
+        # ---- INTERACTIVE MENU HANDLING ----
+        # If user tapped a list menu item, map the ID to a command
+        if text_lower in MENU_ID_MAP:
+            mapped = MENU_ID_MAP[text_lower]
+            # Special prompts that need custom responses
+            if mapped == "__PROMPT_RECORD_SALE__":
+                return [{"type": "list", "content": {
+                    "header": "\U0001f4b0 Record Sale",
+                    "body": "How was this sale paid?",
+                    "button_text": "\U0001f4b0 Choose",
+                    "sections": [
+                        {
+                            "title": "Payment Type",
+                            "rows": [
+                                {"id": "guided_cash_sale", "title": "\U0001f4b5 Cash Sale", "description": "Customer paid immediately"},
+                                {"id": "guided_credit_sale", "title": "\U0001f4b3 Credit Sale", "description": "Customer owes you"},
+                                {"id": "guided_type_sale", "title": "\u270d\ufe0f Type It Myself", "description": "Type full transaction in one go"},
+                            ]
+                        }
+                    ]
+                }}]
+            elif mapped == "__PROMPT_RECORD_EXPENSE__":
+                return [{"type": "list", "content": {
+                    "header": "\U0001f4b8 Record Expense",
+                    "body": "Record a business expense:",
+                    "button_text": "\U0001f4b8 Choose",
+                    "sections": [
+                        {
+                            "title": "How to Record",
+                            "rows": [
+                                {"id": "guided_cash_expense", "title": "\U0001f4b5 Guided Entry", "description": "Step by step \u2014 easy"},
+                                {"id": "guided_type_expense", "title": "\u270d\ufe0f Type It Myself", "description": "Type full expense in one go"},
+                            ]
+                        }
+                    ]
+                }}]
+            elif mapped == "__PROMPT_RECORD_PURCHASE__":
+                return [{"type": "list", "content": {
+                    "header": "\U0001f4e6 Record Purchase",
+                    "body": "How was this purchase paid?",
+                    "button_text": "\U0001f4e6 Choose",
+                    "sections": [
+                        {
+                            "title": "Payment Type",
+                            "rows": [
+                                {"id": "guided_cash_purchase", "title": "\U0001f4b5 Cash Purchase", "description": "Paid immediately"},
+                                {"id": "guided_credit_purchase", "title": "\U0001f4b3 On Credit", "description": "You owe the supplier"},
+                                {"id": "guided_type_purchase", "title": "\u270d\ufe0f Type It Myself", "description": "Type full transaction in one go"},
+                            ]
+                        }
+                    ]
+                }}]
+            elif mapped == "__PROMPT_RECORD_PAYMENT__":
+                return [{"type": "text", "content": (
+                    "\U0001f4b3 *Record a Payment*\n\n"
+                    "Someone paid what they owe you:\n"
+                    "\u2022 _Sandra paid me 50K_\n"
+                    "\u2022 _received 100K from Ahmed_\n\n"
+                    "Or you paid what you owe:\n"
+                    "\u2022 _paid Dangote 200K_\n"
+                    "\u2022 _I paid Alhaji 50,000_\n\n"
+                    "\U0001f4a1 This reduces the outstanding debt automatically."
+                )}]
+            elif mapped == "__PROMPT_SET_RECIPE__":
+                return self._handle_set_recipe_start(phone_number, "set recipe")
+            elif mapped == "__PROMPT_PRODUCTION__":
+                return [{"type": "text", "content": (
+                    "\U0001f3ed *Record Production*\n\n"
+                    "Type how many units you produced:\n"
+                    "\u2022 _produced 200 loaves_\n"
+                    "\u2022 _made 50 chairs_\n"
+                    "\u2022 _manufactured 100 bars of soap_\n\n"
+                    "\U0001f4a1 I\'ll auto-calculate the cost using your recipe."
+                )}]
+            elif mapped == "__PROMPT_RECORD_SERVICE__":
+                return [{"type": "text", "content": (
+                    "\U0001f4bc *Record Service Income*\n\n"
+                    "Type the service you delivered:\n"
+                    "\u2022 _received 200K from GTBank for consulting_\n"
+                    "\u2022 _charged Bola 50K for phone repair_\n"
+                    "\u2022 _design work for Femi 80K_\n\n"
+                    "\U0001f4a1 Include client name and amount for best tracking."
+                )}]
+            elif mapped.startswith("__GUIDED_START_"):
+                # Start guided flow: cash_sale, credit_sale, cash_purchase, etc.
+                flow_type = mapped.replace("__GUIDED_START_", "").rstrip("_")
+                return self._start_guided_flow(phone_number, flow_type)
+            elif mapped == "__PROMPT_TYPE_SALE__":
+                return [{"type": "text", "content": (
+                    "\U0001f4b0 *Type your sale:*\n\n"
+                    "_Example: sold 10 Nike shoes to Mama Tolu for 150K_\n\n"
+                    "Or just: _shoes 15000_"
+                )}]
+            elif mapped == "__PROMPT_TYPE_PURCHASE__":
+                return [{"type": "text", "content": (
+                    "\U0001f4e6 *Type your purchase:*\n\n"
+                    "_Example: bought 50 Nike socks from Alhaji 400K_"
+                )}]
+            elif mapped == "__PROMPT_TYPE_EXPENSE__":
+                return [{"type": "text", "content": (
+                    "\U0001f4b8 *Type your expense:*\n\n"
+                    "_Example: paid rent 150K_ or _diesel 50000_"
+                )}]
+            elif mapped == "__DEBTS_MENU__":
+                return self._show_debts_menu()
+            elif mapped == "__CONTACTS_MENU__":
+                return self._show_contacts_menu()
+            elif mapped == "__SHOW_CUSTOMERS__":
+                return self._show_contacts_filtered(phone_number, 'customer')
+            elif mapped == "__SHOW_SUPPLIERS__":
+                return self._show_contacts_filtered(phone_number, 'supplier')
+            elif mapped == "__DOCUMENTS_MENU__":
+                return self._show_documents_menu()
+            elif mapped == "__REPORTS_MENU__":
+                return self._show_reports_menu(phone_number)
+            elif mapped.startswith("__RPT_CHOOSE_PERIOD_"):
+                # User chose report type, now show period buttons
+                rpt_type = mapped.replace("__RPT_CHOOSE_PERIOD_", "").rstrip("_")
+                return self._show_period_chooser(rpt_type)
+            elif mapped.startswith("__RPT_CUSTOM_"):
+                # User wants to type a custom period — save report type, ask for input
+                rpt_type = mapped.replace("__RPT_CUSTOM_", "").rstrip("_")
+                self.db.save_session(phone_number, 'STATE_REPORT_CUSTOM', {'report_type': f'my_{rpt_type}'})
+                return [{"type": "text", "content": "✍️ Type your filter — e.g.:\n\n• _last 5 days_\n• _June_\n• _Monday_\n• _sales to Sandra_\n• _Nike purchases this week_\n• _over 50K_"}]
+            elif mapped.startswith("__RPT_EXEC_"):
+                # User chose type + period — execute the report
+                parts = mapped.replace("__RPT_EXEC_", "").rstrip("_")
+                # Format: "my_sales_today" or "my_purchases_week"
+                for ft in ('my_sales', 'my_purchases', 'my_expenses'):
+                    if parts.startswith(ft + '_'):
+                        period = parts[len(ft)+1:]
+                        return self._handle_filtered_report(phone_number, ft, time_text=period)
+                return self._handle_filtered_report(phone_number, 'my_sales', time_text='month')
+            elif mapped == "__CATALOG_MENU__":
+                return self._show_catalog_menu(phone_number)
+            elif mapped == "__CATALOG_BY_BRAND__":
+                return self._show_catalog_by_brand(phone_number)
+            elif mapped == "__CATALOG_TOP_SELLERS__":
+                return self._show_top_sellers(phone_number)
+            else:
+                # Re-process as if user typed the mapped command text
+                return self._handle_idle(phone_number, mapped)
+
         # Check for commands
         command = self._detect_command(text_lower)
 
@@ -539,24 +2585,96 @@ class ConversationEngine:
         elif command == 'report' or command == 'today' or command == 'week' or command == 'month':
             return self._handle_report(phone_number, command)
 
+        elif command in ('my_sales', 'my_purchases', 'my_expenses'):
+            return self._handle_filtered_report(phone_number, command, time_text=text)
+
         elif command == 'export':
-            self.db.save_session(phone_number, STATE_EXPORTING, {})
-            return [{"type": "buttons", "content": {
-                "body": "📊 What would you like to export?",
-                "buttons": [
-                    {"id": "export_month", "title": "This Month (Excel)"},
-                    {"id": "export_csv", "title": "Full History (CSV)"},
-                    {"id": "export_contacts", "title": "Contacts List"},
-                ]
-            }}]
+            # Check if user just viewed a filtered report — offer to export that
+            session = self.db.get_session(phone_number)
+            ctx = session.get('context', {}) if session else {}
+            last_filter = ctx.get('last_filter_type')
+            last_period = ctx.get('last_filter_period', '')
+
+            if last_filter and last_period:
+                filter_label = {'my_sales': 'Sales', 'my_purchases': 'Purchases', 'my_expenses': 'Expenses'}.get(last_filter, 'Data')
+                self.db.save_session(phone_number, STATE_EXPORTING, {
+                    'filtered_export': True,
+                    'filter_type': last_filter,
+                    'filter_start': ctx.get('last_filter_start', ''),
+                    'filter_end': ctx.get('last_filter_end', ''),
+                    'filter_period': last_period,
+                })
+                return [{"type": "buttons", "content": {
+                    "body": f"\U0001f4ca Export *{filter_label} \u2014 {last_period}*\n\nChoose format:",
+                    "buttons": [
+                        {"id": "export_filtered_excel", "title": "\U0001f4ca Excel"},
+                        {"id": "export_filtered_pdf", "title": "\U0001f4c4 PDF"},
+                        {"id": "export_month", "title": "Full Month (Excel)"},
+                    ]
+                }}]
+            else:
+                self.db.save_session(phone_number, STATE_EXPORTING, {})
+                return [{"type": "buttons", "content": {
+                    "body": "\U0001f4ca What would you like to export?",
+                    "buttons": [
+                        {"id": "export_month", "title": "This Month (Excel)"},
+                        {"id": "export_csv", "title": "Full History (CSV)"},
+                        {"id": "export_contacts", "title": "Contacts List"},
+                    ]
+                }}]
 
         elif command == 'invoice':
+            # Check if user typed "invoice #1,3,5" or "invoice 1,6,7" inline
+            remaining = re.sub(r'^invoice\s*', '', text.lower().strip())
+            inline_match = re.match(r'^#?([\d][\d,\s]*[\d]?)$', remaining.strip())
+            if inline_match:
+                # Direct multi-transaction invoice
+                nums_text = inline_match.group(1)
+                user = self.db.get_user(phone_number)
+                tx_list = user.get('last_sales_list', user.get('last_tx_list', [])) if user else []
+                if tx_list:
+                    numbers = [int(n.strip()) for n in nums_text.split(',') if n.strip().isdigit()]
+                    tx_ids = [tx_list[n-1] for n in numbers if 1 <= n <= len(tx_list)]
+                    if tx_ids:
+                        self.db.save_session(phone_number, STATE_IDLE, {})
+                        return [{"type": "invoice_from_transactions", "content": {"transaction_ids": tx_ids}}]
             self.db.save_session(phone_number, STATE_INVOICING, {"step": "ask_details"})
             return [{"type": "text", "content": (
                 "📄 Let's create an invoice.\n\n"
-                "Type it like this:\n"
-                "*[Customer name] [amount] for [item/description]*\n\n"
-                "Example: \"Alhaji Musa 350,000 for cement supply\""
+                "*Option 1* — Type details:\n"
+                "*[Customer name] [amount] for [item/description]*\n"
+                "_Example: Sandra 100,000 for 10 pairs Nike socks_\n\n"
+                "*Option 2* — From your transactions:\n"
+                "Type *#1,3,5* (numbers from \"my sales\" list)\n\n"
+                "Or type *cancel* to exit."
+            )}]
+
+        elif command == 'statement':
+            # Handled by main.py → pdf_generator
+            return [{"type": "text", "content": "__STATEMENT_REQUEST__"}]
+
+        elif command == 'receipt':
+            # Check if user typed "receipt #3" or "receipt 1,6,7" inline
+            remaining = re.sub(r'^receipt\s*', '', text.lower().strip())
+            inline_match = re.match(r'^#?([\d][\d,\s]*[\d]?)$', remaining.strip())
+            if inline_match and inline_match.group(1).strip():
+                nums_text = inline_match.group(1).strip()
+                user = self.db.get_user(phone_number)
+                tx_list = user.get('last_tx_list', []) if user else []
+                if tx_list:
+                    numbers = [int(n.strip()) for n in nums_text.split(',') if n.strip().isdigit()]
+                    tx_ids = [tx_list[n-1] for n in numbers if 1 <= n <= len(tx_list)]
+                    if tx_ids:
+                        self.db.save_session(phone_number, STATE_IDLE, {})
+                        return [{"type": "receipt_generate", "content": {"mode": "specific", "transaction_ids": tx_ids}}]
+            self.db.save_session(phone_number, 'GENERATING_RECEIPT', {"step": "ask_which"})
+            return [{"type": "text", "content": (
+                "🧾 Generate a receipt.\n\n"
+                "• Type *last* — receipt for your last transaction\n"
+                "• Type *#3* — receipt for transaction #3\n"
+                "• Type *#1,3,5* — combined receipt for multiple\n\n"
+                "_Run \"my sales\" first to see numbered list._\n\n"
+                "Or type *cancel* to exit."
             )}]
 
         elif command == 'customers':
@@ -564,6 +2682,10 @@ class ConversationEngine:
 
         elif command == 'who_owes_me':
             return self._handle_who_owes_me(phone_number)
+        elif command == 'who_i_owe':
+            return self._handle_i_owe(phone_number)
+        elif command == 'contacts':
+            return self._show_contacts_menu()
 
         elif command == 'i_owe':
             return self._handle_i_owe(phone_number)
@@ -572,9 +2694,18 @@ class ConversationEngine:
             return self._handle_debt_summary(phone_number)
 
         elif command == 'record_debt':
+            # If text has a number (amount), it's a full transaction — use AI parser
+            # which has its own credit detection with rich confirmation
+            import re as _re
+            if _re.search(r'\d{3,}|\d+[kKmM]', text):
+                return self._handle_transaction(phone_number, text)
             return self._handle_record_debt(phone_number, text)
 
         elif command == 'record_i_owe':
+            # Same: if it has an amount, use the full AI parser
+            import re as _re
+            if _re.search(r'\d{3,}|\d+[kKmM]', text):
+                return self._handle_transaction(phone_number, text)
             return self._handle_record_i_owe(phone_number, text)
 
         elif command == 'debt_paid':
@@ -626,6 +2757,8 @@ class ConversationEngine:
             return self._show_upgrade_options()
         elif command == 'change_category':
             return self._handle_change_category(phone_number, text)
+        elif command == 'set_bank':
+            return self._handle_set_bank(phone_number, text)
         elif command == 'setup_catalog':
             return self._handle_setup_catalog(phone_number, text)
         elif command == 'show_catalog':
@@ -645,6 +2778,23 @@ class ConversationEngine:
         elif command == 'set_unit':
             return self._handle_set_unit_cmd(phone_number, text)
 
+        elif command == 'set_tax':
+            return self._handle_set_tax(phone_number, text)
+        elif command == 'set_unit':
+            return self._handle_set_unit(phone_number, text)
+        elif command == 'set_bank':
+            return self._handle_set_bank(phone_number, text)
+        elif command == 'change_industry':
+            return self._handle_change_industry(phone_number)
+        elif command == 'set_recipe':
+            return self._handle_set_recipe_start(phone_number, text)
+        elif command == 'organize_product':
+            return self._handle_organize_product(phone_number, text)
+        elif command == 'production':
+            return self._handle_production_run(phone_number, text)
+        elif command == 'my_recipes':
+            return self._show_recipes(phone_number)
+
         elif command == 'compliment':
             return self._handle_emotion(phone_number, 'compliment')
 
@@ -657,6 +2807,32 @@ class ConversationEngine:
         elif command == 'pidgin_chat':
             return self._handle_pidgin(phone_number, text_lower)
 
+
+        # ---- SMART DEBTOR DETECTION ----
+        # If user types "[Name] [amount]" and that name is a known debtor,
+        # treat it as a debt payment (common Nigerian pattern)
+        # e.g. "Mrs Omolabake 35000" → Mrs Omolabake paid me 35000
+        name_amount_match = re.match(
+            r'^([A-Za-z][A-Za-z\s\.]+?)\s+([\d,]+[kKmM]?)\s*$', text.strip()
+        )
+        if name_amount_match:
+            potential_name = name_amount_match.group(1).strip()
+            potential_amt_str = name_amount_match.group(2).replace(',', '')
+            # Parse amount
+            if potential_amt_str.lower().endswith('k'):
+                potential_amt = int(potential_amt_str[:-1]) * 1000
+            elif potential_amt_str.lower().endswith('m'):
+                potential_amt = int(potential_amt_str[:-1]) * 1000000
+            else:
+                potential_amt = int(potential_amt_str)
+            # Check if this name matches a known debtor
+            debtors = self.db.get_all_debtors(phone_number)
+            for debtor in debtors:
+                debtor_name = debtor.get('name', '').lower()
+                if (potential_name.lower() in debtor_name or
+                    debtor_name in potential_name.lower()):
+                    # Match! Route to debt payment
+                    return self._handle_debt_paid(phone_number, f"{potential_name} paid me {potential_amt}")
 
         # ---- Fallthrough: attempt transaction parsing ----
         # Check if message has financial signals before sending to AI categorizer
@@ -682,6 +2858,11 @@ class ConversationEngine:
             compliment_words = ['thanks', 'thank you', 'well done', 'good job', 'nice', 'great', 'perfect', 'love it', 'fire', 'sharp']
             if any(w in text_lower for w in compliment_words):
                 return self._handle_emotion(phone_number, 'compliment')
+
+            # Short acknowledgements — just prompt for next action
+            ack_words = ['okay', 'ok', 'alright', 'sure', 'cool', 'noted', 'fine', 'got it', 'understood', 'right', 'yep', 'yea', 'yeah', 'yes']
+            if text_lower.strip().rstrip('!.') in ack_words:
+                return [{"type": "text", "content": "👍 Ready when you are! Record a transaction or type *help* to see commands."}]
 
             # Truly unrecognized — give helpful response
             return [{"type": "text", "content": (
@@ -717,11 +2898,17 @@ class ConversationEngine:
                     return self._handle_i_paid_debt(phone_number, text)
 
         # ---- Credit sale/purchase detection BEFORE AI categorizer ----
-        # "on credit" alone is ambiguous — it appears in BOTH sale and
-        # purchase phrasing ("sold X on credit" vs "bought X on credit").
-        # So we check direction signals (bought/from vs sold/to) FIRST,
-        # and only fall back to "on credit" alone for sale (the more common case).
+        # If the text has RICH DETAIL (numbers, quantities, product names, etc.),
+        # skip this simple detection and let the AI parser handle it properly.
+        # The AI parser has its own credit detection that preserves all context.
         has_credit_phrase = 'on credit' in text_lower or 'credit' in text_lower
+        text_has_detail = (
+            bool(re.search(r'\d', text))  # has numbers (amount or quantity)
+            or len(text.split()) >= 6       # long sentence with context
+        )
+        # Only use simple credit routing for SHORT commands like "on credit" or "gave credit to Bola"
+        if text_has_detail and has_credit_phrase:
+            has_credit_phrase = False  # Skip — let AI parser handle it with full context
         explicit_purchase_signals = [
             'i owe', 'i am owing', 'i bought on credit', 'credit purchase',
             'took on credit from', 'i dey owe', 'collected from on credit',
@@ -809,7 +2996,6 @@ class ConversationEngine:
     def _is_multi_transaction(self, text):
         """Detect if message contains multiple transactions"""
         text_lower = text.lower()
-        import re
         # Count number of amount-like patterns
         amount_patterns = re.findall(r'\d+[kK]|\d{4,}|\d+,\d{3}', text)
         # Check for connecting words/separators
@@ -826,12 +3012,13 @@ class ConversationEngine:
 
     def _handle_multi_transaction(self, phone_number, text):
         """Send full message to AI and get array of transactions back"""
-        # Get user's business type
+        # Get user's business type and industry
         user = self.db.get_user(phone_number)
         business_type = user.get('business_type', 'trading') if user else 'trading'
+        industry_class = user.get('industry_class', '') if user else ''
 
         # Call AI with the FULL text, ask for array response
-        result = self.categorizer.parse_multi_transaction(text, phone_number, business_type)
+        result = self.categorizer.parse_multi_transaction(text, phone_number, business_type, industry_class)
 
         if not result or len(result) < 2:
             # AI couldn\'t parse multiple — fall back to single transaction
@@ -863,6 +3050,14 @@ class ConversationEngine:
                 "payment_status": item.get('payment_status'),
                 "extra_details": item.get('extra_details', {}),
                 "tags": item.get('tags', []),
+                # Discount & Tax
+                "subtotal": item.get('subtotal'),
+                "discount_amount": item.get('discount_amount'),
+                "discount_percent": item.get('discount_percent'),
+                "discount_type": item.get('discount_type'),
+                "tax_amount": item.get('tax_amount'),
+                "tax_percent": item.get('tax_percent'),
+                "tax_type": item.get('tax_type'),
             }
             all_pending.append(pending)
 
@@ -1021,7 +3216,16 @@ class ConversationEngine:
 
         if not amount:
             # Couldn't find an amount — ask for it
-            self.db.save_session(phone_number, STATE_RECORDING, {"description": text})
+            # Preserve credit signal so we can handle it properly after amount is given
+            is_credit = ('on credit' in text.lower() or 'credit sale' in text.lower() or
+                         'gave credit' in text.lower() or 'took on credit' in text.lower())
+            # Extract name early so we don't lose it
+            name_hint = self._extract_contact_name_from_text(text, 0)
+            self.db.save_session(phone_number, STATE_RECORDING, {
+                "description": text,
+                "is_credit": is_credit,
+                "name_hint": name_hint or '',
+            })
             return [{"type": "text", "content": (
                 "\U0001f4b0 How much was it? (Just type the amount)\n\n"
                 "E.g.: 95000 or 95K or \u20a695,000"
@@ -1032,11 +3236,18 @@ class ConversationEngine:
         business_type = user.get('business_type', 'trading') if user else 'trading'
 
         # Rich AI parsing — extracts everything
-        result = self.categorizer.parse_transaction(text, phone_number, business_type)
+        try:
+            result = self.categorizer.parse_transaction(text, phone_number, business_type)
+        except Exception as e:
+            logger.error(f"AI categorizer failed: {e}")
+            result = {}
 
         # Use AI's transaction type if available, fallback to rule-based
         tx_type = result.get('transaction_type') or detect_transaction_type(text)
         vendor = result.get('vendor_or_customer') or extract_vendor_name(text) or ""
+        # Filter out false vendor names (transaction verbs the AI sometimes returns)
+        if vendor.lower() in ('sold', 'bought', 'paid', 'received', 'gave', 'sent', 'buy', 'sell', 'unknown'):
+            vendor = ""
         category = result.get('category', 'Uncategorized')
         sub_category = result.get('sub_category', '')
         confidence = result.get('confidence', 0)
@@ -1072,7 +3283,36 @@ class ConversationEngine:
             "payment_status": result.get('payment_status'),
             "extra_details": result.get('extra_details', {}),
             "tags": result.get('tags', []),
+            # Discount & Tax
+            "subtotal": result.get('subtotal'),
+            "discount_amount": result.get('discount_amount'),
+            "discount_percent": result.get('discount_percent'),
+            "discount_type": result.get('discount_type'),
+            "tax_amount": result.get('tax_amount'),
+            "tax_percent": result.get('tax_percent'),
+            "tax_type": result.get('tax_type'),
         }
+
+        # ===== DEFAULT TAX APPLICATION =====
+        # If user said "+ tax" or "+ VAT" but AI couldn't determine the rate,
+        # apply the user's default tax rate
+        text_has_tax_signal = any(kw in text.lower() for kw in ['+ tax', '+tax', '+ vat', '+vat', 'plus tax', 'plus vat'])
+        if text_has_tax_signal and not pending.get('tax_percent') and not pending.get('tax_amount'):
+            user_tax = user.get('default_tax_percent') if user else None
+            if user_tax:
+                try:
+                    rate = float(user_tax)
+                    tax_type = user.get('default_tax_type', 'VAT')
+                    subtotal = pending['amount']
+                    tax_amt = int(subtotal * rate / 100)
+                    pending['subtotal'] = subtotal
+                    pending['tax_percent'] = rate
+                    pending['tax_type'] = tax_type
+                    pending['tax_amount'] = tax_amt
+                    pending['amount'] = subtotal + tax_amt
+                    amount = pending['amount']
+                except (ValueError, TypeError):
+                    pass
 
         # ===== CREDIT/DEBT DETECTION =====
         # If the text indicates a credit transaction (but _detect_command
@@ -1122,39 +3362,124 @@ class ConversationEngine:
         response_text = f"\U0001f4dd Got it!\n\n"
         response_text += f"{type_emoji} *\u20a6{amount:,}* ({tx_type.title()})\n"
 
-        # Show item details
-        item_name = result.get('item_name')
-        brand = result.get('brand')
-        model = result.get('model')
+        # Show item details — hierarchy-aware
+        item_name = result.get('item_name', '')
+        brand = result.get('brand', '')
+        model = result.get('model', '')
+        color = result.get('color', '')
+        pattern = result.get('pattern', '') or result.get('style', '')
+        size = result.get('size', '')
 
+        # Check if product has a hierarchy defined
+        _user_cat = self.db.get_user(phone_number)
+        _auto_cat = _user_cat.get('auto_catalog', {}) if _user_cat else {}
+        _products = _auto_cat.get('products', {})
+        _hierarchy = None
+        _product_key = ''
         if item_name:
-            response_text += f"\U0001f4e6 {item_name}\n"
-        if brand or model:
-            brand_line = "\U0001f3f7\ufe0f "
-            if brand:
-                brand_line += brand
-            if brand and model:
-                brand_line += " | "
-            if model:
-                brand_line += model
-            response_text += brand_line + "\n"
+            _item_lower = item_name.lower().rstrip('s')  # handle plural: "bags" → "bag"
+            for _pk, _pv in _products.items():
+                _pk_stripped = _pk.rstrip('s')  # "bags" → "bag"
+                _name_lower = _pv.get('name', '').lower().rstrip('s')
+                # Match: exact, contains, singular/plural
+                if (_item_lower in _pk or _pk in _item_lower or
+                    _item_lower == _pk_stripped or _pk_stripped in _item_lower or
+                    _item_lower in _name_lower or _name_lower in _item_lower):
+                    if _pv.get('hierarchy'):
+                        _hierarchy = _pv['hierarchy']
+                        _product_key = _pk
+                    break
 
-        # Show size/color/quantity
-        # Show size/color/quantity
-        details = []
-        if result.get('size'):
-            details.append(f"Size: {result['size']}")
-        if result.get('color'):
-            details.append(f"Color: {result['color']}")
-        if result.get('quantity'):
-            qty_display = f"Qty: {result['quantity']}"
-            if pending.get('base_quantity'):
-                qty_display += f" (= {pending['base_quantity']} {pending['base_unit']})"
-            details.append(qty_display)
-        if result.get('unit_cost'):
-            details.append(f"Unit: \u20a6{int(result['unit_cost']):,}")
-        if details:
-            response_text += "\U0001f4cb " + " | ".join(details) + "\n"
+        if _hierarchy:
+            # Build tree path display: "Socks > Striped > Nike > Blue > Size 15"
+            attr_values = {
+                'pattern': pattern or '', 'brand': brand or '',
+                'color': color or '', 'size': str(size) if size else '',
+                'material': result.get('material', ''),
+                'model': result.get('model', ''),
+                'condition': result.get('condition', ''),
+                'type': result.get('item_type', '') or result.get('model', ''),
+                'style': pattern or result.get('style', ''),
+            }
+            # If AI put pattern+color together (e.g. "blue striped"), try to split
+            if not pattern and color:
+                pattern_words = ['striped', 'solid', 'sport', 'plain', 'checked', 'ankara', 'floral']
+                color_parts = color.lower().split()
+                for pw in pattern_words:
+                    if pw in color_parts:
+                        attr_values['pattern'] = pw.title()
+                        attr_values['color'] = ' '.join(w for w in color_parts if w != pw).title()
+                        # Update result for saving
+                        result['pattern'] = attr_values['pattern']
+                        result['color'] = attr_values['color']
+                        break
+
+            path_parts = [item_name.title()]
+            for attr in _hierarchy:
+                val = attr_values.get(attr, '')
+                if val:
+                    path_parts.append(val.title())
+
+            response_text += f"\U0001f4e6 *{' > '.join(path_parts)}*\n"
+
+            # Show quantity and price on separate line
+            qty_parts = []
+            if result.get('quantity'):
+                qty_display = f"Qty: {result['quantity']}"
+                if pending.get('base_quantity'):
+                    qty_display += f" (= {pending['base_quantity']} {pending['base_unit']})"
+                qty_parts.append(qty_display)
+            if result.get('unit_cost'):
+                qty_parts.append(f"\u20a6{int(result['unit_cost']):,}/unit")
+            if qty_parts:
+                response_text += "\U0001f4cb " + " | ".join(qty_parts) + "\n"
+        else:
+            # No hierarchy — use flat display
+            if item_name:
+                response_text += f"\U0001f4e6 {item_name}\n"
+            if brand or model:
+                brand_line = "\U0001f3f7\ufe0f "
+                if brand:
+                    brand_line += brand
+                if brand and model:
+                    brand_line += " | "
+                if model:
+                    brand_line += model
+                response_text += brand_line + "\n"
+
+            # Show size/color/quantity
+            details = []
+            if size:
+                details.append(f"Size: {size}")
+            if color:
+                details.append(f"Color: {color}")
+            if result.get('quantity'):
+                qty_display = f"Qty: {result['quantity']}"
+                if pending.get('base_quantity'):
+                    qty_display += f" (= {pending['base_quantity']} {pending['base_unit']})"
+                details.append(qty_display)
+            if result.get('unit_cost'):
+                details.append(f"Unit: \u20a6{int(result['unit_cost']):,}")
+            if details:
+                response_text += "\U0001f4cb " + " | ".join(details) + "\n"
+
+        # Discount line
+        discount_amt = result.get('discount_amount') or pending.get('discount_amount')
+        discount_pct = result.get('discount_percent') or pending.get('discount_percent')
+        discount_type = result.get('discount_type') or pending.get('discount_type')
+        if discount_amt or discount_pct:
+            disc_label = "Discount given" if discount_type == "given" else "Discount"
+            disc_val = f"\u20a6{int(discount_amt):,}" if discount_amt else f"{discount_pct}%"
+            response_text += f"\U0001f3f7\ufe0f {disc_label}: -{disc_val}\n"
+
+        # Tax line
+        tax_amt = result.get('tax_amount') or pending.get('tax_amount')
+        tax_pct = result.get('tax_percent') or pending.get('tax_percent')
+        tax_type = result.get('tax_type') or pending.get('tax_type')
+        if tax_amt or tax_pct:
+            tax_label = tax_type or "Tax"
+            tax_val = f"\u20a6{int(tax_amt):,}" if tax_amt else f"{tax_pct}%"
+            response_text += f"\U0001f4b1 {tax_label}: +{tax_val}\n"
 
         # Category
         response_text += f"{cat_emoji} {category}"
@@ -1226,11 +3551,20 @@ class ConversationEngine:
                         payment_status=tx_data.get('payment_status'),
                         extra_details=tx_data.get('extra_details'),
                         tags=tx_data.get('tags'),
+                        subtotal=tx_data.get('subtotal'),
+                        discount_amount=tx_data.get('discount_amount'),
+                        discount_percent=tx_data.get('discount_percent'),
+                        discount_type=tx_data.get('discount_type'),
+                        tax_amount=tx_data.get('tax_amount'),
+                        tax_percent=tx_data.get('tax_percent'),
+                        tax_type=tx_data.get('tax_type'),
                     )
                     # Update contact totals
                     vendor = tx_data.get('vendor', '')
                     if vendor:
                         self.db.update_contact_totals(phone_number, vendor, tx_data['amount'], tx_data['type'])
+                    # Auto-update product catalog
+                    self._update_auto_catalog(phone_number, tx_data)
                     saved_count += 1
 
                 self.db.save_session(phone_number, STATE_IDLE, {})
@@ -1264,6 +3598,13 @@ class ConversationEngine:
                 payment_status=context.get('payment_status'),
                 extra_details=context.get('extra_details'),
                 tags=context.get('tags'),
+                subtotal=context.get('subtotal'),
+                discount_amount=context.get('discount_amount'),
+                discount_percent=context.get('discount_percent'),
+                discount_type=context.get('discount_type'),
+                tax_amount=context.get('tax_amount'),
+                tax_percent=context.get('tax_percent'),
+                tax_type=context.get('tax_type'),
             )
 
             # Save merchant memory
@@ -1281,6 +3622,9 @@ class ConversationEngine:
                     phone_number, vendor,
                     context['amount'], context['type']
                 )
+
+            # Auto-update product catalog from this transaction
+            self._update_auto_catalog(phone_number, context)
 
             # Smart CRM prompt: if amount >= 10K and no vendor/customer, ask
             amount = context['amount']
@@ -1303,11 +3647,64 @@ class ConversationEngine:
                     f"_Type their name, or just send your next transaction._"
                 )}]
             else:
-                self.db.save_session(phone_number, STATE_IDLE, {})
-                return [{"type": "text", "content": (
-                    f"✅ Saved!\n\n"
-                    f"Record another transaction or type *help* for options."
-                )}]
+                # For SALES: offer invoice/receipt buttons (natural next step)
+                tx_id = tx.get('transaction_id', '') if isinstance(tx, dict) else ''
+                if tx_type == 'income' and vendor:
+                    self.db.save_session(phone_number, STATE_IDLE, {'last_saved_tx_id': tx_id, 'last_saved_vendor': vendor, 'last_saved_amount': amount})
+                    # Auto-COGS for products with recipes (manufacturing)
+                    margin_info = ''
+                    item_name_ctx = context.get('item_name', '')
+                    if item_name_ctx:
+                        user_data = self.db.get_user(phone_number)
+                        _cat = user_data.get('auto_catalog', {}) if user_data else {}
+                        for _pk, _pv in _cat.get('products', {}).items():
+                            if _pv.get('recipe') and (item_name_ctx.lower() in _pk or _pk in item_name_ctx.lower()):
+                                _cpu = _pv['recipe']['cost_per_unit']
+                                _qty = int(context.get('quantity', 1) or 1)
+                                _cogs = _cpu * _qty
+                                _profit = amount - _cogs
+                                _margin = round(_profit / amount * 100) if amount > 0 else 0
+                                margin_info = f"\n\U0001f4ca COGS: \u20a6{_cogs:,} | Profit: \u20a6{_profit:,} ({_margin}%)"
+                                # Deduct from inventory
+                                _inv = _pv.get('inventory', {})
+                                _inv['finished_goods'] = max(0, _inv.get('finished_goods', 0) - _qty)
+                                _pv['inventory'] = _inv
+                                _cat['products'][_pk] = _pv
+                                self.db.update_user_field(phone_number, 'auto_catalog', _cat)
+                                break
+                    # Show receipt only for cash sales (not credit)
+                    is_credit = context.get('payment', '').lower() == 'credit' or 'credit' in context.get('description', '').lower()
+                    if is_credit:
+                        doc_buttons = [
+                            {"id": "post_invoice", "title": "📄 Invoice"},
+                            {"id": "post_done", "title": "✅ Done"},
+                        ]
+                    else:
+                        doc_buttons = [
+                            {"id": "post_invoice", "title": "📄 Invoice"},
+                            {"id": "post_receipt", "title": "🧾 Receipt"},
+                            {"id": "post_done", "title": "✅ Done"},
+                        ]
+                    return [{"type": "buttons", "content": {
+                        "body": f"✅ Saved! ₦{amount:,} from {vendor}{margin_info}\n\nGenerate a document?",
+                        "buttons": doc_buttons
+                    }}]
+                elif tx_type == 'income':
+                    self.db.save_session(phone_number, STATE_IDLE, {'last_saved_tx_id': tx_id, 'last_saved_amount': amount})
+                    return [{"type": "buttons", "content": {
+                        "body": f"✅ Saved! ₦{amount:,} income recorded.\n\nGenerate a document?",
+                        "buttons": [
+                            {"id": "post_invoice", "title": "📄 Invoice"},
+                            {"id": "post_receipt", "title": "🧾 Receipt"},
+                            {"id": "post_done", "title": "✅ Done"},
+                        ]
+                    }}]
+                else:
+                    self.db.save_session(phone_number, STATE_IDLE, {})
+                    return [{"type": "text", "content": (
+                        f"✅ Saved!\n\n"
+                        f"Record another transaction or type *help* for options."
+                    )}]
         # Change — show correction menu
         elif text_lower in ['change', 'no', 'n', 'wrong', '\u270f\ufe0f change', 'confirm_change', '2']:
             context['correction_step'] = 'choose_field'
@@ -1741,9 +4138,402 @@ class ConversationEngine:
         self.db.save_session(phone_number, STATE_IDLE, {})
         return [{"type": "text", "content": report}]
 
-    # ==========================================
-    # HELPER METHODS
-    # ==========================================
+    def _parse_time_period(self, text):
+        """Parse time period from natural language text.
+        Returns (start_date, end_date, label, time_start_hour, time_end_hour).
+        time_start_hour/time_end_hour are None unless time-of-day filtering requested."""
+        from datetime import datetime, timedelta
+        import re
+        now = datetime.now()
+        text_lower = (text or '').lower().strip()
+        time_start_hour = None
+        time_end_hour = None
+
+        # ---- TIME OF DAY ----
+        # "2am to 6pm", "morning", "evening", "afternoon", "night"
+        time_match = re.search(r'(\d{1,2})\s*([ap]m?)\s*(?:to|-|\u2014)\s*(\d{1,2})\s*([ap]m?)', text_lower)
+        if time_match:
+            h1 = int(time_match.group(1))
+            p1 = time_match.group(2)
+            h2 = int(time_match.group(3))
+            p2 = time_match.group(4)
+            time_start_hour = h1 + (12 if 'p' in p1 and h1 != 12 else 0)
+            time_end_hour = h2 + (12 if 'p' in p2 and h2 != 12 else 0)
+            # Remove time part from text for date parsing below
+            text_lower = text_lower[:time_match.start()] + text_lower[time_match.end():]
+        elif 'morning' in text_lower:
+            time_start_hour, time_end_hour = 6, 12
+        elif 'afternoon' in text_lower:
+            time_start_hour, time_end_hour = 12, 17
+        elif 'evening' in text_lower:
+            time_start_hour, time_end_hour = 17, 21
+        elif 'night' in text_lower:
+            time_start_hour, time_end_hour = 21, 6  # wraps to next day
+
+        # ---- SPECIFIC DATE: DD/MM/YYYY or DD-MM-YYYY ----
+        date_match = re.search(r'(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})', text_lower)
+        if date_match:
+            d, m, y = int(date_match.group(1)), int(date_match.group(2)), int(date_match.group(3))
+            if y < 100:
+                y += 2000
+            try:
+                dt = datetime(y, m, d)
+                label = dt.strftime('%d %B %Y')
+                ds = dt.strftime('%Y-%m-%d')
+                return ds, ds, label, time_start_hour, time_end_hour
+            except ValueError:
+                pass
+
+        # ---- SPECIFIC DATE: "3rd july", "july 3", "15th june 2026" ----
+        months_map = {'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+                      'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
+                      'january': 1, 'february': 2, 'march': 3, 'april': 4,
+                      'june': 6, 'july': 7, 'august': 8, 'september': 9,
+                      'october': 10, 'november': 11, 'december': 12}
+
+        # "3rd july" or "15th june 2026"
+        specific_date = re.search(r'(\d{1,2})(?:st|nd|rd|th)?\s+(\w+)(?:\s+(\d{4}))?', text_lower)
+        if specific_date:
+            day = int(specific_date.group(1))
+            month_word = specific_date.group(2)[:3]
+            year = int(specific_date.group(3)) if specific_date.group(3) else now.year
+            if month_word in months_map and 1 <= day <= 31:
+                month = months_map[month_word]
+                try:
+                    dt = datetime(year, month, day)
+                    label = dt.strftime('%d %B %Y')
+                    ds = dt.strftime('%Y-%m-%d')
+                    return ds, ds, label, time_start_hour, time_end_hour
+                except ValueError:
+                    pass
+
+        # "july 3" or "june 15"
+        specific_date2 = re.search(r'(\w+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(\d{4}))?', text_lower)
+        if specific_date2:
+            month_word = specific_date2.group(1)[:3]
+            day = int(specific_date2.group(2))
+            year = int(specific_date2.group(3)) if specific_date2.group(3) else now.year
+            if month_word in months_map and 1 <= day <= 31:
+                month = months_map[month_word]
+                try:
+                    dt = datetime(year, month, day)
+                    label = dt.strftime('%d %B %Y')
+                    ds = dt.strftime('%Y-%m-%d')
+                    return ds, ds, label, time_start_hour, time_end_hour
+                except ValueError:
+                    pass
+
+        # ---- DATE RANGE: "1st to 15th" or "june 1 to june 30" ----
+        range_match = re.search(r'(\d{1,2})(?:st|nd|rd|th)?\s*(?:to|-|\u2014)\s*(\d{1,2})(?:st|nd|rd|th)?', text_lower)
+        if range_match:
+            d1 = int(range_match.group(1))
+            d2 = int(range_match.group(2))
+            # Try to find month context
+            month = now.month
+            year = now.year
+            for word in text_lower.split():
+                if word[:3] in months_map:
+                    month = months_map[word[:3]]
+                    break
+            try:
+                start_dt = datetime(year, month, d1)
+                end_dt = datetime(year, month, d2)
+                label = f"{start_dt.strftime('%d')} to {end_dt.strftime('%d %B %Y')}"
+                return start_dt.strftime('%Y-%m-%d'), end_dt.strftime('%Y-%m-%d'), label, time_start_hour, time_end_hour
+            except ValueError:
+                pass
+
+        # ---- TODAY / YESTERDAY ----
+        if 'today' in text_lower or "today\'s" in text_lower:
+            d = now.strftime('%Y-%m-%d')
+            return d, d, 'Today', time_start_hour, time_end_hour
+        if 'yesterday' in text_lower:
+            d = (now - timedelta(days=1)).strftime('%Y-%m-%d')
+            return d, d, 'Yesterday', time_start_hour, time_end_hour
+
+        # ---- DAY NAMES ----
+        day_names = {'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
+                     'friday': 4, 'saturday': 5, 'sunday': 6}
+        for day_name, day_num in day_names.items():
+            if day_name in text_lower:
+                # Find the most recent occurrence of that day
+                days_ago = (now.weekday() - day_num) % 7
+                if days_ago == 0 and 'last' in text_lower:
+                    days_ago = 7
+                elif days_ago == 0:
+                    days_ago = 0  # today if it matches
+                target = now - timedelta(days=days_ago)
+                label = target.strftime('%A, %d %B')
+                ds = target.strftime('%Y-%m-%d')
+                return ds, ds, label, time_start_hour, time_end_hour
+
+        # ---- THIS WEEK / LAST WEEK ----
+        if 'last week' in text_lower:
+            start = now - timedelta(days=now.weekday() + 7)
+            end = start + timedelta(days=6)
+            return start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d'), 'Last Week', time_start_hour, time_end_hour
+        if 'this week' in text_lower or 'week' in text_lower or 'weekly' in text_lower:
+            start = now - timedelta(days=now.weekday())
+            return start.strftime('%Y-%m-%d'), now.strftime('%Y-%m-%d'), 'This Week', time_start_hour, time_end_hour
+
+        # ---- LAST N DAYS ----
+        days_match = re.search(r'last\s+(\d+)\s*days?', text_lower)
+        if days_match:
+            n = int(days_match.group(1))
+            start = (now - timedelta(days=n)).strftime('%Y-%m-%d')
+            return start, now.strftime('%Y-%m-%d'), f'Last {n} Days', time_start_hour, time_end_hour
+
+        # ---- MONTH NAMES: "june", "may 2026", "last month" ----
+        if 'last month' in text_lower:
+            first_of_this_month = now.replace(day=1)
+            last_month_end = first_of_this_month - timedelta(days=1)
+            last_month_start = last_month_end.replace(day=1)
+            label = last_month_start.strftime('%B %Y')
+            return last_month_start.strftime('%Y-%m-%d'), last_month_end.strftime('%Y-%m-%d'), label, time_start_hour, time_end_hour
+
+        for month_word, month_num in months_map.items():
+            if month_word in text_lower and len(month_word) >= 3:
+                # Check for year
+                year_match = re.search(r'(\d{4})', text_lower)
+                year = int(year_match.group(1)) if year_match else now.year
+                # Full month range
+                import calendar
+                last_day = calendar.monthrange(year, month_num)[1]
+                start_dt = datetime(year, month_num, 1)
+                end_dt = datetime(year, month_num, last_day)
+                label = start_dt.strftime('%B %Y')
+                return start_dt.strftime('%Y-%m-%d'), end_dt.strftime('%Y-%m-%d'), label, time_start_hour, time_end_hour
+
+        # ---- DEFAULT: THIS MONTH ----
+        start = now.strftime('%Y-%m-01')
+        end = now.strftime('%Y-%m-%d')
+        return start, end, now.strftime('%B %Y'), time_start_hour, time_end_hour
+
+
+    def _handle_filtered_report(self, phone_number, filter_type, time_text=''):
+        """Generate a sales/purchases/expenses report with granular time + entity filtering + export"""
+        from datetime import datetime
+        import re as _re
+
+        # Parse time period (supports all granular ranges)
+        result = self._parse_time_period(time_text)
+        start_date, end_date, period_label, time_start_hour, time_end_hour = result
+
+        transactions = self.db.get_transactions_by_period(phone_number, start_date, end_date)
+
+        # ---- SMART ENTITY FILTERS ----
+        text_lower = (time_text or '').lower()
+        entity_filter_label = ''
+
+        # Vendor/Customer filter: "to Sandra", "from Alhaji", "Sandra sales"
+        vendor_match = _re.search(r'(?:to|from|for)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)', time_text or '')
+        vendor_filter = vendor_match.group(1).lower() if vendor_match else ''
+        if not vendor_filter:
+            # Check if a proper noun (capitalized word) is in the text that's not a keyword
+            skip_words = {'my', 'sales', 'purchases', 'expenses', 'today', 'week', 'month', 'this', 'last', 'all', 'over', 'above', 'below', 'under', 'nike', 'gucci', 'prada'}
+            words = (time_text or '').split()
+            for w in words:
+                if w[0:1].isupper() and w.lower() not in skip_words and len(w) > 2:
+                    vendor_filter = w.lower()
+                    break
+
+        # Brand/Product filter: "Nike sales", "socks purchases"
+        brand_filter = ''
+        known_brands = ['nike', 'gucci', 'prada', 'adidas', 'fendi', 'd&g', 'balenciaga', 'zara', 'dangote']
+        for brand in known_brands:
+            if brand in text_lower:
+                brand_filter = brand
+                break
+
+        # Amount threshold: "over 50K", "above 100K", "below 20K"
+        amount_min = 0
+        amount_max = float('inf')
+        over_match = _re.search(r'(?:over|above|more than|greater than)\s+(\d+[kKmM]?)', text_lower)
+        under_match = _re.search(r'(?:under|below|less than)\s+(\d+[kKmM]?)', text_lower)
+        if over_match:
+            val = over_match.group(1)
+            amount_min = int(val[:-1]) * 1000 if val[-1].lower() == 'k' else int(val[:-1]) * 1000000 if val[-1].lower() == 'm' else int(val)
+            entity_filter_label += f' over \u20a6{amount_min:,}'
+        if under_match:
+            val = under_match.group(1)
+            amount_max = int(val[:-1]) * 1000 if val[-1].lower() == 'k' else int(val[:-1]) * 1000000 if val[-1].lower() == 'm' else int(val)
+            entity_filter_label += f' under \u20a6{int(amount_max):,}'
+        if vendor_filter:
+            entity_filter_label += f' ({vendor_filter.title()})'
+        if brand_filter:
+            entity_filter_label += f' [{brand_filter.title()}]'
+
+        # Apply time-of-day filter if specified
+        if time_start_hour is not None and time_end_hour is not None:
+            def in_time_range(tx):
+                created = tx.get('created_at', '')
+                if not created:
+                    return True  # Include if no timestamp
+                try:
+                    hour = int(created[11:13])  # Extract hour from ISO format
+                    if time_start_hour <= time_end_hour:
+                        return time_start_hour <= hour < time_end_hour
+                    else:  # Wraps midnight (e.g. 9pm to 6am)
+                        return hour >= time_start_hour or hour < time_end_hour
+                except (ValueError, IndexError):
+                    return True
+            transactions = [tx for tx in transactions if in_time_range(tx)]
+            period_label += f" ({time_start_hour}:00-{time_end_hour}:00)"
+
+        # Get user's industry for tailored labels and category grouping
+        user = self.db.get_user(phone_number)
+        industry_class = user.get('industry_class', 'trading') if user else 'trading'
+
+        # Industry-specific COGS categories
+        from services.categorizer import INDUSTRY_CATEGORIES
+        ind_config = INDUSTRY_CATEGORIES.get(industry_class, INDUSTRY_CATEGORIES['trading'])
+        COGS_CATEGORIES = ind_config.get('cogs', ['Goods & Stock'])
+
+        # Industry-specific labels
+        industry_labels = {
+            'trading': {'sales': 'Sales', 'purchases': 'Purchases (Stock)', 'expenses': 'Operating Expenses'},
+            'manufacturing': {'sales': 'Production Sales', 'purchases': 'Raw Materials & Production', 'expenses': 'Operating Expenses'},
+            'services': {'sales': 'Service Revenue', 'purchases': 'Direct Service Costs', 'expenses': 'Operating Expenses'},
+            'hybrid': {'sales': 'Revenue', 'purchases': 'Direct Costs', 'expenses': 'Operating Expenses'},
+        }
+        ind_labels = industry_labels.get(industry_class, industry_labels['trading'])
+
+        if filter_type == 'my_sales':
+            label = ind_labels['sales']
+            emoji = '\U0001f4b0'
+            filtered = [tx for tx in transactions
+                       if tx.get('type') == 'income'
+                       and 'Debt payment' not in tx.get('description', '')]
+        elif filter_type == 'my_purchases':
+            label = ind_labels['purchases']
+            emoji = '\U0001f6d2'
+            filtered = [tx for tx in transactions
+                       if tx.get('type') == 'expense'
+                       and tx.get('category', '') in COGS_CATEGORIES]
+        elif filter_type == 'my_expenses':
+            label = ind_labels['expenses']
+            emoji = '\U0001f4b8'
+            filtered = [tx for tx in transactions
+                       if tx.get('type') == 'expense'
+                       and tx.get('category', '') not in COGS_CATEGORIES]
+        else:
+            label = 'Transactions'
+            emoji = '\U0001f4ca'
+            filtered = transactions
+
+        # Apply smart entity filters
+        if vendor_filter:
+            filtered = [tx for tx in filtered if vendor_filter in tx.get('vendor', '').lower()]
+        if brand_filter:
+            filtered = [tx for tx in filtered 
+                       if brand_filter in tx.get('brand', '').lower() 
+                       or brand_filter in tx.get('description', '').lower()
+                       or brand_filter in tx.get('item_name', '').lower()]
+        if amount_min > 0:
+            filtered = [tx for tx in filtered if int(tx.get('amount', 0)) >= amount_min]
+        if amount_max < float('inf'):
+            filtered = [tx for tx in filtered if int(tx.get('amount', 0)) <= amount_max]
+
+        # Update period label with entity filters
+        if entity_filter_label:
+            period_label += entity_filter_label
+
+        if not filtered:
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return [{"type": "text", "content": f"\U0001f4ca No {label.lower()} found for *{period_label}*."}]
+
+        total = sum(int(tx.get('amount', 0)) for tx in filtered)
+
+        report = f"{emoji} *My {label} \u2014 {period_label}*\n\n"
+        report += f"Total: \u20a6{total:,}\n"
+        report += f"Transactions: {len(filtered)}\n\n"
+
+        # Show transactions (last 15, NEWEST FIRST)
+        report += f"\U0001f4cb *{label}:*\n"
+        tx_ids = []
+        recent = sorted(filtered, key=lambda x: x.get('created_at', x.get('date', '')), reverse=True)[:15]
+        for i, tx in enumerate(recent, 1):
+            amount = int(tx.get('amount', 0))
+            raw_desc = tx.get('description', '')
+            vendor = tx.get('vendor', '')
+            desc = self._clean_description_for_display(raw_desc, vendor)
+            tx_ids.append(tx.get('transaction_id', ''))
+            line = f"*#{i}* \u20a6{amount:,}"
+            if desc:
+                line += f" \u2014 {desc}"
+            bad_vendors = {'unknown', 'sold', 'bought', 'paid', 'received', 'gave', 'sent', ''}
+            if vendor and vendor.lower() not in bad_vendors:
+                line += f" ({vendor})"
+            report += line + "\n"
+
+        if len(filtered) > 15:
+            report += f"\n_...and {len(filtered) - 15} more transactions_\n"
+
+        report += f"\n\U0001f4a1 _Type: \"export\" to download as Excel/PDF_"
+
+        # Save tx_ids and filter context for export
+        if filter_type == 'my_sales':
+            self.db.update_user(phone_number, {'last_tx_list': tx_ids, 'last_sales_list': tx_ids})
+        else:
+            self.db.update_user(phone_number, {'last_tx_list': tx_ids})
+
+        self.db.save_session(phone_number, STATE_IDLE, {
+            'last_filter_type': filter_type,
+            'last_filter_period': period_label,
+            'last_filter_start': start_date,
+            'last_filter_end': end_date,
+        })
+
+        # Return report + time filter buttons
+        return [
+            {"type": "text", "content": report},
+            {"type": "buttons", "content": {
+                "body": f"\U0001f4c5 Filter *{label}* by period:",
+                "buttons": [
+                    {"id": f"filter_{filter_type}_today", "title": "\U0001f4c5 Today"},
+                    {"id": f"filter_{filter_type}_week", "title": "\U0001f4c5 This Week"},
+                    {"id": f"filter_{filter_type}_month", "title": "\U0001f4c5 This Month"},
+                ]
+            }}
+        ]
+
+
+    def _clean_description_for_display(self, description, vendor=''):
+        """Clean raw transaction description for display in lists"""
+        if not description:
+            return ''
+
+        desc = description.strip()
+
+        # Remove leading "Sold"/"Bought"/"Paid"/"Received" etc.
+        desc = re.sub(r'^(sold|bought|paid|received|gave|sent|got)\s+', '', desc, flags=re.IGNORECASE)
+
+        # Remove amounts: ₦100,000 or 100000 or 100k
+        desc = re.sub(r'₦?\d[\d,]*[kKmM]?', '', desc)
+
+        # Remove "to/from [Name]" patterns
+        if vendor:
+            desc = re.sub(rf'(to|from)\s+{re.escape(vendor)}', '', desc, flags=re.IGNORECASE)
+            desc = re.sub(rf'^{re.escape(vendor)}\s*', '', desc, flags=re.IGNORECASE)
+            desc = re.sub(rf'\s*{re.escape(vendor)}$', '', desc, flags=re.IGNORECASE)
+        else:
+            desc = re.sub(r'(to|from)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?', '', desc)
+
+        # Remove "for" prefix
+        desc = re.sub(r'^for\s+', '', desc, flags=re.IGNORECASE)
+
+        # Remove "on credit"
+        desc = re.sub(r'\s*on\s+credit\s*', '', desc, flags=re.IGNORECASE)
+
+        # Remove quantity phrases like "20 pairs of"
+        desc = re.sub(r'^\d*\s*(pairs?|pieces?|cartons?|bags?|boxes?|packs?|bottles?|crates?|dozen)\s+(of\s+)?', '', desc, flags=re.IGNORECASE)
+
+        # Clean up extra spaces and trailing connectors
+        desc = re.sub(r'\s+', ' ', desc).strip()
+        desc = re.sub(r'^(for|of|to|from)\s+', '', desc, flags=re.IGNORECASE)
+        desc = re.sub(r'\s+(for|of|to|from)$', '', desc, flags=re.IGNORECASE)
+
+        return desc.title()[:40] if desc else ''
 
     def _detect_command(self, text_lower):
         """Check if the text matches a known command.
@@ -1778,7 +4568,6 @@ class ConversationEngine:
 
     def _is_emoji(self, text):
         """Check if text is primarily emoji"""
-        import re
         # Remove whitespace and check if remaining chars are emoji
         cleaned = text.strip()
         if not cleaned:
@@ -1898,86 +4687,71 @@ class ConversationEngine:
         return [{"type": "text", "content": random.choice(responses)}]
 
     def _handle_greeting(self, phone_number):
-        """Handle greetings like Hi, Hello, Hey"""
+        """Handle greetings — show interactive menu"""
         user = self.db.get_user(phone_number)
         if user:
             name = user.get('business_name', '').strip()
-            greeting = 'Hey ' + name + '! 👋' if name else 'Hey! 👋'
+            greeting = 'Hey ' + name + '! \U0001f44b' if name else 'Hey! \U0001f44b'
         else:
-            greeting = 'Hey there! 👋'
+            greeting = 'Hey there! \U0001f44b'
 
-        msg = greeting + chr(10) + chr(10)
-        msg += 'What would you like to do?' + chr(10) + chr(10)
-        msg += '📝 *Record a transaction* — just type it' + chr(10)
-        msg += '📊 *Report* — type "report"' + chr(10)
-        msg += '📋 *Contacts* — type "customers" or "suppliers"' + chr(10)
-        msg += '📎 *Export* — type "export"' + chr(10)
-        msg += '\U0001f4e6 *Catalog* \u2014 type "setup catalog"' + chr(10)
-        msg += '❓ *Help* — type "help"'
+        return [
+            {"type": "text", "content": greeting + "\nWhat would you like to do?"},
+            {"type": "list", "content": {
+                "header": "Quick Actions",
+                "body": "Tap an option below \u2014 or just type naturally to record a transaction.",
+                "button_text": "\U0001f4cb Open Menu",
+                "sections": [
+                    {
+                        "title": "Record",
+                        "rows": self._get_record_menu_rows(phone_number),
+                    },
+                    {
+                        "title": "Business",
+                        "rows": [
+                            {"id": "menu_reports", "title": "\U0001f4ca Reports \u27a4", "description": "Sales, purchases, expenses"},
+                            {"id": "menu_documents", "title": "\U0001f4c4 Documents \u27a4", "description": "Invoice, Receipt, Statement"},
+                            {"id": "menu_debts", "title": "\U0001f4b3 Debts & Credits \u27a4", "description": "Who owes you + who you owe"},
+                            {"id": "menu_contacts", "title": "\U0001f4d6 Contacts \u27a4", "description": "Customers & suppliers"},
+                            {"id": "menu_catalog", "title": "\U0001f4e6 Catalog \u27a4", "description": "Products, brands, units"},
+                        ]
+                    },
+                ]
+            }}
+        ]
 
-        return [{'type': 'text', 'content': msg}]
 
     def _show_help(self):
-        """Show available commands"""
-        return [{"type": "text", "content": (
-            "🤖 *Kashia — What I Can Do*\n\n"
+        """Show interactive list menu with tappable options"""
+        return [
+            {"type": "text", "content": (
+                "\U0001f916 *Kashia Menu*\n\n"
+                "Tap the menu below \u2014 or just type naturally to record a transaction.\n\n"
+                "_Example: sold 10 Nike shoes to Bola 50k_"
+            )},
+            {"type": "list", "content": {
+                "header": "Kashia Menu",
+                "body": "What would you like to do?",
+                "button_text": "\U0001f4cb Open Menu",
+                "sections": [
+                    {
+                        "title": "Record",
+                        "rows": self._get_record_menu_rows(phone_number),
+                    },
+                    {
+                        "title": "Business",
+                        "rows": [
+                            {"id": "menu_reports", "title": "\U0001f4ca Reports \u27a4", "description": "Sales, purchases, expenses"},
+                            {"id": "menu_documents", "title": "\U0001f4c4 Documents \u27a4", "description": "Invoice, Receipt, Statement"},
+                            {"id": "menu_debts", "title": "\U0001f4b3 Debts & Credits \u27a4", "description": "Who owes you + who you owe"},
+                            {"id": "menu_contacts", "title": "\U0001f4d6 Contacts \u27a4", "description": "Customers & suppliers"},
+                            {"id": "menu_catalog", "title": "\U0001f4e6 Catalog \u27a4", "description": "Products, brands, units"},
+                        ]
+                    },
+                ]
+            }}
+        ]
 
-            "📝 *Record Transactions*\n"
-            "   Just type naturally:\n"
-            "   _\'Sold 20 Nike shoes to Amaka for 150k\'_\n"
-            "   _\'Bought 5 Gucci bags for 200k\'_\n\n"
-
-            "💳 *Credit & Debt Tracking*\n"
-            "   • _\'Bola took goods worth 20k on credit\'_\n"
-            "   • _\'I bought from Dangote on credit 50k\'_\n"
-            "   • \'who owes me\' — list debtors\n"
-            "   • \'i owe\' — list your debts\n"
-            "   • \'debt summary\' — full overview\n"
-            "   • _\'Bola paid me 10k\'_ — clear debt\n"
-            "   • _\'I paid Dangote 25k\'_ — clear your debt\n\n"
-
-            "🔔 *Debt Reminders*\n"
-            "   • _\'remind Bola\'_ — WhatsApp reminder\n"
-            "   • _\'remind all\'_ — remind all debtors\n"
-            "   • _\'save number Bola 2348012345678\'_\n\n"
-
-            "👤 *Contacts & Profiles*\n"
-            "   • \'customers\' — top buyers\n"
-            "   • \'suppliers\' — who you buy from\n"
-            "   • _\'profile Alhaji\'_ — full contact details\n"
-            "   • _\'add note Bola pays Fridays only\'_\n\n"
-
-            "📊 *Reports*\n"
-            "   • \'report\' — this month\n"
-            "   • \'today\' — today only\n"
-            "   • \'week\' — this week\n\n"
-
-            "📦 *Product Catalog*\n"
-            "   • \'setup catalog\' — set up products\n"
-            "   • \'my catalog\' — view catalog\n"
-            "   • \'add product [name]\'\n"
-            "   • \'edit catalog\' — edit products\n"
-            "   • \'add subcategory X under Y\'\n"
-            "   • \'add series X under Y\'\n\n"
-
-            "✏️ *Edit & Fix*\n"
-            "   • \'edit sales\' — fix a sales entry\n"
-            "   • \'edit expenses\' — fix an expense\n"
-            "   • \'edit catalog\' — update catalog\n"
-            "   • \'delete entry\' — remove a record\n"
-            "   • \'undo\' — delete last transaction\n"
-            "   • \'redo\' — restore deleted transaction\n\n"
-
-            "📎 *Export & Documents*\n"
-            "   • \'export\' — Excel/CSV download\n"
-            "   • \'invoice\' — create invoice\n"
-            "   • \'statement\' — financial statement\n\n"
-
-            "⚙️ *Settings*\n"
-            "   • \'change category\' — update business type\n"
-            "   • \'upgrade\' — see plans & pricing\n"
-            "   • \'help\' — show this menu"
-        )}]
 
     def _handle_undo(self, phone_number):
         """Delete the last transaction and save it for redo"""
@@ -2001,63 +4775,140 @@ class ConversationEngine:
     # ============================================================
 
     def _handle_who_owes_me(self, phone_number):
-        """Show all customers who owe the user money"""
+        """Show all customers who owe the user money — with rich details"""
         debtors = self.db.get_all_debtors(phone_number)
         if not debtors:
             return [{"type": "text", "content": (
-                "\u2705 No outstanding debts! Nobody owes you money right now.\n\n"
-                "_To record a credit sale, say something like:\n"
-                "\"Bola took goods worth 20,000 on credit\"_"
+                "\u2705 *No outstanding debts!*\n\n"
+                "Nobody owes you money right now.\n\n"
+                "_To record a credit sale:\n"
+                "\"sold 10 Nike socks to Bola on credit 150K\"_"
             )}]
 
+        # Sort by amount (highest first)
+        debtors.sort(key=lambda d: d.get('amount', 0), reverse=True)
         total = sum(d['amount'] for d in debtors)
-        lines = []
-        for i, d in enumerate(debtors[:10], 1):
-            name = d['name']
-            amount = d['amount']
-            date = d.get('last_date', '')
-            desc = d.get('description', '')
-            line = f"{i}. *{name}* — \u20a6{amount:,}"
-            if date:
-                line += f" (since {date})"
-            if desc:
-                line += f"\n   _{desc[:40]}_"
-            lines.append(line)
 
-        msg = "\U0001f4cb *People Who Owe You:*\n\n"
-        msg += "\n\n".join(lines)
-        msg += f"\n\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        msg += f"\n*Total Outstanding: \u20a6{total:,}*"
-        msg += "\n\n_To record a payment: say \"[Name] paid me [amount]\"_"
+        msg = "\U0001f4b0 *People Who Owe You*\n"
+        msg += f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+
+        for i, d in enumerate(debtors[:12], 1):
+            name = d.get('name', 'Unknown')
+            amount = d.get('amount', 0)
+            date = d.get('last_date', d.get('date', ''))
+            desc = d.get('description', '')
+            items = d.get('items', '')
+
+            # Calculate days overdue
+            days_text = ''
+            if date:
+                try:
+                    from datetime import datetime
+                    debt_date = datetime.strptime(date, '%Y-%m-%d')
+                    days = (datetime.now() - debt_date).days
+                    if days == 0:
+                        days_text = 'today'
+                    elif days == 1:
+                        days_text = '1 day ago'
+                    elif days < 7:
+                        days_text = f'{days} days ago'
+                    elif days < 30:
+                        weeks = days // 7
+                        days_text = f'{weeks} week{"s" if weeks > 1 else ""} ago'
+                    else:
+                        months = days // 30
+                        days_text = f'{months} month{"s" if months > 1 else ""} overdue'
+                except:
+                    days_text = date
+
+            msg += f"*{i}. {name}*\n"
+            msg += f"   \U0001f4b5 *\u20a6{amount:,}*"
+            if days_text:
+                msg += f" \u2022 _{days_text}_"
+            msg += "\n"
+            
+            # Show items/description
+            if items:
+                msg += f"   \U0001f4e6 {items}\n"
+            elif desc:
+                # Clean up raw descriptions
+                clean_desc = desc.strip('_').strip()
+                if len(clean_desc) > 50:
+                    clean_desc = clean_desc[:67] + '...'
+                msg += f"   \U0001f4e6 {clean_desc}\n"
+            msg += "\n"
+
+        msg += f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+        msg += f"\U0001f4b0 *Total Owed to You: \u20a6{total:,}*\n"
+        msg += f"\U0001f465 {len(debtors)} debtor{'s' if len(debtors) > 1 else ''}\n\n"
+        msg += "_\u2022 \"Sandra paid me 50K\" \u2014 record payment_\n"
+        msg += "_\u2022 \"remind Sandra\" \u2014 send reminder_"
+
         return [{"type": "text", "content": msg}]
 
     def _handle_i_owe(self, phone_number):
-        """Show all creditors the user owes money to"""
+        """Show all creditors the user owes money to — with rich details"""
         creditors = self.db.get_all_creditors(phone_number)
         if not creditors:
             return [{"type": "text", "content": (
-                "\u2705 You don\'t owe anyone money right now.\n\n"
-                "_To record a credit purchase, say something like:\n"
-                "\"I bought from Dangote flour on credit worth 50,000\"_"
+                "\u2705 *You don\'t owe anyone!*\n\n"
+                "No outstanding credit purchases.\n\n"
+                "_To record: \"bought cement from Dangote on credit 50K\"_"
             )}]
 
+        # Sort by amount (highest first)
+        creditors.sort(key=lambda c: c.get('amount', 0), reverse=True)
         total = sum(c['amount'] for c in creditors)
-        lines = []
-        for i, c in enumerate(creditors[:10], 1):
-            name = c['name']
-            amount = c['amount']
-            date = c.get('last_date', '')
-            line = f"{i}. *{name}* — \u20a6{amount:,}"
-            if date:
-                line += f" (since {date})"
-            lines.append(line)
 
-        msg = "\U0001f4cb *People You Owe:*\n\n"
-        msg += "\n\n".join(lines)
-        msg += f"\n\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        msg += f"\n*Total You Owe: \u20a6{total:,}*"
-        msg += "\n\n_To record payment: say \"I paid [name] [amount]\"_"
+        msg = "\U0001f4b8 *People You Owe*\n"
+        msg += "\u2501" * 15 + "\n\n"
+
+        for i, c in enumerate(creditors[:12], 1):
+            name = c.get('name', 'Unknown')
+            amount = c.get('amount', 0)
+            date = c.get('last_date', c.get('date', ''))
+            desc = c.get('description', '')
+
+            # Days since
+            days_text = ''
+            if date:
+                try:
+                    from datetime import datetime
+                    debt_date = datetime.strptime(date, '%Y-%m-%d')
+                    days = (datetime.now() - debt_date).days
+                    if days == 0:
+                        days_text = 'today'
+                    elif days == 1:
+                        days_text = '1 day ago'
+                    elif days < 7:
+                        days_text = f'{days} days ago'
+                    elif days < 30:
+                        weeks = days // 7
+                        days_text = f'{weeks} week{"s" if weeks > 1 else ""} ago'
+                    else:
+                        months = days // 30
+                        days_text = f'{months} month{"s" if months > 1 else ""} overdue'
+                except Exception:
+                    days_text = date
+
+            msg += f"*{i}. {name}*\n"
+            msg += f"   \U0001f4b5 *\u20a6{amount:,}*"
+            if days_text:
+                msg += f" \u2022 _{days_text}_"
+            msg += "\n"
+            if desc:
+                clean_desc = desc.strip('_').strip()[:70]
+                msg += f"   \U0001f4e6 {clean_desc}\n"
+            msg += "\n"
+
+        msg += "\u2501" * 15 + "\n"
+        msg += f"\U0001f4b8 *Total You Owe: \u20a6{total:,}*\n"
+        num = len(creditors)
+        msg += f"\U0001f3ea {num} creditor{'s' if num > 1 else ''}\n\n"
+        msg += "_\u2022 \"paid Dangote 50K\" \u2014 record payment_"
+
         return [{"type": "text", "content": msg}]
+
 
     def _handle_debt_summary(self, phone_number):
         """Show full debt overview"""
@@ -2117,9 +4968,10 @@ class ConversationEngine:
         (instead of cash income/expense) once confirmed."""
         user = self.db.get_user(phone_number)
         business_type = user.get('business_type', 'trading') if user else 'trading'
+        industry_class = user.get('industry_class', '') if user else ''
 
         try:
-            result = self.categorizer.parse_transaction(text, phone_number, business_type)
+            result = self.categorizer.parse_transaction(text, phone_number, business_type, industry_class)
         except Exception:
             result = {}
 
@@ -2238,19 +5090,46 @@ class ConversationEngine:
                     phone_number, name, int(amount), debt_type,
                     description=clean_description
                 )
-                self.db.save_session(phone_number, STATE_IDLE, {})
+
+                # Auto-update catalog from credit sale too
+                catalog_context = {
+                    'type': 'income' if debt_type == 'owed_to_me' else 'expense',
+                    'amount': int(amount),
+                    'vendor': name,
+                    'item_name': context.get('item_name'),
+                    'brand': context.get('brand'),
+                    'model': context.get('model'),
+                    'quantity': context.get('quantity'),
+                    'unit_cost': context.get('unit_cost'),
+                    'size': context.get('size'),
+                    'color': context.get('color'),
+                    'category': context.get('category', 'Sales & Income'),
+                    'sub_category': context.get('sub_category', ''),
+                }
+                self._update_auto_catalog(phone_number, catalog_context)
 
                 if debt_type == 'owed_to_me':
+                    # Credit SALE — offer invoice/receipt buttons
+                    self.db.save_session(phone_number, STATE_IDLE, {'last_saved_vendor': name, 'last_saved_amount': int(amount)})
                     msg = f"\u2705 *Credit Sale Recorded*\n\n\U0001f464 *{name}* owes you *\u20a6{int(amount):,}*\n"
                     if clean_description and clean_description != description:
                         msg += f"_{clean_description}_\n"
-                    msg += "\n_Type \"who owes me\" to see all debtors_"
+                    msg += "\nGenerate a document?"
+                    return [{"type": "buttons", "content": {
+                        "body": msg,
+                        "buttons": [
+                            {"id": "post_invoice", "title": "\U0001f4c4 Invoice"},
+                            {"id": "post_receipt", "title": "\U0001f9fe Receipt"},
+                            {"id": "post_done", "title": "\u2705 Done"},
+                        ]
+                    }}]
                 else:
+                    self.db.save_session(phone_number, STATE_IDLE, {})
                     msg = f"\u2705 *Credit Purchase Recorded*\n\n\U0001f3ea You owe *{name}* \u20a6{int(amount):,}\n"
                     if clean_description and clean_description != description:
                         msg += f"_{clean_description}_\n"
                     msg += "\n_Type \"i owe\" to see all your debts_"
-                return [{"type": "text", "content": msg}]
+                    return [{"type": "text", "content": msg}]
 
             except Exception as e:
                 tb = traceback.format_exc()
@@ -2399,7 +5278,6 @@ class ConversationEngine:
         debt recording where we'd rather ask the user than guess wrong
         (e.g. 'Sold 2 pairs of socks to Femnix on credit' has no real
         amount — the '2' is a quantity, not a price)."""
-        import re
         text_clean = text.replace(',', '')
 
         # Priority 1: number directly after ₦/# or before/after "worth"/"for"
@@ -2443,7 +5321,6 @@ class ConversationEngine:
         """Extract contact name from transaction text.
         Looks for the word right after 'to'/'from'/'by' first (most reliable),
         falls back to filtering out known noise words including product terms."""
-        import re
 
         # Priority 1: name right after "to X" or "from X" (most reliable signal)
         to_from_match = re.search(r'\b(?:to|from)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,2})', text)
@@ -2744,7 +5621,6 @@ class ConversationEngine:
 
     def _handle_save_contact_phone(self, phone_number, text):
         """Save a phone number for a contact e.g. 'save number Bola 2348012345678' """
-        import re
         # Search for phone number in original text (don't strip all spaces)
         phone_match = re.search(r'(\d[\d\s]{9,15}\d)', text)
         if not phone_match:
@@ -2795,7 +5671,6 @@ class ConversationEngine:
                 )
                 self.db.save_session(phone_number, STATE_IDLE, {})
                 return [{"type": "text", "content": f"Copy and send this:\n\n{reminder_text}"}]
-            import re
             phone_match = re.search(r'\b(\d{10,14})\b', text.replace(' ', ''))
             if not phone_match:
                 return [{"type": "text", "content": "\u2753 Please enter a valid number (10-14 digits) or type \"skip\"."}]
@@ -2996,7 +5871,6 @@ class ConversationEngine:
 
     def _handle_set_credit_terms(self, phone_number, text):
         """Set credit limit and days for a contact"""
-        import re
         amount_match = re.search(r'\b(\d+)\b', text)
         days_match = re.search(r'(\d+)\s*days?', text.lower())
         skip = {'set', 'credit', 'limit', 'for', 'terms', 'days', 'day', 'to', 'at', 'of'}
@@ -3241,16 +6115,329 @@ class ConversationEngine:
             return self._handle_report(phone_number, 'month')
 
     def _handle_export_selection(self, phone_number, text):
-        """Handle export option selection"""
-        # TODO: Implement in Step 13 (Export Service)
+        """Handle export option selection — dispatches to export_service"""
+        from services.export_service import ExportService
+        export_service = ExportService(self.db)
+        
+        text_lower = text.lower().strip()
+        
+        # Get any saved filter context
+        session = self.db.get_session(phone_number)
+        ctx = session.get('context', {}) if session else {}
+        
+        # Cancel/escape
+        if text_lower in ('cancel', 'back', 'exit'):
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return [{"type": "text", "content": "👍 Export cancelled."}]
+
+        # Filtered export (Excel or PDF for a specific report)
+        if text_lower in ('export_filtered_excel', 'excel', 'spreadsheet'):
+            filter_type = ctx.get('filter_type', 'my_sales')
+            start = ctx.get('filter_start', '')
+            end = ctx.get('filter_end', '')
+            period = ctx.get('filter_period', 'This Month')
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            filepath, filename = export_service.handle_filtered_export(
+                phone_number, filter_type, start, end, period, 'excel')
+            if filepath:
+                return [{"type": "document", "content": {"filepath": filepath, "filename": filename, 
+                         "caption": f"📊 {period} — Excel export"}}]
+            return [{"type": "text", "content": "⚠️ No data to export for that period."}]
+
+        elif text_lower in ('export_filtered_pdf', 'pdf'):
+            filter_type = ctx.get('filter_type', 'my_sales')
+            start = ctx.get('filter_start', '')
+            end = ctx.get('filter_end', '')
+            period = ctx.get('filter_period', 'This Month')
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            filepath, filename = export_service.handle_filtered_export(
+                phone_number, filter_type, start, end, period, 'pdf')
+            if filepath:
+                return [{"type": "document", "content": {"filepath": filepath, "filename": filename,
+                         "caption": f"📄 {period} — PDF export"}}]
+            return [{"type": "text", "content": "⚠️ No data to export for that period."}]
+
+        elif text_lower in ('export_month', 'this month', 'this month (excel)', 'full month'):
+            # Full month Excel export
+            from datetime import datetime
+            now = datetime.now()
+            start = now.strftime('%Y-%m-01')
+            end = now.strftime('%Y-%m-%d')
+            period = now.strftime('%B %Y')
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            filepath, filename = export_service.handle_filtered_export(
+                phone_number, 'all', start, end, period, 'excel')
+            if filepath:
+                return [{"type": "document", "content": {"filepath": filepath, "filename": filename,
+                         "caption": f"📊 Full Month ({period}) — Excel"}}]
+            return [{"type": "text", "content": "⚠️ No transactions this month."}]
+
+        elif text_lower in ('export_csv', 'full history', 'csv', 'full history (csv)'):
+            # Full history as CSV
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            filepath, filename = export_service.export_full_history_csv(phone_number)
+            if filepath:
+                return [{"type": "document", "content": {"filepath": filepath, "filename": filename,
+                         "caption": "📄 Full transaction history (CSV)"}}]
+            return [{"type": "text", "content": "⚠️ No transactions found."}]
+
+        elif text_lower in ('export_contacts', 'contacts list', 'contacts'):
+            # Export contacts
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            filepath, filename = export_service.export_contacts(phone_number)
+            if filepath:
+                return [{"type": "document", "content": {"filepath": filepath, "filename": filename,
+                         "caption": "📖 Your contacts list"}}]
+            return [{"type": "text", "content": "⚠️ No contacts to export."}]
+
+        # Unrecognized — show options
         self.db.save_session(phone_number, STATE_IDLE, {})
-        return [{"type": "text", "content": "📊 Export feature coming soon! For now, use 'report' to see your summary."}]
+        return [{"type": "text", "content": (
+            "📊 *Export Options:*\n\n"
+            "• Type *excel* for spreadsheet\n"
+            "• Type *pdf* for printable report\n"
+            "• Type *csv* for full history\n\n"
+            "_Or tap the options above._"
+        )}]
 
     def _handle_invoice_input(self, phone_number, text, context):
         """Handle invoice details input"""
-        # TODO: Implement in Step 14 (PDF Generator)
+        text_lower = text.lower().strip()
+
+        if text_lower in ['cancel', 'exit', 'stop']:
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return [{"type": "text", "content": "❌ Invoice cancelled."}]
+
+        step = context.get('step', 'ask_details')
+
+        if step == 'ask_details':
+            # Check for # reference syntax: "#1,3,5" or "1,6,7" (with or without #)
+            stripped = text.strip()
+            ref_match = re.match(r'^#?([\d,\s]+)$', stripped)
+            is_reference = False
+            if ref_match:
+                # Determine if this is a tx reference or just a number (amount)
+                has_hash = stripped.startswith('#')
+                has_comma = ',' in stripped
+                numbers_parsed = [int(n.strip()) for n in ref_match.group(1).split(',') if n.strip().isdigit()]
+                # It's a reference if: has # prefix, has commas, or all numbers are small (≤50)
+                is_reference = has_hash or has_comma or (numbers_parsed and max(numbers_parsed) <= 50)
+            if is_reference:
+                # Get transaction IDs from user profile (saved by "my sales" command)
+                user = self.db.get_user(phone_number)
+                tx_list = user.get('last_sales_list', user.get('last_tx_list', [])) if user else []
+                if not tx_list:
+                    return [{"type": "text", "content": "No transaction list found. Run *my sales* first to see numbered transactions, then try again."}]
+
+                # Parse numbers
+                numbers = [int(n.strip()) for n in ref_match.group(1).split(',') if n.strip().isdigit()]
+                tx_ids = []
+                for n in numbers:
+                    if 1 <= n <= len(tx_list):
+                        tx_ids.append(tx_list[n-1])
+
+                if not tx_ids:
+                    return [{"type": "text", "content": "Invalid numbers. Use numbers from your last *my sales* list."}]
+
+                self.db.save_session(phone_number, STATE_IDLE, {})
+                return [{"type": "invoice_from_transactions", "content": {"transaction_ids": tx_ids}}]
+
+            # Parse: "[Customer name] [amount] for [description]"  
+            # e.g. "Sandra Benede 100000 for 10 pairs of Nike socks"
+            # OR transaction-style: "Sold 15 pieces of Gucci socks for 200000 to Dada"
+            
+            # Detect transaction-style input (starts with sold/bought)
+            text_stripped = text.strip()
+            tx_style = re.match(r'^(sold|bought|delivered|shipped)\s+', text_stripped, re.IGNORECASE)
+            
+            if tx_style:
+                # Transaction-style: "Sold 15 pieces of Gucci socks for 200000 to Dada"
+                # Find amount after "for" (the price, not the quantity)
+                price_match = re.search(r'\bfor\s+(₦?\d[\d,]*[kKmM]?)\b', text_stripped, re.IGNORECASE)
+                # Find customer after "to"
+                name_match = re.search(r'\bto\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\s*$', text_stripped)
+                if not name_match:
+                    name_match = re.search(r'\bto\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)', text_stripped)
+                
+                if price_match:
+                    amt_str = price_match.group(1).replace('₦', '').replace(',', '')
+                    if amt_str.lower().endswith('k'):
+                        amount = int(amt_str[:-1]) * 1000
+                    elif amt_str.lower().endswith('m'):
+                        amount = int(amt_str[:-1]) * 1000000
+                    else:
+                        amount = int(amt_str)
+                    customer_name = name_match.group(1).strip().title() if name_match else "Customer"
+                    # Description: everything between "sold" and "for [amount]"
+                    desc_part = text_stripped[tx_style.end():price_match.start()].strip()
+                    # Remove leading quantity like "15 pieces of"
+                    desc_part = re.sub(r'^\d+\s*(pairs?|pieces?|cartons?|bags?|packs?|bottles?|dozen)\s+(of\s+)?', '', desc_part, flags=re.IGNORECASE)
+                    description = desc_part.strip() or "Goods/Services"
+                    
+                    self.db.save_session(phone_number, STATE_IDLE, {})
+                    return [{"type": "invoice_generate", "content": {
+                        "customer_name": customer_name, "amount": amount, "description": description
+                    }}]
+
+            # Standard format: [Name] [Amount] for [Description]
+            amount_match = re.search(r'(₦?\d[\d,]*[kKmM]?)', text_stripped)
+            if not amount_match:
+                return [{"type": "text", "content": (
+                    "I need an amount. Try:\n"
+                    "*Sandra 100,000 for 20 pairs Nike socks*\n\n"
+                    "Or type *cancel* to exit."
+                )}]
+
+            # Parse amount
+            amt_str = amount_match.group(1).replace('₦', '').replace(',', '')
+            if amt_str.lower().endswith('k'):
+                amount = int(amt_str[:-1]) * 1000
+            elif amt_str.lower().endswith('m'):
+                amount = int(amt_str[:-1]) * 1000000
+            else:
+                amount = int(amt_str)
+
+            # Split: text before amount = customer name
+            customer_name = text_stripped[:amount_match.start()].strip().title()
+            
+            # Text after amount = description (remove leading "for" if present)
+            after_amount = text_stripped[amount_match.end():].strip()
+            if after_amount.lower().startswith('for '):
+                description = after_amount[4:].strip()
+            elif after_amount.lower().startswith('for'):
+                description = after_amount[3:].strip()
+            else:
+                description = after_amount.strip()
+
+            if not customer_name or len(customer_name) < 2:
+                customer_name = "Customer"
+            if not description:
+                description = "Goods/Services"
+
+            # Detect "+ tax" / "+ VAT" / "+ WHT" in description or original text
+            tax_info = None
+            tax_pattern = re.search(r'\+\s*(vat|tax|wht)\s*(?:([\d.]+)\s*%?)?', text_stripped, re.IGNORECASE)
+            if tax_pattern:
+                tax_kw = tax_pattern.group(1).upper()
+                tax_rate = tax_pattern.group(2)
+                if tax_rate:
+                    rate = float(tax_rate)
+                else:
+                    # Use user's default
+                    user = self.db.get_user(phone_number)
+                    rate = float(user.get('default_tax_percent', '7.5')) if user and user.get('default_tax_percent') else 7.5
+                tax_type = 'WHT' if tax_kw == 'WHT' else 'VAT'
+                tax_amt = int(amount * rate / 100)
+                tax_info = {"amount": tax_amt, "percent": rate, "type": tax_type}
+                # Remove tax part from description
+                description = re.sub(r'\+\s*(?:vat|tax|wht)\s*(?:[\d.]+\s*%?)?', '', description, flags=re.IGNORECASE).strip()
+                if not description:
+                    description = "Goods/Services"
+
+            # Return marker for main.py to handle PDF generation
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            invoice_data = {"customer_name": customer_name, "amount": int(amount), "description": description}
+            if tax_info:
+                invoice_data["tax"] = tax_info
+            return [{"type": "invoice_generate", "content": invoice_data}]
+
         self.db.save_session(phone_number, STATE_IDLE, {})
-        return [{"type": "text", "content": "📄 Invoice feature coming soon!"}]
+        return [{"type": "text", "content": "Something went wrong. Please try again."}]
+
+    def _handle_receipt_selection(self, phone_number, text, context):
+        """Handle receipt generation — select which transaction(s)"""
+        text_lower = text.lower().strip()
+
+        if text_lower in ['cancel', 'exit', 'stop']:
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return [{"type": "text", "content": "❌ Cancelled."}]
+
+        # "last" — generate for last transaction
+        if text_lower == 'last':
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return [{"type": "receipt_generate", "content": {"mode": "last"}}]
+
+        # "#3" or "#1,3,5" — specific transactions by number
+        cleaned_input = re.sub(r'[\\\/\.\s]+$', '', text.strip())  # strip trailing \, /, ., spaces
+        ref_match = re.match(r'^#?([\d,\s]+)$', cleaned_input)
+        if ref_match:
+            # Get transaction list from user profile (saved by "my sales" command)
+            user = self.db.get_user(phone_number)
+            tx_list = user.get('last_tx_list', []) if user else []
+            if not tx_list:
+                return [{"type": "text", "content": "No transaction list found.\n\nRun *my sales* first to see numbered transactions, then come back."}]
+
+            numbers = [int(n.strip()) for n in ref_match.group(1).split(',') if n.strip().isdigit()]
+            tx_ids = []
+            for n in numbers:
+                if 1 <= n <= len(tx_list):
+                    tx_ids.append(tx_list[n-1])
+
+            if not tx_ids:
+                return [{"type": "text", "content": "Invalid numbers. Use numbers from your *my sales* list.\n\nExample: *#3* or *#1,3,5*"}]
+
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return [{"type": "receipt_generate", "content": {"mode": "specific", "transaction_ids": tx_ids}}]
+
+        return [{"type": "text", "content": "Type *last*, or *#3*, or *#1,3,5* to select transactions.\n\nOr *cancel* to exit."}]
+
+    def _handle_confirm_forward(self, phone_number, text, context):
+        """Handle confirmation to forward invoice/receipt to customer"""
+        text_lower = text.lower().strip()
+
+        customer_name = context.get('customer_name', '')
+        contact_phone = context.get('contact_phone', '')
+        s3_url = context.get('s3_url', '')
+        filename = context.get('filename', '')
+
+        # Yes — send to customer (button reply or text)
+        yes_signals = ['yes', 'forward_yes', 'send', 'ok', 'sure', 'yea', 'yeah', 'yep']
+        if text_lower in yes_signals or ('yes' in text_lower and 'no' not in text_lower):
+            if contact_phone and s3_url:
+                self.db.save_session(phone_number, STATE_IDLE, {})
+                return [{"type": "forward_send", "content": {
+                    "to_phone": contact_phone,
+                    "customer_name": customer_name,
+                    "s3_url": s3_url,
+                    "filename": filename
+                }}]
+            else:
+                # No phone on file — ask for it
+                return [{"type": "text", "content": (
+                    f"I don't have a WhatsApp number for *{customer_name}*.\n\n"
+                    f"Send their number (e.g. 08012345678) and I'll deliver it.\n"
+                    f"Or type *skip* to cancel."
+                )}]
+
+        # Cancel / Skip
+        no_signals = ['skip', 'no', 'cancel', 'exit', 'forward_no', 'nah', 'nope']
+        if text_lower in no_signals or 'no' in text_lower:
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return [{"type": "text", "content": "👍 Got it. Document not forwarded."}]
+
+        # User sent a phone number
+        phone_match = re.match(r'^[\+]?(\d{10,15})$', text.replace(' ', '').replace('-', ''))
+        if phone_match:
+            new_phone = phone_match.group(1)
+            # Normalize Nigerian numbers: 080... → 234...
+            if new_phone.startswith('0') and len(new_phone) == 11:
+                new_phone = '234' + new_phone[1:]
+            # Save to contact
+            if customer_name:
+                self.db.update_contact_profile(phone_number, customer_name, {'contact_phone': new_phone})
+            # Send the document
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return [{"type": "forward_send", "content": {
+                "to_phone": new_phone,
+                "customer_name": customer_name,
+                "s3_url": s3_url,
+                "filename": filename
+            }}]
+
+        # Unrecognized input
+        return [{"type": "text", "content": (
+            f"Send *{customer_name}*'s WhatsApp number, or type *skip* to cancel."
+        )}]
 
     def _get_category_emoji(self, category):
         """Map category to emoji"""
@@ -3295,22 +6482,321 @@ class ConversationEngine:
             return self._handle_idle(phone_number, text)
 
     def _handle_setup_catalog(self, phone_number, text):
-        """Start catalog setup — Step 1: What products do you sell?"""
+        """Start the free-form AI catalog setup (v2)"""
         user = self.db.get_user(phone_number)
-        business_name = user.get('business_name', 'your business')
-        business_type = user.get('business_type', 'general')
+        business_name = user.get('business_name', 'your business') if user else 'your business'
 
-        examples = {
-            'trading': 'Sneakers, T-Shirts, Bags, Watches, Phones',
-            'fashion': 'Shoes, Clothes, Bags, Socks, Accessories',
-            'food': 'Rice, Palm Oil, Drinks, Snacks, Flour',
-            'services': 'Haircut, Braiding, Manicure, Laundry',
-            'general': 'List what you sell or offer',
-        }
-        example = examples.get(business_type, examples['general'])
+        # Check if user already has products — offer to add more
+        existing = self.db.get_product_list(phone_number)
+        if existing:
+            self.db.save_session(phone_number, 'CATALOG_SETUP_DETAILS', {
+                'products': existing
+            })
+            return [{"type": "text", "content": (
+                f"📦 You already have {len(existing)} products.\n\n"
+                f"Describe what you want to add or update:\n\n"
+                f"• _\"Add Perfume, Body Cream to my products\"_\n"
+                f"• _\"Airfreshener comes in 500ml, 4L, 25L\"_\n"
+                f"• _\"1 carton = 12 pieces\"_\n\n"
+                f"Type *done* when finished, or *reset catalog* to start fresh."
+            )}]
 
-        self.db.save_session(phone_number, STATE_REG_PRODUCTS, {})
-        return [{"type": "text", "content": f"\ud83d\ude80 *Product Catalog Setup for {business_name}*\n\n*What products/items do you sell?*\n\nList them separated by commas.\n\n_Example: {example}_\n\n_Type \'cancel\' to exit setup._"}]
+        self.db.save_session(phone_number, 'CATALOG_SETUP_PRODUCTS', {})
+        return [{"type": "text", "content": (
+            f"🚀 *Product Catalog Setup*\n\n"
+            f"What products does *{business_name}* sell?\n\n"
+            f"List them separated by commas or one per line.\n\n"
+            f"_Example: Airfreshener, Hand Wash, Dish Wash, Bleach_\n\n"
+            f"Type 'cancel' to exit."
+        )}]
+
+    def _handle_catalog_setup_products(self, phone_number, text, context):
+        """Step 1: Parse the product list"""
+        if text.lower().strip() in ['cancel', 'exit', 'stop', 'quit']:
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return [{"type": "text", "content": "❌ Catalog setup cancelled."}]
+
+        # Split by commas or newlines
+        raw_items = [p.strip().title() for p in re.split(r'[,\n]+', text) if p.strip() and len(p.strip()) > 1]
+
+        if not raw_items:
+            return [{"type": "text", "content": "Please list at least one product. Separate with commas."}]
+
+        # Smart grouping: detect "size + product" pattern (e.g., "500ml Airfreshener")
+        size_pattern = re.compile(r'^(\d+(?:\.\d+)?)\s*(ml|l|kg|g|cl|oz)\s+(.+)$', re.IGNORECASE)
+        grouped = {}
+        ungrouped = []
+
+        for item in raw_items:
+            match = size_pattern.match(item.strip())
+            if match:
+                size_num = match.group(1)
+                size_unit = match.group(2)
+                product_name = match.group(3).strip().title()
+                size_label = f"{size_num}{size_unit.upper() if size_unit.lower() == 'l' else size_unit.lower()}"
+                if product_name not in grouped:
+                    grouped[product_name] = []
+                if size_label not in grouped[product_name]:
+                    grouped[product_name].append(size_label)
+            else:
+                ungrouped.append(item)
+
+        # If we detected size groupings, use them
+        if grouped:
+            products = list(grouped.keys()) + ungrouped
+            # Save products and auto-set sizes
+            for product in products:
+                self.db.add_product(phone_number, product)
+            for product_name, sizes in grouped.items():
+                self.db.set_attributes(phone_number, product_name, 'size', sizes)
+            for product in ungrouped:
+                self.db.add_product(phone_number, product)
+        else:
+            products = ungrouped if ungrouped else raw_items
+            for product in products:
+                self.db.add_product(phone_number, product)
+
+        # Build response
+        size_note = ""
+        if grouped:
+            size_note = f"\n\n🔍 _I noticed sizes in your list and grouped them automatically!_"
+
+        # Move to details phase
+        self.db.save_session(phone_number, 'CATALOG_SETUP_DETAILS', {
+            'products': products
+        })
+
+        return [{"type": "text", "content": (
+            f"✅ *{len(products)} products saved:*\n"
+            f"{', '.join(products)}\n\n"
+            f"{size_note}\n"
+            f"━━━━━━━━━━\n\n"
+            f"Now tell me about sizes, brands, or variants.\n"
+            f"Just describe naturally:\n\n"
+            f"• _\"All come in 500ml, 4L, 25L\"_\n"
+            f"• _\"Airfreshener brands: Charming, Alluring\"_\n"
+            f"• _\"1 carton = 12 pieces for 500ml\"_\n\n"
+            f"Type each detail, then *done* when finished."
+        )}]
+
+    def _handle_catalog_setup_details(self, phone_number, text, context):
+        """Step 2: Parse free-form descriptions with AI"""
+        text_lower = text.lower().strip()
+
+        if text_lower in ['done', 'finish', 'finished', "that's all", 'thats all']:
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return self._show_catalog_summary(phone_number)
+
+        if text_lower in ['cancel', 'exit', 'stop']:
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return [{"type": "text", "content": "✅ Catalog saved. Type *my catalog* to view."}]
+
+        if text_lower == 'reset catalog':
+            self.db.save_product_catalog(phone_number, {})
+            self.db.save_session(phone_number, 'CATALOG_SETUP_PRODUCTS', {})
+            return [{"type": "text", "content": "🗑️ Catalog cleared!\n\nList your products (comma-separated):"}]
+
+        # Handle non-actionable responses (user asking for clarification)
+        if text_lower in ['more details', 'more', 'details', 'yes', 'continue', 'go on', 'next', 'what else']:
+            return [{"type": "text", "content": (
+                "📝 Tell me about your products:\n\n"
+                "• _\"Slides sizes: 35 to 50\"_\n"
+                "• _\"Slides brands: Nike, Gucci, Prada\"_\n"
+                "• _\"1 carton = 12 pieces\"_\n\n"
+                "Or type *done* to finish."
+            )}]
+
+        # Get current product list
+        products = context.get('products', self.db.get_product_list(phone_number))
+
+        # Split multi-line messages and process each line
+        lines = [l.strip() for l in text.split('\n') if l.strip()]
+        if len(lines) > 1:
+            # Process each line separately, collect results
+            responses = []
+            last_added = context.get('last_added_product', '')
+            for line in lines:
+                result = self._parse_catalog_description(phone_number, line, products, last_added=last_added)
+                if result and result.get('action') != 'unknown':
+                    resp = self._apply_catalog_update(phone_number, result, products)
+                    responses.append(resp)
+            if responses:
+                return [{"type": "text", "content": "\n".join(responses) + "\n\n_More details? Or type *done* to finish._"}]
+            # If none parsed, fall through to single-line handling
+
+        # Single line — use AI to parse
+        last_added = context.get('last_added_product', '')
+        result = self._parse_catalog_description(phone_number, text, products, last_added=last_added)
+
+        if not result or result.get('action') == 'unknown':
+            return [{"type": "text", "content": (
+                "🤔 I couldn't parse that. Try:\n\n"
+                "• _\"sizes: 500ml, 4L, 25L\"_\n"
+                "• _\"Hand Wash brands: Soft Touch, Fruity\"_\n"
+                "• _\"1 carton = 12 pieces\"_\n\n"
+                "Or type *done* to finish."
+            )}]
+
+        # Apply the update
+        response = self._apply_catalog_update(phone_number, result, products)
+
+        # Track last added product for context
+        if result.get('action') == 'add_products':
+            new_products = result.get('data', {}).get('products', [])
+            if new_products:
+                context['last_added_product'] = new_products[-1].strip().title()
+                context['products'] = products + [p.strip().title() for p in new_products]
+                self.db.save_session(phone_number, 'CATALOG_SETUP_DETAILS', context)
+
+        return [{"type": "text", "content": response + "\n\n_More details? Or type *done* to finish._"}]
+
+    def _parse_catalog_description(self, phone_number, text, products, last_added=''):
+        """Use AI to parse free-form catalog descriptions into structured data"""
+        import json as _json
+        from openai import OpenAI
+        from utils.config import get_openai_key
+
+        if not self.categorizer.client:
+            self.categorizer.client = OpenAI(api_key=get_openai_key())
+
+        product_list = ", ".join(products) if products else "none"
+        context_hint = ""
+        if last_added:
+            context_hint = f"\n⚠️ The user JUST added '{last_added}' to their catalog. If they don't name a specific product, they probably mean '{last_added}'.\n"
+        prompt = (
+            f"You are parsing a product catalog description for a Nigerian business.\n"
+            f"Their existing products (ONLY these exist): {product_list}\n{context_hint}\n"
+            f"User said: \"{text}\"\n\n"
+            f"Parse into JSON:\n"
+            f'{{"action": "add_sizes"|"add_brands"|"add_attributes"|"add_conversions"|"add_products"|"unknown",\n'
+            f' "targets": ["product1"] or ["all"],\n'
+            f' "data": {{\n'
+            f'   // add_sizes/add_attributes: {{"attributes": {{"size": ["500ml","4L"], "color": ["Red"]}}}}\n'
+            f'   // add_brands: {{"brands": ["Charming", "Alluring"]}}\n'
+            f'   // add_conversions: {{"conversions": {{"1 carton (500ml)": "12 pieces", "1 carton (4L)": "4 pieces"}}}}\n'
+            f'   // add_products: {{"products": ["New Item"]}}\n'
+            f' }}}}\n\n'
+            f"Rules:\n"
+            f"- \"comes in X, Y, Z\" or \"sizes: X, Y, Z\" → add_sizes with attribute 'size'\n"
+            f"- \"brands: X, Y\" or \"types: X, Y\" → add_brands\n"
+            f"- \"1 carton = 12 pieces for 500ml\" → add_conversions. ALWAYS include size in key: "
+            f"{{\"1 carton (500ml)\": \"12 pieces\"}}. If no size mentioned, use plain key.\n"
+            f"- \"Add X, Y to products\" → add_products\n"
+            f"- TARGETING RULES (critical):\n"
+            f"  * If user names specific products (e.g. 'Hand wash, dish wash come in 500ml'), "
+            f"target ONLY those exact products from the product list above.\n"
+            f"  * 'all' or 'everything' or 'all products' → target 'all'\n"
+            f"  * If no product is named AND a product was just added (see context above), "
+            f"target that recently-added product.\n"
+            f"  * If a named product doesn't exist in the list, suggest add_products instead.\n"
+            f"  * For conversions: target 'all' ONLY if user says 'all'. Otherwise target specific products.\n"
+            f"  * Match product names case-insensitively to the existing product list.\n"
+            f"- Return ONLY valid JSON, no explanation."
+        )
+
+        try:
+            response = self.categorizer.client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=500,
+            )
+            content = response.choices[0].message.content.strip()
+            if content.startswith('```'):
+                content = content.split('\n', 1)[1].rsplit('```', 1)[0].strip()
+            return _json.loads(content)
+        except Exception as e:
+            logger.error(f"Catalog AI parse error: {e}")
+            return None
+
+    def _match_product_name(self, target, products):
+        """Match a target name to an existing product — exact first, then partial"""
+        target_lower = target.strip().lower()
+        # Exact match
+        for p in products:
+            if p.lower() == target_lower:
+                return p
+        # Partial match — target is contained in a product name
+        for p in products:
+            if target_lower in p.lower() and len(target_lower) >= 3:
+                return p
+        return None
+
+    def _apply_catalog_update(self, phone_number, result, products):
+        """Apply a parsed catalog update and return confirmation"""
+        action = result.get('action', '')
+        targets = result.get('targets', [])
+        data = result.get('data', {})
+
+        # Resolve "all"
+        if 'all' in [str(t).lower() for t in targets]:
+            targets = products
+        else:
+            # Validate targets — match to existing products (exact then partial)
+            resolved_targets = []
+            for t in targets:
+                matched = self._match_product_name(t, products)
+                if matched and matched not in resolved_targets:
+                    resolved_targets.append(matched)
+            targets = resolved_targets if resolved_targets else [t.strip().title() for t in targets[:5]]
+
+        if action in ['add_sizes', 'add_attributes']:
+            attributes = data.get('attributes', {})
+            if not attributes and 'attribute' in data:
+                attributes = {data['attribute']: data.get('values', [])}
+            for product in targets:
+                for attr, values in attributes.items():
+                    self.db.set_attributes(phone_number, product, attr, values)
+            attr_summary = ", ".join(f"{k}: {', '.join(str(v) for v in vals)}" for k, vals in attributes.items())
+            target_str = ", ".join(targets[:5])
+            return f"✅ Added *{attr_summary}* to {target_str}"
+
+        elif action == 'add_brands':
+            brands = data.get('brands', [])
+            for product in targets:
+                for brand in brands:
+                    self.db.add_subcategory(phone_number, product, brand)
+            return f"✅ Added brands ({', '.join(brands)}) under *{', '.join(targets)}*"
+
+        elif action == 'add_conversions':
+            conversions = data.get('conversions', {})
+            # Smart filtering: only apply size-specific conversions to products that have that size
+            import re as _re
+            catalog = self.db.get_product_catalog(phone_number)
+            all_products_data = catalog.get('products', {})
+            applied_to = set()
+            for conv_key, conv_val in conversions.items():
+                # Extract size from key like "1 carton (500ml)" → "500ml"
+                size_match = _re.search(r'\((\d+(?:\.\d+)?(?:ml|l|L|kg|g|cl|oz))\)', conv_key, _re.IGNORECASE)
+                if size_match and 'all' in [str(t).lower() for t in result.get('targets', [])]:
+                    # Only apply to products that have this size
+                    conv_size = size_match.group(1).lower()
+                    for product in targets:
+                        p_data = all_products_data.get(product, all_products_data.get(product.strip().title(), {}))
+                        product_sizes = [s.lower() for s in p_data.get('attributes', {}).get('size', [])]
+                        if conv_size in product_sizes:
+                            self.db.set_conversions(phone_number, product, {conv_key: conv_val})
+                            applied_to.add(product)
+                else:
+                    # No size in key or specific targets — apply to all targets
+                    for product in targets:
+                        self.db.set_conversions(phone_number, product, {conv_key: conv_val})
+                        applied_to.add(product)
+            conv_str = ", ".join(f"{k} = {v}" for k, v in conversions.items())
+            target_note = f" ({', '.join(list(applied_to)[:5])})" if len(applied_to) < len(targets) else ""
+            return f"✅ Conversions saved:\n{conv_str}{target_note}"
+
+        elif action == 'add_products':
+            new_products = data.get('products', [])
+            for p in new_products:
+                self.db.add_product(phone_number, p.strip().title())
+            return f"✅ Added: {', '.join(new_products)}"
+
+        return "✅ Updated."
+
+    def _show_catalog_summary(self, phone_number):
+        """Show catalog summary after setup completes"""
+        return self._show_full_catalog(phone_number)
 
     def _handle_reg_products(self, phone_number, text):
         """Process product list, ask for subcategories of first product"""
@@ -3867,63 +7353,979 @@ class ConversationEngine:
 
         return pending
 
-    def _show_full_catalog(self, phone_number):
-        """Display the complete catalog tree"""
-        catalog = self.db.get_product_catalog(phone_number)
+    def _handle_guided_step(self, phone_number, text, context):
+        """Handle each step of the guided transaction flow"""
+        from utils.parser import parse_amount
+        step = context.get('step', 'ask_item')
+        text_lower = text.lower().strip()
+
+        # Escape at any point
+        if text_lower in ('cancel', 'back', 'exit', 'stop', 'menu', 'help'):
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            if text_lower in ('menu', 'help'):
+                return self._handle_greeting(phone_number)
+            return [{"type": "text", "content": "\U0001f44d Cancelled. What else can I help with?"}]
+
+        # ─── STEP 1: WHAT ITEM ───
+        if step == 'ask_item':
+            item = text.strip()
+            if len(item) < 1:
+                return [{"type": "text", "content": "Please type what you sold/bought:"}]
+
+            context['item'] = item
+            context['step'] = 'ask_quantity'
+            self.db.save_session(phone_number, 'STATE_GUIDED', context)
+
+            return [{"type": "buttons", "content": {
+                "body": f"\U0001f4e6 *{item.title()}* \u2014 How many?\n\n_Type a number, or tap 1 if just one item_",
+                "buttons": [
+                    {"id": "guided_qty_1", "title": "1 (single)"},
+                    {"id": "guided_qty_skip", "title": "Skip"},
+                ]
+            }}]
+
+        # ─── STEP 2: QUANTITY ───
+        elif step == 'ask_quantity':
+            if text_lower in ('skip', 'guided_qty_skip', '1', 'guided_qty_1', 'one'):
+                qty = 1 if text_lower in ('1', 'guided_qty_1', 'one') else ''
+            else:
+                # Try to parse number
+                import re
+                num_match = re.match(r'(\d+)', text.strip())
+                qty = int(num_match.group(1)) if num_match else 1
+
+            context['quantity'] = qty if qty else ''
+            context['step'] = 'ask_amount'
+            self.db.save_session(phone_number, 'STATE_GUIDED', context)
+
+            item = context.get('item', 'item')
+            qty_display = f" x{qty}" if qty and qty > 1 else ""
+            return [{"type": "text", "content": (
+                f"\U0001f4b0 *{item.title()}{qty_display}* \u2014 How much (total)?\n\n"
+                f"_Type amount: e.g. 150000, 150K, 1.5M_"
+            )}]
+
+        # ─── STEP 3: AMOUNT ───
+        elif step == 'ask_amount':
+            amount = parse_amount(text)
+            if amount == 0:
+                return [{"type": "text", "content": "\u26a0\ufe0f Couldn't get a number. How much?\n_e.g. 50000, 50K, 1.5M_"}]
+
+            context['amount'] = amount
+            context['step'] = 'ask_vendor'
+            self.db.save_session(phone_number, 'STATE_GUIDED', context)
+
+            tx_type = context.get('tx_type', 'income')
+            if tx_type == 'income':
+                question = "Who bought it?"
+            else:
+                question = "Who did you buy from?"
+
+            return [{"type": "buttons", "content": {
+                "body": f"\U0001f465 *{question}*\n\n_Type their name, or skip_",
+                "buttons": [
+                    {"id": "guided_vendor_skip", "title": "\u23e9 Skip"},
+                ]
+            }}]
+
+        # ─── STEP 4: VENDOR/CUSTOMER ───
+        elif step == 'ask_vendor':
+            if text_lower in ('skip', 'guided_vendor_skip', 'no', 'none'):
+                vendor = ''
+            else:
+                vendor = text.strip()
+
+            context['vendor'] = vendor
+            context['step'] = 'ask_details'
+            self.db.save_session(phone_number, 'STATE_GUIDED', context)
+
+            return [{"type": "buttons", "content": {
+                "body": "\U0001f3f7\ufe0f *Any extra details?*\n\nBrand, color, size, model, pattern...\n\n_Type details or skip_",
+                "buttons": [
+                    {"id": "guided_details_skip", "title": "\u23e9 No, save it"},
+                ]
+            }}]
+
+        # ─── STEP 5: DETAILS (optional) ───
+        elif step == 'ask_details':
+            # Ignore generic/placeholder text (user copied the prompt)
+            skip_words = {'skip', 'guided_details_skip', 'no', 'none', 'no, save it',
+                         'brand', 'color', 'size', 'model', 'pattern',
+                         'brand, color, size', 'brand, color, pattern',
+                         'brand, color, size, model, pattern'}
+            if text_lower in skip_words or text_lower.replace(',', '').replace(' ', '') in ('brandcolorsize', 'brandcolorsizemodel', 'brandcolorsizemodelpattern'):
+                details = ''
+            else:
+                details = text.strip()
+
+            context['details'] = details
+            context['step'] = 'confirm'
+
+            # Build the full natural language sentence and send to AI parser
+            item = context.get('item', '')
+            qty = context.get('quantity', '')
+            amount = context.get('amount', 0)
+            vendor = context.get('vendor', '')
+            tx_type = context.get('tx_type', 'income')
+            payment = context.get('payment', 'cash')
+
+            # Construct natural sentence for AI parser
+            # Format: "sold/bought [qty] [item] [details] to/from [vendor] [amount] [on credit]"
+            if tx_type == 'income':
+                verb = 'sold'
+                preposition = 'to'
+            else:
+                verb = 'bought'
+                preposition = 'from'
+
+            sentence = f"{verb} "
+            if qty and qty > 1:
+                sentence += f"{qty} "
+            sentence += f"{item} "
+            if details:
+                sentence += f"({details}) "
+            if vendor:
+                sentence += f"{preposition} {vendor} "
+            sentence += f"for {amount}"
+            if payment == 'credit':
+                sentence += " on credit"
+
+            # Reset state and process as a normal transaction
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return self._handle_idle(phone_number, sentence)
+
+        else:
+            # Unknown step — reset
+            self.db.save_session(phone_number, STATE_IDLE, {})
+            return [{"type": "text", "content": "Something went wrong. Let\'s start over."}]
+
+    def _start_guided_flow(self, phone_number, flow_type):
+        """Start a guided step-by-step transaction recording flow.
+        flow_type: cash_sale, credit_sale, cash_purchase, credit_purchase, cash_expense
+        """
+        # Determine transaction category
+        if 'sale' in flow_type:
+            tx_type = 'income'
+            payment = 'credit' if 'credit' in flow_type else 'cash'
+            prompt_label = 'sold'
+            emoji = '\U0001f4b0'
+            item_question = "What did you sell?"
+            item_examples = "_(e.g. shoes, socks, bread, phone)_"
+        elif 'purchase' in flow_type:
+            tx_type = 'expense'
+            payment = 'credit' if 'credit' in flow_type else 'cash'
+            prompt_label = 'bought'
+            emoji = '\U0001f4e6'
+            item_question = "What did you buy?"
+            item_examples = "_(e.g. flour, fabric, cement, stock)_"
+        else:
+            tx_type = 'expense'
+            payment = 'cash'
+            prompt_label = 'paid for'
+            emoji = '\U0001f4b8'
+            item_question = "What did you pay for?"
+            item_examples = "_(e.g. rent, fuel, salary, electricity)_"
+
+        self.db.save_session(phone_number, 'STATE_GUIDED', {
+            'step': 'ask_item',
+            'flow_type': flow_type,
+            'tx_type': tx_type,
+            'payment': payment,
+        })
+
+        return [{"type": "text", "content": (
+            f"{emoji} *{item_question}*\n\n"
+            f"{item_examples}"
+        )}]
+
+    def _get_record_menu_rows(self, phone_number):
+        """Return industry-specific Record menu rows"""
+        user = self.db.get_user(phone_number)
+        industry_class = user.get('industry_class', 'trading') if user else 'trading'
+
+        # Base rows (everyone gets these)
+        base_rows = [
+            {"id": "menu_record_sale", "title": "\U0001f4b0 Record Sale", "description": "Income \u2014 cash or credit"},
+        ]
+
+        if industry_class == 'manufacturing':
+            return [
+                {"id": "menu_record_sale", "title": "\U0001f4b0 Record Sale", "description": "Sell finished goods"},
+                {"id": "menu_record_purchase", "title": "\U0001f9f1 Buy Raw Materials", "description": "Materials for production"},
+                {"id": "menu_production", "title": "\U0001f3ed Record Production", "description": "Log a production run"},
+                {"id": "menu_set_recipe", "title": "\U0001f4cb Set Recipe / BOM", "description": "Define materials per batch"},
+                {"id": "menu_record_expense", "title": "\U0001f4b8 Record Expense", "description": "Rent, utilities, admin"},
+                {"id": "menu_record_payment", "title": "\U0001f4b3 Record Payment", "description": "Debt paid to/by you"},
+            ]
+        elif industry_class == 'services':
+            return [
+                {"id": "menu_record_service", "title": "\U0001f4bc Record Service", "description": "Fee, contract, or commission"},
+                {"id": "menu_record_expense", "title": "\U0001f4b8 Record Expense", "description": "Rent, tools, subcontractors"},
+                {"id": "menu_record_purchase", "title": "\U0001f6d2 Record Purchase", "description": "Materials or tools bought"},
+                {"id": "menu_record_payment", "title": "\U0001f4b3 Record Payment", "description": "Debt paid to/by you"},
+            ]
+        elif industry_class == 'hybrid':
+            return [
+                {"id": "menu_record_sale", "title": "\U0001f4b0 Record Sale", "description": "Product sold (cash or credit)"},
+                {"id": "menu_record_service", "title": "\U0001f4bc Record Service", "description": "Service delivered"},
+                {"id": "menu_record_purchase", "title": "\U0001f4e6 Record Purchase", "description": "Stock or materials"},
+                {"id": "menu_record_expense", "title": "\U0001f4b8 Record Expense", "description": "Rent, bills, salaries"},
+                {"id": "menu_record_payment", "title": "\U0001f4b3 Record Payment", "description": "Debt paid to/by you"},
+            ]
+        else:
+            # Trading (default)
+            return [
+                {"id": "menu_record_sale", "title": "\U0001f4b0 Record Sale", "description": "Income \u2014 cash or credit"},
+                {"id": "menu_record_purchase", "title": "\U0001f4e6 Record Purchase", "description": "Stock & goods for business"},
+                {"id": "menu_record_expense", "title": "\U0001f4b8 Record Expense", "description": "Rent, bills, salaries"},
+                {"id": "menu_record_payment", "title": "\U0001f4b3 Record Payment", "description": "Debt paid to/by you"},
+            ]
+
+    def _show_debts_menu(self):
+        """Show debts & credits sub-menu"""
+        return [{"type": "list", "content": {
+            "header": "\U0001f4b3 Debts & Credits",
+            "body": "Track money owed \u2014 both ways:",
+            "button_text": "\U0001f4b3 View Debts",
+            "sections": [
+                {
+                    "title": "Debts & Credits",
+                    "rows": [
+                        {"id": "debt_who_owes_me", "title": "\U0001f4b0 Who Owes Me", "description": "People who owe you money"},
+                        {"id": "debt_who_i_owe", "title": "\U0001f4b8 Who I Owe", "description": "Suppliers/people you owe"},
+                    ]
+                }
+            ]
+        }}]
+
+    def _show_contacts_menu(self):
+        """Show contacts sub-menu — Customers vs Suppliers"""
+        return [{"type": "list", "content": {
+            "header": "\U0001f4d6 Contacts",
+            "body": "Your business contacts:",
+            "button_text": "\U0001f4d6 View Contacts",
+            "sections": [
+                {
+                    "title": "Contact Types",
+                    "rows": [
+                        {"id": "contacts_customers", "title": "\U0001f465 My Customers", "description": "People who buy from you"},
+                        {"id": "contacts_suppliers", "title": "\U0001f3ea My Suppliers", "description": "People you buy from"},
+                        {"id": "contacts_all", "title": "\U0001f4d6 All Contacts", "description": "Everyone combined"},
+                    ]
+                }
+            ]
+        }}]
+
+    def _show_contacts_filtered(self, phone_number, contact_type):
+        """Show customers OR suppliers from auto_catalog"""
+        user = self.db.get_user(phone_number)
+        catalog = user.get('auto_catalog', {}) if user else {}
+        contacts = catalog.get('customers', {})  # This stores both customers & suppliers
+
+        if not contacts:
+            return [{"type": "text", "content": (
+                "\U0001f4d6 *No contacts yet!*\n\n"
+                "Your contacts build automatically as you record transactions.\n"
+                "_Just start recording and I\'ll learn your people._"
+            )}]
+
+        # Filter by type
+        filtered = {k: v for k, v in contacts.items() 
+                   if v.get('type', 'customer') == contact_type}
+
+        if not filtered:
+            label = 'customers' if contact_type == 'customer' else 'suppliers'
+            return [{"type": "text", "content": f"\U0001f4d6 No {label} recorded yet."}]
+
+        # Sort by transaction count (most active first)
+        sorted_contacts = sorted(filtered.values(), key=lambda x: x.get('transaction_count', 0), reverse=True)
+
+        emoji = "\U0001f465" if contact_type == 'customer' else "\U0001f3ea"
+        label = "Customers" if contact_type == 'customer' else "Suppliers"
+        msg = f"{emoji} *My {label}* ({len(sorted_contacts)})\n\n"
+
+        for c in sorted_contacts[:15]:
+            name = c.get('name', 'Unknown')
+            total = c.get('total_amount', 0)
+            count = c.get('transaction_count', 0)
+            products = c.get('products', [])
+            last = c.get('last_activity', '')
+
+            msg += f"*{name}*\n"
+            msg += f"   \U0001f4b0 \u20a6{total:,} ({count} transactions)\n"
+            if products:
+                msg += f"   \U0001f4e6 {', '.join(products[:3])}\n"
+            if last:
+                msg += f"   \U0001f4c5 Last: {last}\n"
+            msg += "\n"
+
+        if len(sorted_contacts) > 15:
+            msg += f"_...and {len(sorted_contacts) - 15} more_"
+
+        return [{"type": "text", "content": msg}]
+
+    def _show_reports_menu(self, phone_number=None):
+        """Show reports type selection — tailored to industry"""
+        # Get industry for tailored labels
+        industry_class = 'trading'
+        if phone_number:
+            user = self.db.get_user(phone_number)
+            industry_class = user.get('industry_class', 'trading') if user else 'trading'
+
+        # Industry-specific menu items
+        menu_configs = {
+            'trading': {
+                'sales': {"title": "\U0001f4b0 My Sales", "description": "Cash & credit sales"},
+                'purchases': {"title": "\U0001f6d2 My Purchases", "description": "Stock bought for resale"},
+                'expenses': {"title": "\U0001f4b8 My Expenses", "description": "Rent, transport, utilities"},
+                'summary': {"title": "\U0001f4ca P&L Statement", "description": "Revenue \u2192 COGS \u2192 Gross Profit \u2192 Net"},
+            },
+            'manufacturing': {
+                'sales': {"title": "\U0001f4b0 Production Sales", "description": "Finished goods sold"},
+                'purchases': {"title": "\U0001f9f1 Raw Materials", "description": "Materials, labour, overhead"},
+                'expenses': {"title": "\U0001f4b8 Operating Expenses", "description": "Admin, transport, utilities"},
+                'summary': {"title": "\U0001f4ca Manufacturing P&L", "description": "Revenue \u2192 Production Costs \u2192 Margin"},
+            },
+            'services': {
+                'sales': {"title": "\U0001f4bc Service Revenue", "description": "Fees, contracts, commissions"},
+                'purchases': {"title": "\U0001f4b8 Direct Costs", "description": "Subcontractors, tools, materials"},
+                'expenses': {"title": "\U0001f4b8 Operating Expenses", "description": "Rent, transport, utilities"},
+                'summary': {"title": "\U0001f4ca Revenue Statement", "description": "Revenue \u2192 Direct Costs \u2192 Margin"},
+            },
+            'hybrid': {
+                'sales': {"title": "\U0001f4b0 All Revenue", "description": "Product sales + service fees"},
+                'purchases': {"title": "\U0001f6d2 Direct Costs", "description": "Stock + service delivery costs"},
+                'expenses': {"title": "\U0001f4b8 Operating Expenses", "description": "Rent, transport, utilities"},
+                'summary': {"title": "\U0001f4ca Combined P&L", "description": "Products + Services combined"},
+            },
+        }
+
+        config = menu_configs.get(industry_class, menu_configs['trading'])
+
+        return [{"type": "list", "content": {
+            "header": "\U0001f4ca Reports",
+            "body": "What would you like to see?",
+            "button_text": "\U0001f4ca Reports",
+            "sections": [
+                {
+                    "title": "Choose Report Type",
+                    "rows": [
+                        {"id": "rpt_sales", **config['sales']},
+                        {"id": "rpt_purchases", **config['purchases']},
+                        {"id": "rpt_expenses", **config['expenses']},
+                        {"id": "rpt_summary", **config['summary']},
+                    ]
+                },
+            ]
+        }}]
+
+    def _show_period_chooser(self, report_type):
+        """Show period selection list (Step 2: choose when) with Custom option"""
+        type_labels = {'sales': 'Sales', 'purchases': 'Purchases', 'expenses': 'Expenses'}
+        label = type_labels.get(report_type, 'Report')
+
+        return [{"type": "list", "content": {
+            "header": f"\U0001f4c5 {label}",
+            "body": f"Choose a period for your {label.lower()} report:",
+            "button_text": "\U0001f4c5 Choose Period",
+            "sections": [
+                {
+                    "title": "Quick Periods",
+                    "rows": [
+                        {"id": f"rpt_{report_type}_today", "title": "\U0001f4c5 Today", "description": "Today\'s transactions"},
+                        {"id": f"rpt_{report_type}_week", "title": "\U0001f4c5 This Week", "description": "Monday to now"},
+                        {"id": f"rpt_{report_type}_month", "title": "\U0001f4c5 This Month", "description": "1st to today"},
+                        {"id": f"rpt_{report_type}_custom", "title": "\u270d\ufe0f Custom Filter", "description": "Type your own (e.g. last 5 days, June, Nike)"},
+                    ]
+                }
+            ]
+        }}]
+
+    def _show_documents_menu(self):
+        """Show the documents sub-menu"""
+        return [{"type": "list", "content": {
+            "header": "\U0001f4c4 Documents",
+            "body": "Generate professional business documents.",
+            "button_text": "\U0001f4c4 Documents",
+            "sections": [
+                {
+                    "title": "Generate",
+                    "rows": [
+                        {"id": "doc_invoice", "title": "\U0001f4c4 Invoice", "description": "Create invoice for a customer"},
+                        {"id": "doc_receipt", "title": "\U0001f9fe Receipt", "description": "Payment receipt for a sale"},
+                        {"id": "doc_statement", "title": "\U0001f4cb Statement", "description": "Monthly financial statement"},
+                        {"id": "doc_export", "title": "\U0001f4ca Export to Excel", "description": "Download spreadsheet file"},
+                    ]
+                },
+                {
+                    "title": "Settings",
+                    "rows": [
+                        {"id": "doc_bank_details", "title": "\U0001f3e6 Bank Details", "description": "Payment info shown on invoices"},
+                    ]
+                },
+            ]
+        }}]
+
+    def _show_catalog_menu(self, phone_number=None):
+        """Show catalog sub-menu with 4 tappable options"""
+        return [{"type": "list", "content": {
+            "header": "\U0001f4e6 Catalog",
+            "body": "Your product catalog \u2014 builds automatically from transactions.",
+            "button_text": "\U0001f4e6 Catalog",
+            "sections": [{
+                "title": "Catalog Options",
+                "rows": [
+                    {"id": "cat_browse", "title": "\U0001f4cb Browse Products", "description": "View & manage your products"},
+                    {"id": "cat_organize", "title": "\u2699\ufe0f Organize Products", "description": "Set up attributes (Brand, Color, Size)"},
+                    {"id": "cat_add_product", "title": "\u2795 Add Product", "description": "Manually add a new product"},
+                    {"id": "cat_top_sellers", "title": "\U0001f4ca Top Sellers", "description": "Best performing products"},
+                ]
+            }]
+        }}]
+
+    def _show_product_list(self, phone_number):
+        """Show clickable product list — users tap to drill down into details"""
+        user = self.db.get_user(phone_number)
+        catalog = user.get('auto_catalog', {}) if user else {}
+        products = catalog.get('products', {})
+        # Merge old product_catalog if exists (only proper product dicts)
+        old_catalog = user.get('product_catalog', {}) if user else {}
+        if old_catalog and isinstance(old_catalog, dict):
+            for old_key, old_val in old_catalog.items():
+                # Skip non-product entries (lists, strings, metadata keys)
+                if not isinstance(old_val, dict) or old_key in ('products', 'brands', 'categories', 'settings'):
+                    continue
+                norm_key = old_key.lower().replace(' ', '-')
+                if norm_key not in products:
+                    products[norm_key] = {'name': old_key.replace('-', ' ').title(), 'brand': '', 'item': old_key.title(),
+                                        'category': '', 'sell_prices': [], 'buy_prices': [],
+                                        'total_sold': 0, 'total_bought': 0, 'customers': [], 'suppliers': [],
+                                        'last_activity': '', 'variants': {}}
+
+        if not products:
+            return [{"type": "text", "content": (
+                "\U0001f4e6 *Your Product Catalog*\n\n"
+                "No products yet! Your catalog builds automatically as you record transactions.\n\n"
+                "\u2022 Type *add product [name]* to add manually\n"
+                "\u2022 Or just record a sale/purchase \u2014 I\'ll learn your products!\n\n"
+                "_Example: sold 10 Nike socks to Sandra 150K_"
+            )}]
+
+        # Sort by most active
+        sorted_products = sorted(products.items(),
+                                key=lambda x: x[1].get('total_sold', 0) + x[1].get('total_bought', 0),
+                                reverse=True)
+
+        rows = []
+        for key, prod in sorted_products[:10]:
+            name = prod.get('name', 'Unknown')
+            sold = prod.get('total_sold', 0)
+            sell_prices = prod.get('sell_prices', [])
+            has_tree = '\u2705 ' if prod.get('hierarchy') else ''
+            variants = prod.get('variants', {})
+            tree = prod.get('tree', {})
+
+            desc_parts = []
+            if sell_prices:
+                desc_parts.append(f"\u20a6{sum(sell_prices)//len(sell_prices):,}")
+            if sold:
+                desc_parts.append(f"{sold} sold")
+            if tree:
+                children = [k for k in tree.keys() if k != '_meta']
+                desc_parts.append(f"{len(children)} types")
+            elif variants:
+                desc_parts.append(f"{len(variants)} variants")
+
+            description = " \u2022 ".join(desc_parts) if desc_parts else "Tap for details"
+
+            rows.append({
+                "id": f"cat_product_{key}",
+                "title": f"{has_tree}{name}"[:24],
+                "description": description[:72]
+            })
+
+        if not rows:
+            return [{"type": "text", "content": "\U0001f4e6 No products yet. Record transactions to build your catalog!"}]
+
+        return [{"type": "list", "content": {
+            "header": f"\U0001f4e6 Products ({len(products)})",
+            "body": "Tap a product for details, variants & stock.\n\n\u2705 = organized with attribute tree",
+            "button_text": "\U0001f4e6 Browse",
+            "sections": [{"title": "Your Products", "rows": rows}]
+        }}]
+
+
+    def _show_catalog_by_brand(self, phone_number):
+        """Show catalog grouped by brand"""
+        user = self.db.get_user(phone_number)
+        catalog = user.get('auto_catalog', {}) if user else {}
         products = catalog.get('products', {})
 
         if not products:
-            return [{"type": "text", "content": "\ud83d\udce6 *Your Product Catalog is empty!*\n\nType *setup catalog* to get started."}]
+            return [{"type": "text", "content": "\U0001f4e6 No products in your catalog yet.\n\nStart recording transactions and your catalog will build automatically!"}]
 
-        msg = "\ud83c\udf89 *Your Product Catalog*\n\n"
+        # Group by brand
+        by_brand = {}
+        for p_key, p_data in products.items():
+            brand = p_data.get('brand', '') or 'Other'
+            if brand not in by_brand:
+                by_brand[brand] = []
+            by_brand[brand].append(p_data)
 
-        for p_name, p_data in products.items():
-            unit = p_data.get('primary_unit', '')
-            unit_str = f" _({unit})_" if unit else ""
-            msg += f"\ud83d\udce6 *{p_name}*{unit_str}\n"
-            subcats = p_data.get('subcategories', {})
-            p_attrs = p_data.get('attributes', {})
-            p_convs = p_data.get('conversions', {})
+        # Sort brands by total activity
+        sorted_brands = sorted(by_brand.items(), key=lambda x: sum(p.get('total_sold', 0) + p.get('total_bought', 0) for p in x[1]), reverse=True)
 
-            if p_attrs:
-                for attr, vals in p_attrs.items():
-                    if vals:
-                        msg += f"  \u2022 {attr}: {', '.join(vals[:8])}"
-                        if len(vals) > 8:
-                            msg += f" (+{len(vals)-8})"
-                        msg += "\n"
-                    else:
-                        msg += f"  \u2022 {attr}: _(any)_\n"
-
-            if subcats:
-                for sub_name, sub_data in subcats.items():
-                    series = sub_data.get('series', {})
-                    sub_attrs = sub_data.get('attributes', {})
-                    sub_convs = sub_data.get('conversions', {})
-
-                    if series:
-                        msg += f"  \ud83c\udff7\ufe0f *{sub_name}*: {', '.join(series.keys())}\n"
-                    else:
-                        msg += f"  \ud83c\udff7\ufe0f *{sub_name}*\n"
-
-                    if sub_attrs:
-                        for attr, vals in sub_attrs.items():
-                            if vals:
-                                msg += f"    {attr}: {', '.join(vals[:6])}\n"
-
-                    if sub_convs:
-                        conv_str = ', '.join([f"{k} = {v}" for k, v in sub_convs.items()])
-                        msg += f"    \ud83d\udd04 {conv_str}\n"
-
-            if p_convs:
-                conv_str = ', '.join([f"{k} = {v}" for k, v in p_convs.items()])
-                msg += f"  \ud83d\udd04 {conv_str}\n"
-
+        msg = "\U0001f3f7\ufe0f *Products by Brand*\n\n"
+        for brand, prods in sorted_brands[:8]:
+            msg += f"*{brand}*\n"
+            for p in sorted(prods, key=lambda x: x.get('total_sold', 0), reverse=True)[:5]:
+                name = p.get('item', p.get('name', ''))
+                sold = p.get('total_sold', 0)
+                sell_prices = p.get('sell_prices', [])
+                price_str = f" \u2022 \u20a6{sell_prices[-1]:,}" if sell_prices else ""
+                msg += f"  \u2022 {name} ({sold} sold){price_str}\n"
             msg += "\n"
 
-        msg += "\ud83d\udca1 I'll use this to parse your transactions accurately!\n\n"
-        msg += "_Commands: setup catalog | add product | add subcategory | add series | my catalog_"
         return [{"type": "text", "content": msg}]
+
+    def _show_top_sellers(self, phone_number):
+        """Show top selling products"""
+        user = self.db.get_user(phone_number)
+        catalog = user.get('auto_catalog', {}) if user else {}
+        products = catalog.get('products', {})
+
+        if not products:
+            return [{"type": "text", "content": "\U0001f4e6 No products in your catalog yet.\n\nStart recording sales and I\'ll track your top sellers!"}]
+
+        # Sort by total_sold descending
+        sorted_products = sorted(products.values(), key=lambda x: x.get('total_sold', 0), reverse=True)
+        top = [p for p in sorted_products if p.get('total_sold', 0) > 0][:10]
+
+        if not top:
+            return [{"type": "text", "content": "\U0001f4ca No sales recorded yet for any product."}]
+
+        msg = "\U0001f4ca *Top Sellers*\n\n"
+        for i, p in enumerate(top, 1):
+            name = p.get('name', 'Unknown')
+            sold = p.get('total_sold', 0)
+            sell_prices = p.get('sell_prices', [])
+            total_revenue = sum(sell_prices)
+            customers = p.get('customers', [])
+
+            medal = "\U0001f947" if i == 1 else "\U0001f948" if i == 2 else "\U0001f949" if i == 3 else f"#{i}"
+            msg += f"{medal} *{name}*\n"
+            msg += f"   Sold: {sold}x"
+            if total_revenue:
+                msg += f" | Revenue: \u20a6{total_revenue:,}"
+            msg += "\n"
+            if customers:
+                msg += f"   Top buyers: {', '.join(customers[:3])}\n"
+            msg += "\n"
+
+        return [{"type": "text", "content": msg}]
+
+    def _update_auto_catalog(self, phone_number, context):
+        """Auto-update product catalog from a confirmed transaction.
+        Called after every confirmed transaction to build the catalog organically."""
+        try:
+            item_name = context.get('item_name', '')
+            brand = context.get('brand', '')
+            vendor = context.get('vendor', '')
+            amount = int(context.get('amount', 0))
+            tx_type = context.get('type', '')
+            quantity = context.get('quantity', '')
+            unit_cost = context.get('unit_cost', '')
+            category = context.get('category', '')
+
+            # Need at least an item name or brand to catalog
+            if not item_name and not brand:
+                return
+
+            # Build product key (normalized)
+            product_key = (brand + ' ' + item_name).strip().lower().replace(' ', '-')
+            if not product_key or product_key == '-':
+                return
+
+            # Get existing catalog
+            user = self.db.get_user(phone_number)
+            catalog = user.get('auto_catalog', {}) if user else {}
+            products = catalog.get('products', {})
+            customers = catalog.get('customers', {})
+
+            # Update product entry
+            product = products.get(product_key, {
+                'name': (brand + ' ' + item_name).strip().title(),
+                'brand': brand or '',
+                'item': item_name or '',
+                'category': category,
+                'sell_prices': [],
+                'buy_prices': [],
+                'total_sold': 0,
+                'total_bought': 0,
+                'customers': [],
+                'suppliers': [],
+                'last_activity': '',
+            })
+
+            from datetime import datetime
+            product['last_activity'] = datetime.now().strftime('%Y-%m-%d')
+            product['category'] = category or product.get('category', '')
+
+            # Auto-detect and track variants (color, pattern, size)
+            color = context.get('color', '')
+            pattern = context.get('pattern', '') or context.get('style', '')
+            size = context.get('size', '')
+            model = context.get('model', '')
+
+            if color or pattern or size or model:
+                # Build variant key from attributes
+                variant_parts = [p for p in [color, pattern, size, model] if p]
+                variant_name = ' '.join(variant_parts).title()
+                variant_key = variant_name.lower().replace(' ', '-')
+
+                if variant_key:
+                    variants = product.get('variants', {})
+                    variant = variants.get(variant_key, {
+                        'name': variant_name,
+                        'color': color,
+                        'pattern': pattern,
+                        'size': size,
+                        'model': model,
+                        'sell_price': 0,
+                        'buy_price': 0,
+                        'stock': 0,
+                        'total_sold': 0,
+                        'total_bought': 0,
+                        'last_sold': '',
+                        'buyers': [],
+                    })
+
+                    # Update variant stats
+                    unit_price = int(unit_cost) if unit_cost else amount
+                    actual_qty_v = int(quantity) if quantity else 1
+
+                    if tx_type == 'income':
+                        variant['sell_price'] = unit_price
+                        variant['total_sold'] = variant.get('total_sold', 0) + actual_qty_v
+                        variant['stock'] = max(0, variant.get('stock', 0) - actual_qty_v)
+                        variant['last_sold'] = datetime.now().strftime('%Y-%m-%d')
+                        if vendor and vendor not in variant.get('buyers', []):
+                            buyers = variant.get('buyers', [])
+                            buyers.append(vendor)
+                            variant['buyers'] = buyers[-5:]
+                    else:
+                        variant['buy_price'] = unit_price
+                        variant['total_bought'] = variant.get('total_bought', 0) + actual_qty_v
+                        variant['stock'] = variant.get('stock', 0) + actual_qty_v
+
+                    variants[variant_key] = variant
+                    product['variants'] = variants
+
+            # === TREE POPULATION ===
+            # If product has a hierarchy defined, populate the tree
+            hierarchy = product.get('hierarchy', [])
+            if hierarchy:
+                tree = product.get('tree', {})
+                
+                # Map hierarchy attribute names to actual values from context
+                attr_values = {
+                    'pattern': (context.get('pattern', '') or context.get('style', '')).lower(),
+                    'brand': (context.get('brand', '') or brand).lower(),
+                    'color': (context.get('color', '') or color).lower(),
+                    'size': str(context.get('size', '')).lower(),
+                    'material': (context.get('material', '')).lower(),
+                    'model': (context.get('model', '')).lower(),
+                    'condition': (context.get('condition', '')).lower(),
+                    'type': (context.get('item_type', '') or context.get('model', '')).lower(),
+                    'style': (context.get('pattern', '') or context.get('style', '')).lower(),
+                }
+
+                # Navigate/create path in tree
+                current = tree
+                actual_qty_tree = int(quantity) if quantity else 1
+                unit_price_tree = int(unit_cost) if unit_cost else amount
+
+                for depth, attr_name in enumerate(hierarchy):
+                    attr_val = attr_values.get(attr_name, '')
+                    if not attr_val:
+                        break  # Can't go deeper without a value
+
+                    # Create node if doesn't exist
+                    if attr_val not in current:
+                        current[attr_val] = {'_meta': {'stock': 0, 'total_sold': 0, 'total_bought': 0, 'sell_price': 0, 'buy_price': 0}}
+                    
+                    # Update _meta at this level
+                    meta = current[attr_val].get('_meta', {'stock': 0, 'total_sold': 0, 'total_bought': 0, 'sell_price': 0, 'buy_price': 0})
+                    if tx_type == 'income':
+                        meta['total_sold'] = meta.get('total_sold', 0) + actual_qty_tree
+                        meta['stock'] = max(0, meta.get('stock', 0) - actual_qty_tree)
+                        meta['sell_price'] = unit_price_tree
+                    else:
+                        meta['total_bought'] = meta.get('total_bought', 0) + actual_qty_tree
+                        meta['stock'] = meta.get('stock', 0) + actual_qty_tree
+                        meta['buy_price'] = unit_price_tree
+                    current[attr_val]['_meta'] = meta
+
+                    # Move deeper
+                    current = current[attr_val]
+
+                product['tree'] = tree
+
+            # Apply unit conversion if bulk unit was used
+            actual_qty = int(quantity) if quantity else 1
+            units_info = product.get('units', {})
+            conversions = units_info.get('conversions', {})
+            # Check if the description mentions a bulk unit (carton, dozen, pack, etc.)
+            desc_lower = (context.get('description', '') or '').lower()
+            for bulk_unit, multiplier in conversions.items():
+                if bulk_unit in desc_lower:
+                    actual_qty = actual_qty * multiplier
+                    break
+
+            if tx_type == 'income':
+                product['total_sold'] = product.get('total_sold', 0) + actual_qty
+                # Track sell price per unit (keep last 5)
+                sell_price = int(unit_cost) if unit_cost else amount
+                if sell_price:
+                    prices = product.get('sell_prices', [])
+                    prices.append(sell_price)
+                    product['sell_prices'] = prices[-5:]
+                if vendor and vendor not in product.get('customers', []):
+                    custs = product.get('customers', [])
+                    custs.append(vendor)
+                    product['customers'] = custs[-10:]  # Keep last 10
+            else:
+                product['total_bought'] = product.get('total_bought', 0) + actual_qty
+                # Track buy price per unit (keep last 5)
+                buy_price = int(unit_cost) if unit_cost else amount
+                if buy_price:
+                    prices = product.get('buy_prices', [])
+                    prices.append(buy_price)
+                    product['buy_prices'] = prices[-5:]
+                if vendor and vendor not in product.get('suppliers', []):
+                    supps = product.get('suppliers', [])
+                    supps.append(vendor)
+                    product['suppliers'] = supps[-10:]
+
+            products[product_key] = product
+
+            # Update customer/supplier entry
+            if vendor:
+                vendor_key = vendor.lower().replace(' ', '-')
+                customer = customers.get(vendor_key, {
+                    'name': vendor,
+                    'type': 'customer' if tx_type == 'income' else 'supplier',
+                    'total_amount': 0,
+                    'transaction_count': 0,
+                    'products': [],
+                    'last_activity': '',
+                })
+                customer['total_amount'] = customer.get('total_amount', 0) + amount
+                customer['transaction_count'] = customer.get('transaction_count', 0) + 1
+                customer['last_activity'] = datetime.now().strftime('%Y-%m-%d')
+                # Track which products they buy
+                prod_name = (brand + ' ' + item_name).strip().title()
+                if prod_name and prod_name not in customer.get('products', []):
+                    prods = customer.get('products', [])
+                    prods.append(prod_name)
+                    customer['products'] = prods[-15:]
+                # Update type: if they both buy and sell, mark as 'both'
+                if tx_type == 'income' and customer.get('type') == 'supplier':
+                    customer['type'] = 'both'
+                elif tx_type == 'expense' and customer.get('type') == 'customer':
+                    customer['type'] = 'both'
+                customers[vendor_key] = customer
+
+            # Save updated catalog
+            catalog['products'] = products
+            catalog['customers'] = customers
+            self.db.update_user(phone_number, {'auto_catalog': catalog})
+
+        except Exception as e:
+            # Never crash the main flow for catalog
+            import logging
+            logging.getLogger(__name__).error(f"Auto-catalog error: {e}")
+
+    def _show_full_catalog(self, phone_number):
+        """Redirect to the new clickable catalog"""
+        return self._show_catalog_menu(phone_number)
+
+    def _show_product_detail(self, phone_number, product_key):
+        """Show detailed view of a single product with variants and actions"""
+        user = self.db.get_user(phone_number)
+        catalog = user.get('auto_catalog', {}) if user else {}
+        products = catalog.get('products', {})
+        product = products.get(product_key)
+
+        if not product:
+            return [{"type": "text", "content": "\u26a0\ufe0f Product not found."}]
+
+        # If product has a hierarchy tree, show tree drill-down instead
+        hierarchy = product.get('hierarchy', [])
+        tree = product.get('tree', {})
+        if hierarchy and tree:
+            return self._handle_tree_drilldown(phone_number, f"cat_tree_{product_key}")
+
+        name = product.get('name', 'Unknown')
+        brand = product.get('brand', '')
+        sold = product.get('total_sold', 0)
+        bought = product.get('total_bought', 0)
+        sell_prices = product.get('sell_prices', [])
+        buy_prices = product.get('buy_prices', [])
+        customers = product.get('customers', [])
+        suppliers = product.get('suppliers', [])
+        variants = product.get('variants', {})
+        units = product.get('units', {})
+        tax_rate = product.get('tax_rate', '')
+        recipe = product.get('recipe', {})
+        inventory = product.get('inventory', {})
+
+        # Build detail message
+        msg = f"\U0001f4e6 *{name}*\n"
+        msg += "\u2501" * 15 + "\n\n"
+
+        if brand:
+            msg += f"\U0001f3f7\ufe0f Brand: *{brand}*\n"
+        
+        # Pricing
+        if sell_prices:
+            avg_sell = sum(sell_prices) // len(sell_prices)
+            msg += f"\U0001f4b0 Sell Price: *\u20a6{avg_sell:,}*\n"
+        if buy_prices:
+            avg_buy = sum(buy_prices) // len(buy_prices)
+            msg += f"\U0001f6d2 Buy Price: *\u20a6{avg_buy:,}*\n"
+        if sell_prices and buy_prices:
+            margin = round((avg_sell - avg_buy) / avg_sell * 100)
+            msg += f"\U0001f4ca Margin: *{margin}%*\n"
+
+        msg += "\n"
+
+        # Stats
+        if sold:
+            msg += f"\U0001f4c8 Total Sold: {sold}\n"
+        if bought:
+            msg += f"\U0001f4e6 Total Bought: {bought}\n"
+        if inventory.get('finished_goods'):
+            msg += f"\U0001f3ed In Stock: {inventory['finished_goods']}\n"
+
+        # Units
+        if units and units.get('conversions'):
+            conv_parts = [f"1 {u}={c} {units.get('base_unit', 'pcs')}" for u, c in units['conversions'].items()]
+            msg += f"\u2696\ufe0f Units: {' | '.join(conv_parts)}\n"
+
+        # Tax
+        if tax_rate:
+            msg += f"\U0001f4b1 Tax: {tax_rate}% {product.get('tax_type', 'VAT')}\n"
+
+        # Recipe (manufacturing)
+        if recipe:
+            msg += f"\U0001f4cb Recipe: \u20a6{recipe.get('cost_per_unit', 0):,}/unit ({recipe.get('batch_size', 0)} per batch)\n"
+
+        # Customers & Suppliers
+        if customers:
+            msg += f"\n\U0001f465 Buyers: {', '.join(customers[:5])}\n"
+        if suppliers:
+            msg += f"\U0001f3ea Suppliers: {', '.join(suppliers[:3])}\n"
+
+        # Variants section
+        if variants:
+            msg += f"\n\U0001f3a8 *Variants ({len(variants)}):*\n"
+            for vk, vv in list(variants.items())[:6]:
+                v_name = vv.get('name', vk)
+                v_sold = vv.get('total_sold', 0)
+                v_stock = vv.get('stock', 0)
+                v_price = vv.get('sell_price', 0)
+                msg += f"  \u2022 {v_name}"
+                if v_price:
+                    msg += f" \u2014 \u20a6{v_price:,}"
+                if v_sold:
+                    msg += f" ({v_sold} sold)"
+                if v_stock:
+                    msg += f" [Stock: {v_stock}]"
+                msg += "\n"
+
+        msg += "\n" + "\u2501" * 15
+
+        # Return detail + action buttons
+        responses = [{"type": "text", "content": msg}]
+        responses.append({"type": "buttons", "content": {
+            "body": f"Actions for {name}:",
+            "buttons": [
+                {"id": f"cat_sell_{product_key}", "title": "\U0001f4b0 Sell This"},
+                {"id": f"cat_restock_{product_key}", "title": "\U0001f4e6 Restock"},
+                {"id": f"cat_edit_{product_key}", "title": "\u270f\ufe0f Edit"},
+            ]
+        }})
+
+        return responses
+
+    def _show_variant_detail(self, phone_number, product_key, variant_key):
+        """Show detailed view of a specific variant"""
+        user = self.db.get_user(phone_number)
+        catalog = user.get('auto_catalog', {}) if user else {}
+        products = catalog.get('products', {})
+        product = products.get(product_key)
+
+        if not product:
+            return [{"type": "text", "content": "\u26a0\ufe0f Product not found."}]
+
+        variants = product.get('variants', {})
+        variant = variants.get(variant_key)
+        if not variant:
+            return [{"type": "text", "content": "\u26a0\ufe0f Variant not found."}]
+
+        product_name = product.get('name', 'Product')
+        v_name = variant.get('name', variant_key)
+        color = variant.get('color', '')
+        pattern = variant.get('pattern', '')
+        size = variant.get('size', '')
+        sell_price = variant.get('sell_price', 0)
+        buy_price = variant.get('buy_price', 0)
+        stock = variant.get('stock', 0)
+        total_sold = variant.get('total_sold', 0)
+        last_sold = variant.get('last_sold', '')
+        buyers = variant.get('buyers', [])
+
+        msg = f"\U0001f4e6 *{product_name} \u2014 {v_name}*\n"
+        msg += "\u2501" * 15 + "\n\n"
+
+        if color:
+            msg += f"\U0001f3a8 Color: *{color}*\n"
+        if pattern:
+            msg += f"\U0001f4d0 Pattern: *{pattern}*\n"
+        if size:
+            msg += f"\U0001f4cf Size: *{size}*\n"
+        msg += "\n"
+
+        if sell_price:
+            msg += f"\U0001f4b0 Sell Price: *\u20a6{sell_price:,}*\n"
+        if buy_price:
+            msg += f"\U0001f6d2 Buy Price: *\u20a6{buy_price:,}*\n"
+        if sell_price and buy_price:
+            margin = round((sell_price - buy_price) / sell_price * 100)
+            msg += f"\U0001f4ca Margin: *{margin}%*\n"
+        msg += "\n"
+
+        msg += f"\U0001f4e6 In Stock: *{stock}*\n"
+        msg += f"\U0001f4c8 Total Sold: *{total_sold}*\n"
+        if last_sold:
+            msg += f"\U0001f4c5 Last Sold: {last_sold}\n"
+        if buyers:
+            msg += f"\U0001f465 Buyers: {', '.join(buyers[:5])}\n"
+
+        msg += "\n" + "\u2501" * 15
+
+        return [
+            {"type": "text", "content": msg},
+            {"type": "buttons", "content": {
+                "body": f"Quick actions for {v_name}:",
+                "buttons": [
+                    {"id": f"cat_sell_{product_key}", "title": "\U0001f4b0 Sell This"},
+                    {"id": f"cat_restock_{product_key}", "title": "\U0001f4e6 Restock"},
+                ]
+            }}
+        ]
+
 
     def _handle_show_catalog(self, phone_number, text):
         """Show catalog command"""

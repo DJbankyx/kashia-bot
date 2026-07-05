@@ -97,8 +97,12 @@ class Database:
             return None
 
     def user_exists(self, phone_number):
-        """Check if a user exists"""
-        return self.get_user(phone_number) is not None
+        """Check if a REAL user exists (completed onboarding, has business_name)"""
+        user = self.get_user(phone_number)
+        if user is None:
+            return False
+        # A phantom record (only rate_limit/phone_number) doesn't count
+        return bool(user.get('business_name'))
 
     def update_user(self, phone_number, updates):
         """
@@ -128,18 +132,62 @@ class Database:
     # TRANSACTION OPERATIONS
     # ==========================================
 
+
+    def update_user_field(self, phone_number, field_name, field_value):
+        """Update a single field on the user profile"""
+        try:
+            # Sanitize for DynamoDB (remove empty strings, convert floats)
+            sanitized = self._sanitize_for_dynamo(field_value)
+            self.users_table.update_item(
+                Key={'phone_number': phone_number},
+                UpdateExpression=f"SET #field = :val",
+                ExpressionAttributeNames={'#field': field_name},
+                ExpressionAttributeValues={':val': sanitized}
+            )
+            logger.info(f"Updated {field_name} for {phone_number}")
+        except Exception as e:
+            logger.error(f"Error updating user field {field_name}: {e}")
+
+
+    def get_rate_limit(self, phone_number):
+        """Get rate limit counters for a user"""
+        try:
+            user = self.users_table.get_item(Key={'phone_number': phone_number}).get('Item')
+            if user:
+                return user.get('rate_limit', None)
+            return None
+        except Exception:
+            return None
+
+    def update_rate_limit(self, phone_number, rate_data):
+        """Update rate limit counters for a user"""
+        try:
+            self.users_table.update_item(
+                Key={'phone_number': phone_number},
+                UpdateExpression="SET rate_limit = :rl",
+                ExpressionAttributeValues={':rl': rate_data}
+            )
+        except Exception as e:
+            # If user doesn't exist yet (pre-onboarding), just skip
+            logger.debug(f"Rate limit update skipped for {phone_number}: {e}")
+
+
     @staticmethod
     def _sanitize_for_dynamo(obj):
-        """Recursively convert floats to int/Decimal for DynamoDB"""
+        """Recursively sanitize for DynamoDB — convert floats, remove empty strings"""
         from decimal import Decimal
         if isinstance(obj, dict):
-            return {k: Database._sanitize_for_dynamo(v) for k, v in obj.items()}
+            # Remove keys with empty string values (DynamoDB rejects them)
+            return {k: Database._sanitize_for_dynamo(v) for k, v in obj.items() 
+                    if v != '' and v is not None}
         elif isinstance(obj, list):
-            return [Database._sanitize_for_dynamo(i) for i in obj]
+            return [Database._sanitize_for_dynamo(i) for i in obj if i != '']
         elif isinstance(obj, float):
             if obj == int(obj):
                 return int(obj)
             return Decimal(str(obj))
+        elif isinstance(obj, str) and obj == '':
+            return None  # Will be filtered by parent dict
         return obj
 
     def save_transaction(self, phone_number, amount, tx_type, description,
@@ -147,7 +195,10 @@ class Database:
                          item_name=None, brand=None, model=None, size=None,
                          color=None, quantity=None, unit_cost=None,
                          payment_method=None, payment_status=None,
-                         extra_details=None, tags=None):
+                         extra_details=None, tags=None,
+                         subtotal=None, discount_amount=None, discount_percent=None,
+                         discount_type=None, tax_amount=None, tax_percent=None,
+                         tax_type=None):
         """Save a new transaction with rich parsed data"""
         transaction_id = generate_id()
         item = {
@@ -201,6 +252,21 @@ class Database:
             item['extra_details'] = extra_details
         if tags:
             item['tags'] = tags
+        # Discount & Tax fields
+        if subtotal:
+            item['subtotal'] = int(subtotal)
+        if discount_amount:
+            item['discount_amount'] = int(discount_amount)
+        if discount_percent:
+            item['discount_percent'] = float(discount_percent)
+        if discount_type:
+            item['discount_type'] = discount_type
+        if tax_amount:
+            item['tax_amount'] = int(tax_amount)
+        if tax_percent:
+            item['tax_percent'] = float(tax_percent)
+        if tax_type:
+            item['tax_type'] = tax_type
 
         self.transactions.put_item(Item=self._sanitize_for_dynamo(item))
 
@@ -240,7 +306,21 @@ class Database:
                 KeyConditionExpression=Key('phone_number').eq(phone_number) &
                                        Key('date').between(start_date, end_date)
             )
-            return response.get('Items', [])
+            items = response.get('Items', [])
+
+            # Paginate to get ALL results (DynamoDB returns max 1MB per query)
+            while 'LastEvaluatedKey' in response:
+                response = self.transactions.query(
+                    IndexName='date-index',
+                    KeyConditionExpression=Key('phone_number').eq(phone_number) &
+                                           Key('date').between(start_date, end_date),
+                    ExclusiveStartKey=response['LastEvaluatedKey']
+                )
+                items.extend(response.get('Items', []))
+
+            # Sort chronologically (oldest first)
+            items.sort(key=lambda x: x.get('created_at', x.get('date', '')))
+            return items
         except Exception as e:
             logger.error(f"Error querying by period: {e}")
             return []
@@ -1016,14 +1096,20 @@ class Database:
                 products[p_key]['subcategories'][sub_key] = {'series': {}, 'attributes': {}, 'conversions': {}}
             if series_key not in products[p_key]['subcategories'][sub_key]['series']:
                 products[p_key]['subcategories'][sub_key]['series'][series_key] = {'attributes': {}}
-            products[p_key]['subcategories'][sub_key]['series'][series_key]['attributes'][attribute.lower()] = values
+            existing = products[p_key]['subcategories'][sub_key]['series'][series_key]['attributes'].get(attribute.lower(), [])
+            merged = list(dict.fromkeys(existing + values))  # deduplicate preserving order
+            products[p_key]['subcategories'][sub_key]['series'][series_key]['attributes'][attribute.lower()] = merged
         elif subcategory:
             sub_key = subcategory.strip().title()
             if sub_key not in products[p_key]['subcategories']:
                 products[p_key]['subcategories'][sub_key] = {'series': {}, 'attributes': {}, 'conversions': {}}
-            products[p_key]['subcategories'][sub_key]['attributes'][attribute.lower()] = values
+            existing = products[p_key]['subcategories'][sub_key]['attributes'].get(attribute.lower(), [])
+            merged = list(dict.fromkeys(existing + values))
+            products[p_key]['subcategories'][sub_key]['attributes'][attribute.lower()] = merged
         else:
-            products[p_key]['attributes'][attribute.lower()] = values
+            existing = products[p_key].get('attributes', {}).get(attribute.lower(), [])
+            merged = list(dict.fromkeys(existing + values))
+            products[p_key]['attributes'][attribute.lower()] = merged
 
         catalog['products'] = products
         self.save_product_catalog(phone_number, catalog)

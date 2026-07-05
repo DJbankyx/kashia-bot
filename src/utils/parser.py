@@ -37,6 +37,11 @@ def parse_amount(text):
     cleaned = re.sub(r'\bnaira\b', '', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'\bN(\d)', r'\1', cleaned)  # "N95,000" → "95,000"
 
+    # Strip date patterns so they don't get mistaken for amounts
+    # DD/MM/YYYY, MM/DD/YYYY, YYYY-MM-DD, DD-MM-YYYY, DD.MM.YYYY
+    cleaned = re.sub(r'\b\d{1,2}[/\-.](\d{1,2})[/\-.]\d{2,4}\b', '', cleaned)
+    cleaned = re.sub(r'\b\d{4}[/\-.]\d{1,2}[/\-.]\d{1,2}\b', '', cleaned)
+
     # Pattern 1: "1.5M" or "1.5m" or "1.5 million"
     match = re.search(r'(\d+\.?\d*)\s*[mM](?:illion)?', cleaned)
     if match:

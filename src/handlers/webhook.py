@@ -92,9 +92,18 @@ def handle_incoming_message(event):
                         interactive_type = interactive.get('type', '')
 
                         if interactive_type == 'button_reply':
-                            text = interactive.get('button_reply', {}).get('title', '')
+                            text = interactive.get('button_reply', {}).get('id', '') or interactive.get('button_reply', {}).get('title', '')
                         elif interactive_type == 'list_reply':
-                            text = interactive.get('list_reply', {}).get('title', '')
+                            text = interactive.get('list_reply', {}).get('id', '') or interactive.get('list_reply', {}).get('title', '')
+                        else:
+                            text = ''
+                    elif message_type == 'reaction':
+                        # Emoji reaction to a message
+                        reaction = message.get('reaction', {})
+                        emoji = reaction.get('emoji', '')
+                        if emoji:
+                            text = f'REACTION:{emoji}'
+                            message_type = 'reaction'
                         else:
                             text = ''
                     else:
@@ -103,8 +112,6 @@ def handle_incoming_message(event):
 
                     if phone_number and text:
                         logger.info(f'Message from {phone_number}: {text}')
-                        # TODO: Route to conversation engine (Step 10)
-                        # For now, just echo back
                         process_message(phone_number, text, message_type)
 
         # Always return 200 to WhatsApp (they retry on non-200)

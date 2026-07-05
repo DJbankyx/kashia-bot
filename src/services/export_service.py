@@ -265,8 +265,7 @@ class ExportService:
         """Full pipeline: upload to S3 then send to user via WhatsApp."""
         url = self.upload_to_s3(filepath, filename)
         if not url:
-            self.whatsapp.send_text(phone_number, "Sorry, couldn't generate the file. Please try again.")
-            return False
+            return False, None
 
         success = self.whatsapp.send_document(phone_number, url, filename, caption)
 
@@ -275,7 +274,7 @@ class ExportService:
         except:
             pass
 
-        return success
+        return success, url
 
     def handle_export_request(self, phone_number, export_type):
         """
@@ -313,3 +312,216 @@ class ExportService:
 
         else:
             return [{"type": "text", "content": "Unknown export type. Try: export month, export csv, or export contacts"}]
+    def handle_filtered_export(self, phone_number, filter_type, start_date, end_date, period_label, fmt='excel'):
+        """Export filtered transaction data as Excel or PDF"""
+        try:
+            transactions = self.db.get_transactions_by_period(phone_number, start_date, end_date)
+
+            # Apply same filters as the report
+            COGS_CATEGORIES = ['Goods & Stock', 'Production & Manufacturing', 'Service Costs']
+
+            if filter_type == 'my_sales':
+                filtered = [tx for tx in transactions
+                           if tx.get('type') == 'income'
+                           and 'Debt payment' not in tx.get('description', '')]
+                label = 'Sales'
+            elif filter_type == 'my_purchases':
+                filtered = [tx for tx in transactions
+                           if tx.get('type') == 'expense'
+                           and tx.get('category', '') in COGS_CATEGORIES]
+                label = 'Purchases'
+            elif filter_type == 'my_expenses':
+                filtered = [tx for tx in transactions
+                           if tx.get('type') == 'expense'
+                           and tx.get('category', '') not in COGS_CATEGORIES]
+                label = 'Expenses'
+            else:
+                filtered = transactions
+                label = 'Transactions'
+
+            if not filtered:
+                return [{"type": "text", "content": f"No {label.lower()} to export for {period_label}."}]
+
+            user = self.db.get_user(phone_number)
+            business_name = user.get('business_name', 'Business') if user else 'Business'
+
+            if fmt == 'excel':
+                return self._export_filtered_excel(phone_number, filtered, label, period_label, business_name)
+            else:
+                return self._export_filtered_pdf(phone_number, filtered, label, period_label, business_name)
+
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Filtered export error: {e}")
+            return [{"type": "text", "content": "Sorry, export failed. Please try again."}]
+
+    def _export_filtered_excel(self, phone_number, transactions, label, period_label, business_name):
+        """Generate Excel file for filtered transactions"""
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from datetime import datetime
+        import os
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = f"{label} - {period_label}"
+
+        # Header
+        ws['A1'] = business_name
+        ws['A1'].font = Font(bold=True, size=14)
+        ws['A2'] = f"{label} Report - {period_label}"
+        ws['A2'].font = Font(size=11)
+        ws['A3'] = f"Generated: {datetime.now().strftime('%d %B %Y %H:%M')}"
+
+        # Column headers
+        headers = ['Date', 'Description', 'Category', 'Customer/Vendor', 'Amount (NGN)']
+        header_fill = PatternFill(start_color='2C3E50', end_color='2C3E50', fill_type='solid')
+        header_font = Font(bold=True, color='FFFFFF')
+
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=5, column=col, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+
+        # Data rows
+        total = 0
+        for row_idx, tx in enumerate(sorted(transactions, key=lambda x: x.get('date', ''), reverse=True), 6):
+            amount = int(tx.get('amount', 0))
+            total += amount
+            ws.cell(row=row_idx, column=1, value=tx.get('date', ''))
+            ws.cell(row=row_idx, column=2, value=tx.get('description', '')[:50])
+            ws.cell(row=row_idx, column=3, value=tx.get('category', ''))
+            ws.cell(row=row_idx, column=4, value=tx.get('vendor', ''))
+            ws.cell(row=row_idx, column=5, value=amount)
+
+        # Total row
+        total_row = 6 + len(transactions)
+        ws.cell(row=total_row, column=4, value='TOTAL').font = Font(bold=True)
+        ws.cell(row=total_row, column=5, value=total).font = Font(bold=True)
+
+        # Column widths
+        ws.column_dimensions['A'].width = 12
+        ws.column_dimensions['B'].width = 35
+        ws.column_dimensions['C'].width = 20
+        ws.column_dimensions['D'].width = 20
+        ws.column_dimensions['E'].width = 15
+
+        # Save
+        clean_period = period_label.replace(' ', '_').replace('/', '-')
+        filename = f"{label}_{clean_period}.xlsx"
+        filepath = f"/tmp/{filename}"
+        wb.save(filepath)
+
+        # Deliver
+        self.deliver_file(phone_number, filepath, filename,
+                         caption=f"{label} - {period_label} ({len(transactions)} transactions)")
+        return [{"type": "text", "content": f"\u2705 Excel exported!\n\n{label} \u2014 {period_label}\n{len(transactions)} transactions | Total: NGN {total:,}\n\n\U0001f4ce Check your chat for the file."}]
+
+    def _export_filtered_pdf(self, phone_number, transactions, label, period_label, business_name):
+        """Generate PDF report for filtered transactions"""
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import cm, mm
+        from reportlab.lib import colors
+        from reportlab.lib.colors import HexColor, black, white
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.lib.styles import getSampleStyleSheet
+        from datetime import datetime
+
+        filename = f"{label}_{period_label.replace(' ', '_').replace('/', '-')}.pdf"
+        filepath = f"/tmp/{filename}"
+
+        doc = SimpleDocTemplate(filepath, pagesize=A4,
+                               rightMargin=2*cm, leftMargin=2*cm,
+                               topMargin=2*cm, bottomMargin=2*cm)
+
+        styles = getSampleStyleSheet()
+        story = []
+
+        # Header
+        story.append(Paragraph(f"<b>{business_name}</b>", styles['Title']))
+        story.append(Paragraph(f"{label} Report - {period_label}", styles['Heading2']))
+        story.append(Paragraph(f"Generated: {datetime.now().strftime('%d %B %Y %H:%M')}", styles['Normal']))
+        story.append(Spacer(1, 10*mm))
+
+        # Summary
+        total = sum(int(tx.get('amount', 0)) for tx in transactions)
+        story.append(Paragraph(f"<b>Total:</b> NGN {total:,}", styles['Normal']))
+        story.append(Paragraph(f"<b>Transactions:</b> {len(transactions)}", styles['Normal']))
+        story.append(Spacer(1, 8*mm))
+
+        # Table
+        table_data = [['Date', 'Description', 'Category', 'Vendor', 'Amount (NGN)']]
+        for tx in sorted(transactions, key=lambda x: x.get('date', ''), reverse=True):
+            amount = int(tx.get('amount', 0))
+            table_data.append([
+                tx.get('date', ''),
+                tx.get('description', '')[:35],
+                tx.get('category', ''),
+                tx.get('vendor', ''),
+                f"NGN {amount:,}"
+            ])
+        table_data.append(['', '', '', 'TOTAL', f"NGN {total:,}"])
+
+        t = Table(table_data, colWidths=[2.5*cm, 5*cm, 4*cm, 3.5*cm, 3*cm])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), HexColor('#2c3e50')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), white),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('ALIGN', (-1, 0), (-1, -1), 'RIGHT'),
+            ('GRID', (0, 0), (-1, -2), 0.5, HexColor('#cccccc')),
+            ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+            ('LINEABOVE', (0, -1), (-1, -1), 1.5, black),
+            ('TOPPADDING', (0, 0), (-1, -1), 5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+        ]))
+        story.append(t)
+        story.append(Spacer(1, 10*mm))
+        story.append(Paragraph("Generated by Kashia - AI Bookkeeping for Nigerian Businesses", styles['Normal']))
+
+        doc.build(story)
+
+        self.deliver_file(phone_number, filepath, filename,
+                         caption=f"{label} - {period_label}")
+        return [{"type": "text", "content": f"\u2705 PDF exported!\n\n{label} \u2014 {period_label}\n{len(transactions)} transactions | Total: NGN {total:,}\n\n\U0001f4ce Check your chat for the file."}]
+    def export_full_history_csv(self, phone_number):
+        """Export ALL transactions as a CSV file"""
+        import csv
+        from datetime import datetime
+        
+        # Get all transactions (use a very wide date range)
+        transactions = self.db.get_transactions_by_period(phone_number, '2020-01-01', '2030-12-31')
+        
+        if not transactions:
+            return None, None
+        
+        user = self.db.get_user(phone_number)
+        business_name = user.get('business_name', 'Business') if user else 'Business'
+        
+        filename = f"{business_name.replace(' ', '_')}_Full_History.csv"
+        filepath = f"/tmp/{filename}"
+        
+        with open(filepath, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            # Header
+            writer.writerow(['Date', 'Type', 'Category', 'Description', 'Vendor/Customer', 
+                           'Amount', 'Quantity', 'Unit Cost', 'Brand', 'Payment'])
+            
+            # Sort chronologically
+            transactions.sort(key=lambda x: x.get('created_at', x.get('date', '')))
+            
+            for tx in transactions:
+                writer.writerow([
+                    tx.get('date', ''),
+                    tx.get('type', ''),
+                    tx.get('category', ''),
+                    tx.get('description', ''),
+                    tx.get('vendor', ''),
+                    tx.get('amount', 0),
+                    tx.get('quantity', ''),
+                    tx.get('unit_cost', ''),
+                    tx.get('brand', ''),
+                    tx.get('payment_method', 'cash'),
+                ])
+        
+        return filepath, filename

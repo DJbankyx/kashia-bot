@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Kashia Bot - AI Transaction Allocator for Nigerian Business Owners
+Description: Kashia WhatsApp Bot - Build 20260706000213
 
 Globals:
   Function:
@@ -11,6 +11,7 @@ Globals:
       Variables:
         TABLE_PREFIX: kashia
         AWS_REGION_NAME: !Ref AWS::Region
+        GENERATED_FILES_BUCKET: !Ref GeneratedFilesBucket
 
 Parameters:
   Stage:
@@ -29,7 +30,7 @@ Resources:
     Type: AWS::Serverless::Api
     Properties:
       StageName: !Ref Stage
-      Description: Kashia WhatsApp Webhook API
+      Description: Kashia WhatsApp Bot - Build 20260706000213
 
   # ============================================
   # LAMBDA FUNCTIONS
@@ -42,7 +43,7 @@ Resources:
       CodeUri: src/
       Layers:
         - !Ref DependenciesLayer
-      Description: Handles incoming WhatsApp messages
+      Description: Kashia WhatsApp Bot - Build 20260706000213
       Events:
         WebhookPost:
           Type: Api
@@ -82,20 +83,20 @@ Resources:
       CodeUri: src/
       Layers:
         - !Ref DependenciesLayer
-      Description: Sends daily and weekly reports to users
+      Description: Kashia WhatsApp Bot - Build 20260706000213
       Timeout: 300
       Events:
         DailyReport:
           Type: Schedule
           Properties:
             Schedule: cron(0 19 * * ? *)
-            Description: Daily report at 8PM WAT (7PM UTC)
+            Description: Kashia WhatsApp Bot - Build 20260706000213
             Enabled: true
         WeeklyReport:
           Type: Schedule
           Properties:
             Schedule: cron(0 17 ? * SUN *)
-            Description: Weekly report on Sundays at 6PM WAT (5PM UTC)
+            Description: Kashia WhatsApp Bot - Build 20260706000213
             Enabled: true
       Policies:
         - DynamoDBCrudPolicy:
@@ -247,7 +248,7 @@ Resources:
     Type: AWS::Serverless::LayerVersion
     Properties:
       LayerName: !Sub kashia-dependencies-${Stage}
-      Description: Python packages for Kashia (openai, openpyxl, reportlab, requests)
+      Description: Kashia WhatsApp Bot - Build 20260706000213
       ContentUri: layers/dependencies/layer.zip
       CompatibleRuntimes:
         - python3.12
@@ -257,11 +258,12 @@ Resources:
 # ============================================
 Outputs:
   WebhookUrl:
-    Description: WhatsApp Webhook URL (use this in Meta Developer Portal)
+    Description: Kashia WhatsApp Bot - Build 20260706000213
     Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/webhook"
   WebhookFunctionArn:
-    Description: Webhook Lambda ARN
+    Description: Kashia WhatsApp Bot - Build 20260706000213
     Value: !GetAtt WebhookFunction.Arn
   ScheduledReportsFunctionArn:
-    Description: Scheduled Reports Lambda ARN
+    Description: Kashia WhatsApp Bot - Build 20260706000213
     Value: !GetAtt ScheduledReportsFunction.Arn
+# force deploy Sat Jul  4 18:39:10 WAT 2026
