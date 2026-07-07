@@ -186,28 +186,20 @@ class PDFGenerator:
                 total = 0
                 for item in items:
                     item_amount = int(item.get('amount', 0))
-                    qty = int(item.get('quantity', 1))
+                    qty = int(item.get('quantity', 1) or 1)
                     total += item_amount
-                    unit_price = item_amount // qty if qty > 0 else item_amount
+                    unit_price = int(item.get('unit_cost', 0) or 0) or (item_amount // qty if qty > 0 else item_amount)
+                    # Use structured description
+                    item_desc = self._clean_item_description(item)
                     table_data.append([
-                        item.get('description', ''),
+                        item_desc,
                         str(qty),
                         f"NGN {unit_price:,}",
                         f"NGN {item_amount:,}"
                     ])
             else:
                 table_data = [['Description', 'Qty', 'Unit Price', 'Amount (NGN)']]
-                # Try to extract quantity from description (e.g. "10 pairs of Nike socks")
-                import re
-                qty_match = re.match(r'^(\d+)\s*(pairs?|pieces?|pcs|cartons?|dozen|bags?|units?|boxes?)?\s*(?:of\s+)?(.+)', description, re.IGNORECASE)
-                if qty_match:
-                    qty = qty_match.group(1)
-                    unit = qty_match.group(2) or 'pcs'
-                    item_name = qty_match.group(3).strip()
-                    unit_price = int(amount) // int(qty) if int(qty) > 0 else int(amount)
-                    table_data.append([item_name, f"{qty} {unit}", f"NGN {unit_price:,}", f"NGN {int(amount):,}"])
-                else:
-                    table_data.append([description, '1', f"NGN {int(amount):,}", f"NGN {int(amount):,}"])
+                table_data.append([description or 'Goods/Services', '1', f"NGN {int(amount):,}", f"NGN {int(amount):,}"])
                 total = int(amount)
 
             # Add subtotal, discount, tax, and total rows
@@ -515,6 +507,7 @@ class PDFGenerator:
             # ─── HEADER ───
             story.append(Paragraph(business_name, self.styles['KashiaTitle']))
             # Industry-specific title
+            industry = industry_class or 'trading'
             ind_titles = {'trading': 'Profit & Loss Statement', 'manufacturing': 'Manufacturing P&L Statement',
                          'services': 'Service Revenue Statement', 'hybrid': 'Combined P&L Statement'}
             story.append(Paragraph(ind_titles.get(industry, 'Profit & Loss Statement'), self.styles['KashiaHeading']))
@@ -524,7 +517,6 @@ class PDFGenerator:
             # ─── CATEGORIZE TRANSACTIONS ───
             # COGS categories based on industry
             from services.categorizer import INDUSTRY_CATEGORIES, PNL_LABELS
-            industry = industry_class or 'trading'
             ind_config = INDUSTRY_CATEGORIES.get(industry, INDUSTRY_CATEGORIES['trading'])
             pnl_labels = PNL_LABELS.get(industry, PNL_LABELS['trading'])
             COGS_CATEGORIES = set(ind_config.get('cogs', ['Goods & Stock']))
@@ -766,36 +758,52 @@ class PDFGenerator:
         return result, None
 
     def _clean_item_description(self, tx):
-        """Build a clean item description from transaction data for invoices/receipts"""
+        """Build a clean, structured item description from transaction data.
+        Priority: structured fields > cleaned raw description.
+        Output: "Nike Socks (Blue Striped) × 5" or "Cement × 10 bags"
+        """
         import re
+        item_name = tx.get('item_name', '') or tx.get('product', '') or tx.get('item_type', '')
         brand = tx.get('brand', '')
-        product = tx.get('product', '') or tx.get('item_type', '')
+        color = tx.get('color', '')
+        pattern = tx.get('pattern', '') or tx.get('style', '')
+        size = tx.get('size', '')
+        model = tx.get('model', '')
+        quantity = tx.get('quantity', '')
 
-        # Best case: brand + product both exist
-        if brand and product:
-            return f"{brand} {product}".strip().title()
+        # Build from structured fields
+        parts = []
+        if brand and item_name:
+            parts.append(f"{brand} {item_name}")
+        elif item_name:
+            parts.append(item_name)
+        elif brand:
+            parts.append(brand)
+        else:
+            # Fallback to raw description
+            raw = tx.get('description', '')
+            if raw:
+                raw = re.sub(r'^(?:sold|bought|paid|received)\s+', '', raw, flags=re.IGNORECASE)
+                raw = re.sub(r'\s+(?:to|from)\s+[A-Z][a-z]+.*$', '', raw, flags=re.IGNORECASE)
+                raw = re.sub(r'\s*(?:for\s+)?\d[\d,]*[kKmM]?\s*$', '', raw)
+                raw = raw.strip()
+            parts.append(raw.title() if raw else 'Goods/Services')
 
-        # If only brand exists, try to find product name from description
-        raw_desc = tx.get('description', '')
-        if brand and not product and raw_desc:
-            # Try to find what comes after brand in the description
-            # e.g. "Sold 20 pairs of Nike socks" → after "Nike" → "socks"
-            match = re.search(rf'{re.escape(brand)}\s+(\w+)', raw_desc, re.IGNORECASE)
-            if match:
-                return f"{brand} {match.group(1)}".title()
-            return brand.title()
+        # Add attributes
+        attrs = []
+        if pattern:
+            attrs.append(pattern.title())
+        if color:
+            attrs.append(color.title())
+        if size:
+            attrs.append(f"Size {size}")
+        if model and model.lower() not in ' '.join(parts).lower():
+            attrs.append(model.title())
+        if attrs:
+            parts.append(f"({', '.join(attrs)})")
 
-        # Fallback: clean the raw description
-        if raw_desc:
-            desc = re.sub(r'^(sold|bought|paid|received|gave|sent|got)\s+', '', raw_desc, flags=re.IGNORECASE)
-            desc = re.sub(r'₦?\d[\d,]*[kKmM]?', '', desc)
-            desc = re.sub(r'(to|from)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?', '', desc)
-            desc = re.sub(r'^\d+\s*(pairs?|pieces?|cartons?|bags?|packs?|bottles?)\s+(of\s+)?', '', desc, flags=re.IGNORECASE)
-            desc = re.sub(r'^(for|of)\s+', '', desc, flags=re.IGNORECASE)
-            desc = re.sub(r'\s+', ' ', desc).strip()
-            return desc.title()[:45] if desc else 'Goods/Services'
+        return ' '.join(parts)
 
-        return 'Goods/Services'
 
     def handle_invoice_request(self, phone_number, customer_name, amount, description, discount=None, tax=None):
         """

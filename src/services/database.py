@@ -188,6 +188,9 @@ class Database:
             return Decimal(str(obj))
         elif isinstance(obj, str) and obj == '':
             return None  # Will be filtered by parent dict
+        else:
+            # Pass through everything else unchanged (strings, ints, bools, etc.)
+            return obj
         return obj
 
     def save_transaction(self, phone_number, amount, tx_type, description,

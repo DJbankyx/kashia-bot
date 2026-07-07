@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Kashia WhatsApp Bot - Build 20260706000213
+Description: Kashia WhatsApp Bot - Build 20260706135452
 
 Globals:
   Function:
@@ -30,7 +30,7 @@ Resources:
     Type: AWS::Serverless::Api
     Properties:
       StageName: !Ref Stage
-      Description: Kashia WhatsApp Bot - Build 20260706000213
+      Description: Kashia WhatsApp Bot - Build 20260706135452
 
   # ============================================
   # LAMBDA FUNCTIONS
@@ -43,7 +43,7 @@ Resources:
       CodeUri: src/
       Layers:
         - !Ref DependenciesLayer
-      Description: Kashia WhatsApp Bot - Build 20260706000213
+      Description: Kashia WhatsApp Bot - Build 20260706135452
       Events:
         WebhookPost:
           Type: Api
@@ -83,20 +83,20 @@ Resources:
       CodeUri: src/
       Layers:
         - !Ref DependenciesLayer
-      Description: Kashia WhatsApp Bot - Build 20260706000213
+      Description: Kashia WhatsApp Bot - Build 20260706135452
       Timeout: 300
       Events:
         DailyReport:
           Type: Schedule
           Properties:
             Schedule: cron(0 19 * * ? *)
-            Description: Kashia WhatsApp Bot - Build 20260706000213
+            Description: Kashia WhatsApp Bot - Build 20260706135452
             Enabled: true
         WeeklyReport:
           Type: Schedule
           Properties:
             Schedule: cron(0 17 ? * SUN *)
-            Description: Kashia WhatsApp Bot - Build 20260706000213
+            Description: Kashia WhatsApp Bot - Build 20260706135452
             Enabled: true
       Policies:
         - DynamoDBCrudPolicy:
@@ -248,7 +248,7 @@ Resources:
     Type: AWS::Serverless::LayerVersion
     Properties:
       LayerName: !Sub kashia-dependencies-${Stage}
-      Description: Kashia WhatsApp Bot - Build 20260706000213
+      Description: Kashia WhatsApp Bot - Build 20260706135452
       ContentUri: layers/dependencies/layer.zip
       CompatibleRuntimes:
         - python3.12
@@ -258,12 +258,12 @@ Resources:
 # ============================================
 Outputs:
   WebhookUrl:
-    Description: Kashia WhatsApp Bot - Build 20260706000213
+    Description: Kashia WhatsApp Bot - Build 20260706135452
     Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/webhook"
   WebhookFunctionArn:
-    Description: Kashia WhatsApp Bot - Build 20260706000213
+    Description: Kashia WhatsApp Bot - Build 20260706135452
     Value: !GetAtt WebhookFunction.Arn
   ScheduledReportsFunctionArn:
-    Description: Kashia WhatsApp Bot - Build 20260706000213
+    Description: Kashia WhatsApp Bot - Build 20260706135452
     Value: !GetAtt ScheduledReportsFunction.Arn
 # force deploy Sat Jul  4 18:39:10 WAT 2026

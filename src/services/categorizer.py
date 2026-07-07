@@ -904,3 +904,27 @@ Respond with ONLY a valid JSON array:
         if vendor:
             self.db.save_merchant(phone_number, vendor, correct_category)
             logger.info(f"Merchant memory updated: {vendor} -> {correct_category}")
+
+    # ─────────────────────────────────────────────────────────
+    # Generic completion (for catalog AI parsing, etc.)
+    # ─────────────────────────────────────────────────────────
+
+    def raw_completion(self, prompt: str, max_tokens: int = 300) -> str:
+        """
+        Send a raw prompt to GPT-4o-mini and return the text response.
+        Used by catalog and other features that need custom AI parsing.
+        """
+        try:
+            if not self.client:
+                self.client = OpenAI(api_key=get_openai_key())
+
+            response = self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_tokens,
+                temperature=0.1,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"raw_completion error: {e}")
+            return ""
