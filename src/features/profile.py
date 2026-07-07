@@ -47,14 +47,15 @@ class ProfileHandler:
         # Get debt info
         debts = self.db.get_all_debtors(phone_number) or []
         i_owe_list = self.db.get_all_creditors(phone_number) or []
-        total_owed_to_me = sum(float(d.get("amount", 0)) for d in debts if not d.get("paid"))
-        total_i_owe = sum(float(d.get("amount", 0)) for d in i_owe_list if not d.get("paid"))
+        total_owed_to_me = sum(float(d.get("amount", 0)) for d in debts)
+        total_i_owe = sum(float(d.get("amount", 0)) for d in i_owe_list)
 
         # Build dashboard
         lines = [
             f"{'─' * 20}",
             f"👤 *{business_name}*",
             f"{industry_label} • {tier} Plan",
+            f"📱 {phone_number}",
             f"{'─' * 20}",
             f"",
             f"📅 *Today*",
@@ -79,10 +80,5 @@ class ProfileHandler:
 
         lines.append(f"\n{'─' * 20}")
 
-        return [button_response(
-            "\n".join(lines),
-            [
-                {"id": "report_month", "title": "📊 Full Report"},
-                {"id": "menu_export", "title": "📁 Export"},
-            ]
-        )]
+        # No export buttons here — just quick view
+        return [text_response("\n".join(lines))]
