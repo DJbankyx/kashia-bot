@@ -151,7 +151,7 @@ def verify_signature(event):
         return False
 
     expected = signature[7:]  # Remove "sha256=" prefix
-    body = event.get('body', '')
+    body = event.get('body', '') or ''  # Guard against None body
 
     computed = hmac.new(
         app_secret.encode('utf-8'),
@@ -159,7 +159,8 @@ def verify_signature(event):
         hashlib.sha256
     ).hexdigest()
 
-    return hmac.compare_digest(computed, expected)
+    # compare_digest(a, b) — put expected first (Meta's value), computed second
+    return hmac.compare_digest(expected, computed)
 
 
 def response(status_code, body):

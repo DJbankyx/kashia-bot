@@ -1,31 +1,31 @@
 #!/bin/bash
 # Kashia Bot — One-command deploy
-# Usage: ./deploy.sh
+# Usage: ./deploy.sh [dev|prod]
+# Default: dev
 
 set -e
 
-echo "🚀 Deploying Kashia Bot..."
+STAGE="${1:-dev}"
 
-# Step 1: Copy files from Windows to WSL
-echo "📋 Copying files..."
-cp /mnt/c/Users/HP/Desktop/projects/kashia-bot/src/services/conversation_engine.py ~/projects/kashia-bot/src/services/
-cp /mnt/c/Users/HP/Desktop/projects/kashia-bot/src/services/export_service.py ~/projects/kashia-bot/src/services/
-cp /mnt/c/Users/HP/Desktop/projects/kashia-bot/src/services/pdf_generator.py ~/projects/kashia-bot/src/services/
-cp /mnt/c/Users/HP/Desktop/projects/kashia-bot/src/services/categorizer.py ~/projects/kashia-bot/src/services/
-cp /mnt/c/Users/HP/Desktop/projects/kashia-bot/src/services/database.py ~/projects/kashia-bot/src/services/
-cp /mnt/c/Users/HP/Desktop/projects/kashia-bot/src/utils/parser.py ~/projects/kashia-bot/src/utils/
-cp /mnt/c/Users/HP/Desktop/projects/kashia-bot/src/main.py ~/projects/kashia-bot/src/
+echo "🚀 Deploying Kashia Bot to [$STAGE]..."
 
-# Step 2: Force template change (timestamp in Description)
+# Step 1: Stamp the build timestamp into template.yaml description
 TIMESTAMP=$(date +%Y%m%d%H%M%S)
-sed -i "s/Description:.*/Description: Kashia WhatsApp Bot - Build ${TIMESTAMP}/" template.yaml
+sed -i "s/Description: Kashia WhatsApp Bot.*/Description: Kashia WhatsApp Bot - Build ${TIMESTAMP}/" template.yaml
+echo "📋 Build timestamp: ${TIMESTAMP}"
 
-# Step 3: Build and deploy
+# Step 2: Build
 echo "🔨 Building..."
 rm -rf .aws-sam/build
 sam build
 
-echo "☁️ Deploying..."
-sam deploy --no-confirm-changeset --force-upload
+# Step 3: Deploy
+echo "☁️  Deploying to AWS (${STAGE})..."
+sam deploy \
+  --no-confirm-changeset \
+  --force-upload \
+  --parameter-overrides "Stage=${STAGE}"
 
+echo ""
 echo "✅ Deploy complete! Build: ${TIMESTAMP}"
+echo "📡 Check the Outputs above for your webhook URL."

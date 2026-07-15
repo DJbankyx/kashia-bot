@@ -138,7 +138,7 @@ class Database:
         try:
             # Sanitize for DynamoDB (remove empty strings, convert floats)
             sanitized = self._sanitize_for_dynamo(field_value)
-            self.users_table.update_item(
+            self.users.update_item(
                 Key={'phone_number': phone_number},
                 UpdateExpression=f"SET #field = :val",
                 ExpressionAttributeNames={'#field': field_name},
@@ -152,7 +152,7 @@ class Database:
     def get_rate_limit(self, phone_number):
         """Get rate limit counters for a user"""
         try:
-            user = self.users_table.get_item(Key={'phone_number': phone_number}).get('Item')
+            user = self.users.get_item(Key={'phone_number': phone_number}).get('Item')
             if user:
                 return user.get('rate_limit', None)
             return None
@@ -162,7 +162,7 @@ class Database:
     def update_rate_limit(self, phone_number, rate_data):
         """Update rate limit counters for a user"""
         try:
-            self.users_table.update_item(
+            self.users.update_item(
                 Key={'phone_number': phone_number},
                 UpdateExpression="SET rate_limit = :rl",
                 ExpressionAttributeValues={':rl': rate_data}

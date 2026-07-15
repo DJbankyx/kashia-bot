@@ -38,6 +38,12 @@ DELETE_CONFIRM = "DELETE_CONFIRM"
 # ─── Guided Recording (button-driven) ───
 GUIDED_RECORDING = "GUIDED_RECORDING"
 
+# ─── Personal Info ───
+PERSONAL_INFO = "PERSONAL_INFO"
+
+# ─── Settings ───
+SETTINGS_FLOW = "SETTINGS_FLOW"
+
 # ─── Groups ───
 # States where tier/limit check should NOT apply
 EXEMPT_STATES = {
@@ -49,4 +55,5 @@ EXEMPT_STATES = {
     EXPORTING, INVOICING,
     DEBT_RECORDING, DEBT_CONFIRMING, DEBT_PAYMENT,
     CRM_HINT, GUIDED_RECORDING,
+    PERSONAL_INFO, SETTINGS_FLOW,
 }

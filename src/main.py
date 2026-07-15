@@ -25,6 +25,8 @@ from features.contacts import ContactsHandler
 from features.export import ExportHandler
 from features.invoices import InvoiceHandler
 from features.profile import ProfileHandler
+from features.personal_info import PersonalInfoHandler
+from features.settings import SettingsHandler
 
 from core.states import EXEMPT_STATES
 
@@ -83,6 +85,10 @@ class KashiaBot:
         self.router.profile = ProfileHandler(
             self.router.session, self.db, self.router._get_industry_handler
         )
+        self.router.personal_info = PersonalInfoHandler(self.router.session, self.db)
+        self.router.settings = SettingsHandler(
+            self.router.session, self.db, self.tier_manager
+        )
 
     def handle_message(self, phone_number: str, text: str, message_type: str = "text"):
         """
@@ -123,7 +129,7 @@ class KashiaBot:
             )
 
     def _resolve_markers(self, phone_number: str, responses: list) -> list:
-        """Resolve internal markers (e.g. __SHOW_HOME_MENU__, __ROUTE_TO_DEBT__)."""
+        """Resolve internal markers (e.g. __SHOW_HOME_MENU__, __ROUTE_TO_DEBT__, __EXPORT_REPORT__)."""
         resolved = []
         for resp in responses:
             if resp.get("type") == "__SHOW_HOME_MENU__":
@@ -138,6 +144,16 @@ class KashiaBot:
                 session = self.router.session.get(phone_number)
                 debt_responses = self.router.debt._handle_payment(phone_number, text, session.get("context", {}))
                 resolved.extend(debt_responses)
+                continue
+
+            if resp.get("type") == "__EXPORT_REPORT__":
+                # Triggered from a report page — export that period as Excel
+                content = resp.get("content", {})
+                period  = content.get("period", "month")
+                export_responses = self.export_service.handle_export_request(
+                    phone_number, period
+                )
+                resolved.extend(export_responses)
                 continue
 
             resolved.append(resp)
@@ -169,6 +185,19 @@ class KashiaBot:
             filename = content.get("filename", "")
             caption = content.get("caption", "")
             self.whatsapp.send_document(phone_number, link, filename, caption)
+
+        elif resp_type == "forward_prompt":
+            # Invoice/receipt was generated — offer to forward the link to the customer
+            # content = {"customer_name": "...", "s3_url": "...", "filename": "..."}
+            customer_name = content.get("customer_name", "") if isinstance(content, dict) else ""
+            s3_url = content.get("s3_url", "") if isinstance(content, dict) else ""
+            if customer_name and s3_url:
+                self.whatsapp.send_text(
+                    phone_number,
+                    f"📤 *Forward to {customer_name}?*\n\n"
+                    f"Share this link with them directly:\n{s3_url}\n\n"
+                    f"_Link expires in 24 hours._"
+                )
 
         else:
             # Unknown type — try sending as text

@@ -193,9 +193,9 @@ Resources:
           KeyType: RANGE
 
   # Table 5: Merchant Memory (vendor → category cache)
-    DeletionPolicy: Retain
   MerchantMemoryTable:
     Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
     Properties:
       TableName: !Sub kashia-merchant-memory-${Stage}
       BillingMode: PAY_PER_REQUEST
@@ -210,10 +210,10 @@ Resources:
         - AttributeName: vendor_normalized
           KeyType: RANGE
 
-    DeletionPolicy: Retain
   # Table 6: Contacts (CRM)
   ContactsTable:
     Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
     Properties:
       TableName: !Sub kashia-contacts-${Stage}
       BillingMode: PAY_PER_REQUEST

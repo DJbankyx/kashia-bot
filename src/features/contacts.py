@@ -90,11 +90,7 @@ class ContactsHandler:
         if not name:
             return [text_response("👤 Please include a name:\n\n_Save number Sandra 08060475064_")]
 
-        # Save
-        self.db.save_contact(phone_number, {
-            "name": name,
-            "phone": contact_phone,
-            "type": "customer",  # default
-        })
+        # Save — matches database.save_contact(phone_number, name, contact_type, contact_phone)
+        self.db.save_contact(phone_number, name, "customer", contact_phone)
 
         return [text_response(f"✅ Saved! *{name}* — {contact_phone}")]

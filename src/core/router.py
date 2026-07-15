@@ -46,6 +46,8 @@ class Router:
         self.export = None
         self.invoices = None
         self.profile = None
+        self.personal_info = None
+        self.settings = None
 
         # Industry handlers — set after construction by main.py
         self.industries = {}  # {"trading": TradingIndustry, ...}
@@ -117,6 +119,14 @@ class Router:
 
         if state in (states.EDITING, states.EDIT_TRANSACTION, states.DELETE_CONFIRM):
             return self.transactions.handle_edit(phone_number, text_stripped, session)
+
+        # ── Personal Info flows ──
+        if state == states.PERSONAL_INFO:
+            return self.personal_info.handle(phone_number, text_stripped, session)
+
+        # ── Settings flows ──
+        if state == states.SETTINGS_FLOW:
+            return self.settings.handle(phone_number, text_stripped, session)
 
         # ═══════════════════════════════════════════════════════
         # 5. IDLE STATE — the default
@@ -250,9 +260,58 @@ class Router:
         if bid.startswith("report_"):
             return self.reports.handle_button(phone_number, bid, session)
 
+        # ── Section sub-menu buttons (industry-specific) ──
+        if bid.startswith("sec_") or bid.startswith("pi_") or bid.startswith("biz_") or bid.startswith("crm_") or bid.startswith("set_"):
+            # Try industry handler first
+            industry = self._get_industry_handler(phone_number)
+            if industry:
+                result = industry.handle_button(phone_number, bid, session)
+                if result:
+                    return result
+
+            # ── Personal Info buttons ──
+            if bid.startswith("pi_") or bid == "set_password":
+                if self.personal_info:
+                    return self.personal_info.handle_button(phone_number, bid)
+
+            # ── Settings buttons ──
+            if bid.startswith("set_") or bid.startswith("set_ind_"):
+                if self.settings:
+                    return self.settings.handle_button(phone_number, bid)
+
+            # ── Industry change list selections ──
+            if bid.startswith("set_ind_"):
+                if self.settings:
+                    return self.settings.handle_button(phone_number, bid)
+
+            # ── Business tab buttons → reports handler ──
+            biz_map = {
+                "biz_dashboard":  lambda: self.profile.show(phone_number),
+                "biz_reports":    lambda: self.reports.show(phone_number),
+                "biz_sales":      lambda: self.reports.handle_button(phone_number, "biz_sales", session),
+                "biz_purchases":  lambda: self.reports.handle_button(phone_number, "biz_purchases", session),
+                "biz_expenses":   lambda: self.reports.handle_button(phone_number, "biz_expenses", session),
+                "biz_debts":      lambda: self.debt.show_summary(phone_number),
+                "biz_docs":       lambda: self.export.show_options(phone_number),
+                "biz_export":     lambda: self.export.show_options(phone_number),
+            }
+            handler = biz_map.get(bid)
+            if handler:
+                return handler()
+
         # ── Export buttons ──
         if bid.startswith("export_"):
             return self.export.handle_button(phone_number, bid, session)
+
+        # ── Industry change list taps (set_ind_trading etc) ──
+        if bid.startswith("set_ind_"):
+            if self.settings:
+                return self.settings.handle_button(phone_number, bid)
+
+        # ── pi_bank flow — bank step confirm button ──
+        if bid == "pi_bank_start_flow":
+            if self.personal_info:
+                return self.personal_info._bank_step_1(phone_number)
 
         # ── Unknown button — show home menu ──
         logger.warning(f"Unknown button: {bid}")
@@ -431,7 +490,8 @@ class Router:
         user = self.db.get_user(phone_number)
         if not user:
             return self.industries.get("trading")  # default
-        industry_key = user.get("industry_class", "trading")
+        # Check both field names (industry_class is v2, business_type is legacy)
+        industry_key = user.get("industry_class", user.get("business_type", "trading"))
         return self.industries.get(industry_key, self.industries.get("trading"))
 
     def _fmt_amount(self, amount) -> str:

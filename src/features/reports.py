@@ -1,11 +1,26 @@
 # src/features/reports.py
-"""Reports — daily, weekly, monthly, filtered, and dashboard views."""
+"""Reports — P&L summary, business tabs, and filtered transaction views."""
 
 import logging
 from datetime import datetime, timedelta
-from utils.whatsapp_ui import text_response, button_response, list_response, format_amount
+from utils.whatsapp_ui import (
+    text_response, button_response, list_response, format_amount
+)
 
 logger = logging.getLogger(__name__)
+
+# Categories that represent Cost of Goods Sold (stock purchased to resell)
+COGS_CATEGORIES = {
+    "Goods & Stock",
+    "Production & Manufacturing",
+    "Service Costs",
+}
+
+# Bad vendor names that are really transaction verbs — filter these out of displays
+BAD_VENDORS = {
+    "sold", "bought", "paid", "received", "sale", "purchase",
+    "expense", "income", "cash", "transfer",
+}
 
 
 class ReportsHandler:
@@ -15,129 +30,326 @@ class ReportsHandler:
         self.session = session_mgr
         self.db = database
 
+    # ─────────────────────────────────────────────────────────
+    # ENTRY — period selector menu
+    # ─────────────────────────────────────────────────────────
+
     def show(self, phone_number: str) -> list:
-        """Show report options menu."""
+        """Show report period options."""
         return [list_response(
             header="📊 Reports",
             body="Which report would you like?",
-            button_text="Select Report",
+            button_text="Select Period",
             sections=[{
                 "title": "Time Period",
                 "rows": [
-                    {"id": "report_today", "title": "📅 Today", "description": "Today's transactions"},
-                    {"id": "report_week", "title": "📆 This Week", "description": "Last 7 days"},
-                    {"id": "report_month", "title": "🗓️ This Month", "description": "Current month totals"},
-                    {"id": "report_sales", "title": "💰 My Sales", "description": "All sales this month"},
-                    {"id": "report_purchases", "title": "📦 My Purchases", "description": "All purchases this month"},
+                    {"id": "report_today", "title": "📅 Today",
+                     "description": "Today's P&L summary"},
+                    {"id": "report_week",  "title": "📆 This Week",
+                     "description": "Last 7 days"},
+                    {"id": "report_month", "title": "🗓️ This Month",
+                     "description": now_month_label()},
+                    {"id": "report_last_month", "title": "📅 Last Month",
+                     "description": "Previous month summary"},
                 ]
             }]
         )]
 
+    # ─────────────────────────────────────────────────────────
+    # BUTTON ROUTER
+    # ─────────────────────────────────────────────────────────
+
     def handle_button(self, phone_number: str, button_id: str, session: dict) -> list:
-        """Handle report button taps."""
-        handlers = {
-            "report_today": lambda: self._show_report(phone_number, "today"),
-            "report_week": lambda: self._show_report(phone_number, "week"),
-            "report_month": lambda: self._show_report(phone_number, "month"),
-            "report_sales": lambda: self._filtered_report(phone_number, "sale"),
-            "report_purchases": lambda: self._filtered_report(phone_number, "purchase"),
-        }
-        handler = handlers.get(button_id)
-        if handler:
-            return handler()
+        """Route all report_ and biz_ buttons."""
+        # ── Period reports ──
+        if button_id == "report_today":
+            return self._pnl_report(phone_number, "today")
+        if button_id == "report_week":
+            return self._pnl_report(phone_number, "week")
+        if button_id == "report_month":
+            return self._pnl_report(phone_number, "month")
+        if button_id == "report_last_month":
+            return self._pnl_report(phone_number, "last_month")
+
+        # ── Business tab buttons ──
+        if button_id == "biz_sales":
+            return self._tab_report(phone_number, "sale")
+        if button_id == "biz_purchases":
+            return self._tab_report(phone_number, "purchase")
+        if button_id == "biz_expenses":
+            return self._tab_report(phone_number, "expense")
+        if button_id == "biz_reports":
+            return self.show(phone_number)
+
+        # ── Export from report (period stored in session context) ──
+        if button_id.startswith("report_export_"):
+            period = button_id.replace("report_export_", "")
+            return self._export_report(phone_number, period)
+
         return self.show(phone_number)
 
-    def _show_report(self, phone_number: str, period: str) -> list:
-        """Generate a report for the given period."""
-        now = datetime.now()
+    # ─────────────────────────────────────────────────────────
+    # REPORT A — Full P&L (the main report)
+    # ─────────────────────────────────────────────────────────
 
-        if period == "today":
-            start_date = now.strftime("%Y-%m-%d")
-            end_date = start_date
-            label = "Today"
-        elif period == "week":
-            start_date = (now - timedelta(days=7)).strftime("%Y-%m-%d")
-            end_date = now.strftime("%Y-%m-%d")
-            label = "This Week"
-        else:  # month
-            start_date = now.strftime("%Y-%m-01")
-            end_date = now.strftime("%Y-%m-%d")
-            label = now.strftime("%B %Y")
+    def _pnl_report(self, phone_number: str, period: str) -> list:
+        """
+        Generate the proper P&L report.
 
-        transactions = self.db.get_transactions_by_period(phone_number, start_date, end_date)
+        Structure:
+          REVENUE (sales)
+          COST OF GOODS SOLD (purchases / stock bought)
+          ─────────────────
+          GROSS PROFIT
+          OPERATING EXPENSES (rent, salaries, utilities, etc.)
+          ─────────────────
+          NET PROFIT / (LOSS)
+        """
+        start_date, end_date, label = _date_range(period)
+        transactions = self.db.get_transactions_by_period(
+            phone_number, start_date, end_date
+        ) or []
 
         if not transactions:
-            return [text_response(f"📊 *{label}*\n\nNo transactions recorded yet.")]
+            return [text_response(
+                f"📊 *{label}*\n\n"
+                f"No transactions recorded yet.\n\n"
+                f"_Start recording sales and expenses to see your P&L._"
+            )]
 
-        # Calculate totals
-        total_sales = sum(float(t.get("amount", 0)) for t in transactions if t.get("type") == "sale")
-        total_purchases = sum(float(t.get("amount", 0)) for t in transactions if t.get("type") == "purchase")
-        total_expenses = sum(float(t.get("amount", 0)) for t in transactions if t.get("type") == "expense")
-        net = total_sales - total_purchases - total_expenses
+        # ── Separate into buckets ──
+        sales       = [t for t in transactions if t.get("type") == "sale"]
+        purchases   = [t for t in transactions if t.get("type") == "purchase"]
+        expenses    = [t for t in transactions if t.get("type") == "expense"
+                       and t.get("category") not in COGS_CATEGORIES]
+        cogs_txns   = [t for t in transactions if t.get("type") == "expense"
+                       and t.get("category") in COGS_CATEGORIES]
+        # Purchases are always COGS for trading
+        all_cogs    = purchases + cogs_txns
 
-        # Build report
+        # ── Totals ──
+        revenue     = _sum(sales)
+        cogs        = _sum(all_cogs)
+        gross       = revenue - cogs
+        opex        = _sum(expenses)
+        net         = gross - opex
+        tx_count    = len(transactions)
+
+        # ── Gross margin % ──
+        gross_pct   = f"{int(gross / revenue * 100)}%" if revenue > 0 else "—"
+        net_pct     = f"{int(net / revenue * 100)}%" if revenue > 0 else "—"
+
+        # ── Format ──
         lines = [
-            f"📊 *{label} Report*",
+            f"📊 *{label} — P&L Report*",
             f"",
-            f"💰 Sales: {format_amount(total_sales)}",
-            f"📦 Purchases: {format_amount(total_purchases)}",
-            f"💸 Expenses: {format_amount(total_expenses)}",
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"💰 *REVENUE*",
+            f"  Sales:        {format_amount(revenue)}",
             f"",
-            f"{'📈' if net >= 0 else '📉'} Net: {format_amount(abs(net))} {'profit' if net >= 0 else 'loss'}",
+            f"📦 *COST OF GOODS SOLD*",
+            f"  Purchases:    {format_amount(cogs)}",
             f"",
-            f"📝 {len(transactions)} transaction{'s' if len(transactions) != 1 else ''}",
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"{'📈' if gross >= 0 else '📉'} *GROSS PROFIT*   "
+            f"{format_amount(gross)} _({gross_pct})_",
+            f"",
+            f"💸 *OPERATING EXPENSES*",
+            f"  Expenses:     {format_amount(opex)}",
+            f"",
+            f"━━━━━━━━━━━━━━━━━━━━",
         ]
 
-        # Show last few transactions
-        recent = sorted(transactions, key=lambda t: t.get("timestamp", ""), reverse=True)[:5]
-        if recent:
-            lines.append("")
-            lines.append("*Recent:*")
-            for tx in recent:
-                emoji = {"sale": "💰", "purchase": "📦", "expense": "💸"}.get(tx.get("type", ""), "📝")
-                desc = tx.get("description", "")[:30]
-                amt = format_amount(tx.get("amount", 0))
-                lines.append(f"{emoji} {desc} — {amt}")
+        # Net profit line
+        if net >= 0:
+            lines.append(
+                f"📈 *NET PROFIT*      {format_amount(net)} _({net_pct})_"
+            )
+        else:
+            lines.append(
+                f"📉 *NET LOSS*       ({format_amount(abs(net))}) _({net_pct})_"
+            )
 
-        return [text_response("\n".join(lines))]
+        lines.append(f"━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"")
+        lines.append(f"📝 {tx_count} transaction{'s' if tx_count != 1 else ''}")
 
-    def _filtered_report(self, phone_number: str, filter_type: str) -> list:
-        """Show sales-only or purchases-only report."""
+        # ── Top expense categories breakdown ──
+        if expenses:
+            cat_totals = {}
+            for t in expenses:
+                cat = t.get("category", "Other")
+                cat_totals[cat] = cat_totals.get(cat, 0) + float(t.get("amount", 0))
+            top = sorted(cat_totals.items(), key=lambda x: x[1], reverse=True)[:4]
+            lines.append(f"")
+            lines.append(f"*Top Expenses:*")
+            for cat, amt in top:
+                pct = int(amt / opex * 100) if opex > 0 else 0
+                lines.append(f"  • {cat}: {format_amount(amt)} ({pct}%)")
+
+        return [
+            text_response("\n".join(lines)),
+            button_response(
+                "Export this report or drill into a section:",
+                [
+                    {"id": f"report_export_{period}", "title": "📎 Export Excel"},
+                    {"id": "biz_sales",    "title": "💰 My Sales"},
+                    {"id": "biz_purchases","title": "📦 My Purchases"},
+                ]
+            )
+        ]
+
+    # ─────────────────────────────────────────────────────────
+    # BUSINESS TABS — Sales / Purchases / Expenses
+    # ─────────────────────────────────────────────────────────
+
+    def _tab_report(self, phone_number: str, tab_type: str) -> list:
+        """
+        Filtered view for one tab — Sales, Purchases, or Expenses.
+        Shows this month by default with period switcher buttons.
+        """
         now = datetime.now()
         start_date = now.strftime("%Y-%m-01")
-        end_date = now.strftime("%Y-%m-%d")
+        end_date   = now.strftime("%Y-%m-%d")
+        label      = now.strftime("%B %Y")
 
-        transactions = self.db.get_transactions_by_period(phone_number, start_date, end_date)
-        filtered = [t for t in transactions if t.get("type") == filter_type]
+        all_txns = self.db.get_transactions_by_period(
+            phone_number, start_date, end_date
+        ) or []
 
-        label = "Sales" if filter_type == "sale" else "Purchases"
-        emoji = "💰" if filter_type == "sale" else "📦"
+        # Filter
+        if tab_type == "sale":
+            filtered = [t for t in all_txns if t.get("type") == "sale"]
+            emoji    = "💰"
+            tab_name = "Sales"
+        elif tab_type == "purchase":
+            filtered = [t for t in all_txns if t.get("type") == "purchase"]
+            emoji    = "📦"
+            tab_name = "Purchases"
+        else:  # expense
+            filtered = [t for t in all_txns if t.get("type") == "expense"]
+            emoji    = "💸"
+            tab_name = "Expenses"
 
         if not filtered:
-            return [text_response(f"{emoji} *My {label} — {now.strftime('%B %Y')}*\n\nNo {label.lower()} this month.")]
+            return [
+                text_response(
+                    f"{emoji} *{tab_name} — {label}*\n\n"
+                    f"No {tab_name.lower()} recorded this month.\n\n"
+                    f"_Record a transaction from the main menu._"
+                )
+            ]
 
-        total = sum(float(t.get("amount", 0)) for t in filtered)
+        total   = _sum(filtered)
+        count   = len(filtered)
+        avg     = total / count if count > 0 else 0
+
+        # Header
         lines = [
-            f"{emoji} *My {label} — {now.strftime('%B %Y')}*",
+            f"{emoji} *{tab_name} — {label}*",
             f"",
-            f"Total: {format_amount(total)} ({len(filtered)} transactions)",
+            f"Total:    {format_amount(total)}",
+            f"Count:    {count} transaction{'s' if count != 1 else ''}",
+            f"Average:  {format_amount(avg)}",
             f"",
+            f"*Records:*",
         ]
 
-        # Filter out false vendor names
-        bad_vendors = {"sold", "bought", "paid", "received", "sale", "purchase", "expense"}
+        # List each transaction — newest first, max 15
+        sorted_txns = sorted(
+            filtered,
+            key=lambda t: t.get("created_at", t.get("date", "")),
+            reverse=True
+        )[:15]
 
-        for tx in sorted(filtered, key=lambda t: t.get("timestamp", ""), reverse=True)[:10]:
-            desc = tx.get("description", "")[:25]
-            amt = format_amount(tx.get("amount", 0))
-            vendor = tx.get("vendor", "")
-            if vendor.lower() in bad_vendors:
-                vendor = ""
-            vendor_str = f" ({vendor})" if vendor else ""
-            date_str = tx.get("date", "")[-5:]  # MM-DD
-            lines.append(f"• {desc}{vendor_str} — {amt}  _{date_str}_")
+        for t in sorted_txns:
+            desc    = _clean_desc(t)
+            amt     = format_amount(t.get("amount", 0))
+            vendor  = t.get("vendor", "")
+            vendor  = "" if vendor.lower() in BAD_VENDORS else vendor
+            date_s  = t.get("date", "")[-5:]   # MM-DD
+            vendor_str = f" · {vendor}" if vendor else ""
+            lines.append(f"• {desc}{vendor_str} — {amt}  _{date_s}_")
 
-        if len(filtered) > 10:
-            lines.append(f"\n_...and {len(filtered) - 10} more_")
+        if count > 15:
+            lines.append(f"\n_...and {count - 15} more. Export for full list._")
 
-        return [text_response("\n".join(lines))]
+        return [
+            text_response("\n".join(lines)),
+            button_response(
+                "View a different period or export:",
+                [
+                    {"id": "report_month",          "title": "🗓️ Full P&L"},
+                    {"id": f"report_export_month",  "title": "📎 Export Excel"},
+                ]
+            )
+        ]
+
+    # ─────────────────────────────────────────────────────────
+    # EXPORT from report button
+    # ─────────────────────────────────────────────────────────
+
+    def _export_report(self, phone_number: str, period: str) -> list:
+        """Trigger Excel export for a given period."""
+        # Export service is wired in main.py — use the existing export handler
+        # We return a routing marker that main.py resolves
+        return [{"type": "__EXPORT_REPORT__", "content": {"period": period}}]
+
+
+# ─────────────────────────────────────────────────────────
+# HELPERS (module-level, no state)
+# ─────────────────────────────────────────────────────────
+
+def _sum(transactions: list) -> float:
+    """Sum amounts from a transaction list."""
+    return sum(float(t.get("amount", 0)) for t in transactions)
+
+
+def _date_range(period: str):
+    """Return (start_date, end_date, label) for a named period."""
+    now = datetime.now()
+
+    if period == "today":
+        d = now.strftime("%Y-%m-%d")
+        return d, d, "Today"
+
+    if period == "week":
+        start = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+        end   = now.strftime("%Y-%m-%d")
+        return start, end, "Last 7 Days"
+
+    if period == "last_month":
+        first_this = now.replace(day=1)
+        last_month_end   = first_this - timedelta(days=1)
+        last_month_start = last_month_end.replace(day=1)
+        return (
+            last_month_start.strftime("%Y-%m-%d"),
+            last_month_end.strftime("%Y-%m-%d"),
+            last_month_end.strftime("%B %Y"),
+        )
+
+    # Default: this month
+    start = now.strftime("%Y-%m-01")
+    end   = now.strftime("%Y-%m-%d")
+    return start, end, now.strftime("%B %Y")
+
+
+def now_month_label() -> str:
+    return datetime.now().strftime("%B %Y")
+
+
+def _clean_desc(tx: dict) -> str:
+    """Get the best short description for a transaction row."""
+    # Prefer structured fields over raw text
+    item = tx.get("item_name", "")
+    brand = tx.get("brand", "")
+    if item and brand:
+        return f"{brand} {item}"[:30]
+    if item:
+        return item[:30]
+    desc = tx.get("description", tx.get("raw_text", ""))
+    # Strip common prefixes
+    import re
+    desc = re.sub(r'^(?:sold|bought|paid|received)\s+', '', desc,
+                  flags=re.IGNORECASE)
+    return desc[:30].strip() or "Transaction"

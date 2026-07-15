@@ -817,8 +817,9 @@ class TransactionCategorizer:
                 BUSINESS_PARSE_INSTRUCTIONS.get("general")
             )
 
+            catalog_context = self._build_catalog_context(phone_number)
+
             system_prompt = f"""You are Kashia, a Nigerian AI bookkeeping assistant.
-            system_prompt += self._build_catalog_context(phone_number)
 The user has sent a message containing MULTIPLE transactions/items in one message.
 
 You MUST understand:
@@ -844,6 +845,8 @@ Respond with ONLY a valid JSON array:
     {{"transaction_type": "income/expense", "total_amount": number, "item_name": "...", "brand": "..." or null, "model": null, "size": "..." or null, "color": null, "quantity": "...", "unit_cost": number or null, "vendor_or_customer": "..." or null, "category": "...", "sub_category": "...", "payment_method": null, "payment_status": null, "extra_details": {{}}, "tags": [], "confidence": 0-100, "description": "short description of this item"}},
     ...
 ]"""
+            # Append catalog context after the f-string is fully constructed
+            system_prompt += catalog_context
 
             messages = [
                 {"role": "system", "content": system_prompt},
