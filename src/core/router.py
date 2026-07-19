@@ -172,6 +172,20 @@ class Router:
         if text_lower in REPORT_WORDS:
             return self.reports.show(phone_number)
 
+        # Catalog shortcuts
+        CATALOG_WORDS = {'my catalog', 'catalog', 'show catalog', 'my products',
+                         'products', 'inventory', 'stock'}
+        if text_lower in CATALOG_WORDS:
+            return self.catalog.show_menu(phone_number)
+
+        # Export shortcuts
+        if text_lower in {'export', 'excel', 'csv', 'download'}:
+            return self.export.show_options(phone_number)
+
+        # CRM shortcuts
+        if text_lower in {'contacts', 'customers', 'suppliers', 'crm'}:
+            return self.contacts.show(phone_number)
+
 
         # Greetings → show home menu
         if text_lower in GREETING_WORDS or text_lower in HELP_WORDS:
@@ -261,10 +275,14 @@ class Router:
             "menu_contacts": lambda: self.contacts.show(phone_number),
             "menu_export": lambda: self.export.show_options(phone_number),
             "menu_invoice": lambda: self.invoices.start(phone_number),
+            "menu_home": lambda: self._show_home_menu(phone_number),
         }
 
         handler = feature_map.get(bid)
         if handler:
+            # Reset state when navigating to menu (user is leaving current flow)
+            if bid == "menu_home":
+                self.session.reset(phone_number)
             return handler()
 
         # ── Industry-specific buttons ──
@@ -340,6 +358,10 @@ class Router:
             # ── sec_personal → show profile summary + sub-menu ──
             if bid == "sec_personal" and self.personal_info:
                 return self.personal_info.show_profile(phone_number)
+
+            # ── sec_inventory → show inventory/catalog menu ──
+            if bid == "sec_inventory":
+                return self.catalog.show_menu(phone_number)
 
             # ── Personal Info buttons ──
             if bid.startswith("pi_") or bid == "set_password":
@@ -481,46 +503,15 @@ class Router:
         return [text_response(prompt)]
 
     def _start_catalog_recording(self, phone_number: str, tx_type: str, products: dict) -> list:
-        """Show catalog products as the first step — user picks from their own catalog."""
-        from utils.whatsapp_ui import list_response, button_response
+        """Show flat product list for sale/purchase recording."""
+        from utils.whatsapp_ui import list_response
 
         label = "sell" if tx_type == "sale" else "buy"
-        rows  = []
 
-        for key, data in list(products.items())[:9]:
-            if not isinstance(data, dict):
-                continue  # Skip corrupted entries
-            name    = data.get("name", key.replace("_", " ").title())
-            pattern = data.get("pattern", [])
-            tree    = data.get("tree", {})
-            landing = data.get("landing_cost", 0)
+        # Get product rows from catalog handler
+        rows = self.catalog.get_product_list_for_recording(phone_number)
 
-            # Build useful description
-            parts = []
-            if tree:
-                # Count stock in tree (sum all leaf integers)
-                def _sum_tree(node):
-                    if isinstance(node, (int, float)):
-                        return max(0, int(node))
-                    if isinstance(node, dict):
-                        return sum(_sum_tree(v) for v in node.values())
-                    return 0
-                stock = _sum_tree(tree)
-                if stock > 0:
-                    parts.append(f"{stock} in stock")
-            if landing:
-                parts.append(f"Cost: ₦{int(landing):,}")
-            if pattern and not parts:
-                parts.append(f"{' → '.join(pattern)}")
-            desc = " · ".join(parts) if parts else "Tap to select"
-
-            rows.append({
-                "id": f"catrec_{key}",
-                "title": f"📦 {name}"[:24],
-                "description": desc[:72],
-            })
-
-        # Add "Other" option for items not in catalog
+        # Add "Other" option
         rows.append({
             "id": "catrec___other__",
             "title": "📝 Other / Not Listed",
@@ -595,11 +586,26 @@ class Router:
 
             # Small amount — done
             self.session.reset(phone_number)
-            return [text_response(f"👤 *{name}* noted! Send your next transaction anytime.")]
+            return [
+                text_response(f"👤 *{name}* noted!"),
+                button_response("What's next?", [
+                    {"id": "record_sale", "title": "💰 Record Sale"},
+                    {"id": "record_purchase", "title": "📦 Record Purchase"},
+                    {"id": "record_expense", "title": "💸 Record Expense"},
+                ])
+            ]
 
         if step == "ask_payment":
             self.session.reset(phone_number)
-            return [text_response("👍 Got it! Send your next transaction anytime.")]
+            from utils.whatsapp_ui import button_response
+            return [
+                text_response("👍 Got it!"),
+                button_response("What's next?", [
+                    {"id": "record_sale", "title": "💰 Record Sale"},
+                    {"id": "record_purchase", "title": "📦 Record Purchase"},
+                    {"id": "record_expense", "title": "💸 Record Expense"},
+                ])
+            ]
 
         # Fallback
         self.session.reset(phone_number)
@@ -635,7 +641,15 @@ class Router:
         if tx_id:
             self.db.update_transaction(phone_number, tx_id, {"payment_method": payment_type})
 
-        return [text_response("👍 Got it! Send your next transaction anytime.")]
+        from utils.whatsapp_ui import button_response
+        return [
+            text_response("👍 Got it!"),
+            button_response("What's next?", [
+                {"id": "record_sale", "title": "💰 Record Sale"},
+                {"id": "record_purchase", "title": "📦 Record Purchase"},
+                {"id": "record_expense", "title": "💸 Record Expense"},
+            ])
+        ]
 
     # ─────────────────────────────────────────────────────────
     # Helpers

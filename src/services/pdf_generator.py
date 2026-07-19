@@ -219,8 +219,8 @@ class PDFGenerator:
                     qty = int(item.get('quantity', 1) or 1)
                     total += item_amount
                     unit_price = int(item.get('unit_cost', 0) or 0) or (item_amount // qty if qty > 0 else item_amount)
-                    # Use structured description
-                    item_desc = self._clean_item_description(item)
+                    # Use structured description from the item
+                    item_desc = item.get('description', 'Goods/Services')
                     table_data.append([
                         item_desc,
                         str(qty),
@@ -731,10 +731,30 @@ class PDFGenerator:
 
             # ─── TRUE MARGIN (Report B) ───
             # Show margin based on landing cost data from sales
+            # Check both: 1) landing_cost on transaction, 2) catalog lookup
+            from features.catalog import CatalogHandler
+            cat_handler = CatalogHandler(None, self.db)
+
             costed_sales = []
             for tx in income_txns:
                 extra = tx.get('extra_details', {}) or {}
                 lc = extra.get('landing_cost') or tx.get('landing_cost')
+
+                # Fallback: lookup from catalog
+                if not lc or int(lc) <= 0:
+                    desc = tx.get('description', tx.get('item_name', ''))
+                    brand = tx.get('brand', '')
+                    search_name = f"{brand} {desc}".strip() if brand else desc
+                    catalog_cost = cat_handler.get_landing_cost(phone_number, search_name)
+                    if catalog_cost > 0:
+                        import re as _re
+                        qty_str = tx.get('quantity', '1')
+                        qty = 1
+                        if qty_str:
+                            match = _re.match(r'^(\d+)', str(qty_str))
+                            qty = int(match.group(1)) if match else 1
+                        lc = catalog_cost * qty
+
                 if lc and int(lc) > 0:
                     costed_sales.append({
                         "description": self._clean_item_description(tx),
@@ -964,16 +984,19 @@ class PDFGenerator:
         for tx in selected:
             qty = int(tx.get('quantity', 1)) or 1
             amount = int(tx.get('amount', 0))
-            brand = tx.get('brand', '')
-            product = tx.get('product', '') or tx.get('item_type', '')
+            unit_cost = tx.get('unit_cost')
             desc = self._clean_item_description(tx)
             vendor = tx.get('vendor', '')
+
+            # Extract customer name from vendor (not description)
             if vendor and not customer_name:
                 customer_name = vendor
+
             items.append({
                 'description': desc,
                 'quantity': qty,
-                'amount': amount
+                'amount': amount,
+                'unit_cost': unit_cost,
             })
 
         if not customer_name:
@@ -1142,25 +1165,41 @@ class PDFGenerator:
 
     def handle_receipt_request(self, phone_number):
         """
-        Handle receipt generation for last transaction.
+        Handle receipt generation — show recent sales for user to pick from.
         Returns: list of response dicts
         """
-        result = self.generate_receipt(phone_number)
+        from utils.whatsapp_ui import list_response, text_response, format_amount
 
-        if result and result[0]:
-            filepath, filename = result
-            delivered, s3_url = self.deliver_pdf(phone_number, filepath, filename,
-                            caption="Payment Receipt")
-            if not delivered:
-                return [{"type": "text", "content": "⚠️ Receipt generated but delivery failed. Please try again."}]
-            responses = [{"type": "text", "content": f"✅ Receipt sent! Check your chat for the PDF.\n\n🔗 *Shareable link* (valid 24hrs):\n{s3_url}"}]
-            # Try to find customer for forward prompt
-            transactions = self.db.get_transactions(phone_number, limit=1)
-            if transactions:
-                vendor = transactions[0].get('vendor', '')
-                if vendor and vendor.lower() not in {'unknown', 'sold', 'bought', 'paid', 'received', ''}:
-                    responses.append({"type": "forward_prompt", "content": {
-                        "customer_name": vendor, "s3_url": s3_url, "filename": filename}})
-            return responses
-        else:
-            return [{"type": "text", "content": "No recent transaction found to generate a receipt for."}]
+        # Get recent sales (receipts are typically for sales)
+        transactions = self.db.get_transactions(phone_number, limit=20)
+        sales = [t for t in transactions if t.get('type') in ('sale', 'income')]
+
+        if not sales:
+            return [{"type": "text", "content": "No sales found to generate a receipt for."}]
+
+        # If only 1 sale, generate directly
+        if len(sales) == 1:
+            return self._generate_and_deliver_receipt(phone_number, sales[0])
+
+        # Show picker — max 10 recent sales
+        rows = []
+        for tx in sales[:10]:
+            tx_id = tx.get('transaction_id', '')
+            desc = self._clean_item_description(tx)[:22]
+            amt = int(tx.get('amount', 0))
+            vendor = tx.get('vendor', '')
+            date_s = tx.get('date', '')[-5:]
+            vendor_s = f" · {vendor}" if vendor else ""
+
+            rows.append({
+                "id": f"gen_receipt_{tx_id}",
+                "title": f"{desc} — ₦{amt:,}"[:24],
+                "description": f"{date_s}{vendor_s}"[:72],
+            })
+
+        return [{"type": "list", "content": {
+            "header": "🧾 Generate Receipt",
+            "body": "Pick a sale to generate a receipt for:",
+            "button_text": "Select Sale",
+            "sections": [{"title": "Recent Sales", "rows": rows}],
+        }}]

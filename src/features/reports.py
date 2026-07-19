@@ -103,16 +103,13 @@ class ReportsHandler:
 
     def _pnl_report(self, phone_number: str, period: str) -> list:
         """
-        Generate the proper P&L report.
+        Generate the proper P&L report in DUAL FORMAT.
 
-        Structure:
-          REVENUE (sales)
-          COST OF GOODS SOLD (purchases / stock bought)
-          ─────────────────
-          GROSS PROFIT
-          OPERATING EXPENSES (rent, salaries, utilities, etc.)
-          ─────────────────
-          NET PROFIT / (LOSS)
+        Format A — Cash Flow:
+          Revenue (Sales) - Purchases - Operating Expenses = Net Cash P&L
+
+        Format B — True Accounting (Gross Margin):
+          Revenue (Sales) - COGS (landing cost × qty) = Gross Profit - OpEx = Net Profit
         """
         start_date, end_date, label = _date_range(period)
         transactions = self.db.get_transactions_by_period(
@@ -148,7 +145,9 @@ class ReportsHandler:
         gross_pct   = f"{int(gross / revenue * 100)}%" if revenue > 0 else "—"
         net_pct     = f"{int(net / revenue * 100)}%" if revenue > 0 else "—"
 
-        # ── Format ──
+        # ════════════════════════════════════════════════════
+        # FORMAT A — Cash Flow Style
+        # ════════════════════════════════════════════════════
         lines = [
             f"📊 *{label} — P&L Report*",
             f"",
@@ -196,11 +195,13 @@ class ReportsHandler:
                 pct = int(amt / opex * 100) if opex > 0 else 0
                 lines.append(f"  • {cat}: {format_amount(amt)} ({pct}%)")
 
-        # ── Build Report B (True Margin) if landing cost data exists ──
-        margin_report = self._build_margin_report(sales, label)
-
         responses = [text_response("\n".join(lines))]
 
+        # ════════════════════════════════════════════════════
+        # FORMAT B — True Margin (Landing Cost based)
+        # Uses landing_cost stored on sales OR from catalog lookup
+        # ════════════════════════════════════════════════════
+        margin_report = self._build_margin_report_v2(phone_number, sales, label)
         if margin_report:
             responses.append(text_response(margin_report))
 
@@ -209,7 +210,7 @@ class ReportsHandler:
             [
                 {"id": f"report_pdf_{period}", "title": "📄 Download PDF"},
                 {"id": f"report_export_{period}", "title": "📎 Export Excel"},
-                {"id": "biz_sales",    "title": "💰 My Sales"},
+                {"id": "menu_home",    "title": "☰ Menu"},
             ]
         ))
 
@@ -300,7 +301,7 @@ class ReportsHandler:
                 [
                     {"id": edit_btn_id,             "title": "✏️ Edit Records"},
                     {"id": "report_month",          "title": "🗓️ Full P&L"},
-                    {"id": f"report_export_month",  "title": "📎 Export Excel"},
+                    {"id": "menu_home",             "title": "☰ Menu"},
                 ]
             )
         ]
@@ -310,16 +311,49 @@ class ReportsHandler:
     # ─────────────────────────────────────────────────────────
 
     def _build_margin_report(self, sales: list, period_label: str) -> str:
+        """Legacy — redirect to v2."""
+        return None  # Replaced by _build_margin_report_v2
+
+    def _build_margin_report_v2(self, phone_number: str, sales: list, period_label: str) -> str:
         """
         Build Report B — True Gross Margin using landing_cost data.
-        Only shows if at least one sale has landing_cost recorded.
+        
+        Checks two sources for cost:
+        1. landing_cost stored on the transaction itself
+        2. landing_cost stored on the catalog product (fallback)
+        
         Returns formatted text string or None if no data.
         """
-        # Filter sales that have landing_cost
+        if not sales:
+            return None
+
+        # Get catalog for fallback cost lookup
+        from features.catalog import CatalogHandler
+        cat = CatalogHandler(self.session, self.db)
+
         costed_sales = []
         for t in sales:
+            # Source 1: landing_cost on the transaction
             extra = t.get("extra_details", {}) or {}
             lc = extra.get("landing_cost") or t.get("landing_cost")
+
+            # Source 2: Lookup from catalog by description/product name
+            if not lc or int(lc) <= 0:
+                desc = t.get("description", t.get("item_name", ""))
+                brand = t.get("brand", "")
+                search_name = f"{brand} {desc}".strip() if brand else desc
+                catalog_cost = cat.get_landing_cost(phone_number, search_name)
+                if catalog_cost > 0:
+                    lc = catalog_cost
+                    # Calculate total cost based on quantity
+                    qty_str = t.get("quantity", "1")
+                    qty = 1
+                    if qty_str:
+                        import re
+                        match = re.match(r'^(\d+)', str(qty_str))
+                        qty = int(match.group(1)) if match else 1
+                    lc = catalog_cost * qty  # Total cost = unit cost × qty
+
             if lc and int(lc) > 0:
                 costed_sales.append({
                     "description": t.get("description", t.get("item_name", "Item")),
@@ -337,17 +371,20 @@ class ReportsHandler:
         margin_pct    = int(total_margin / total_revenue * 100) if total_revenue > 0 else 0
         uncosted      = len(sales) - len(costed_sales)
 
+        # Also calculate net after expenses
+        # (expenses already shown in Format A, so this shows the accounting view)
         lines = [
             f"━━━━━━━━━━━━━━━━━━━━",
             f"📈  *TRUE MARGIN — {period_label}*",
+            f"_(Proper Accounting View)_",
             f"━━━━━━━━━━━━━━━━━━━━",
             f"",
-            f"_Based on {len(costed_sales)} sale{'s' if len(costed_sales) != 1 else ''} with recorded cost_",
+            f"_Based on {len(costed_sales)} sale{'s' if len(costed_sales) != 1 else ''} with recorded/catalog cost_",
             f"",
             f"💰 Revenue:       {format_amount(total_revenue)}",
-            f"🏷️ Landing Cost:  {format_amount(total_cost)}",
+            f"🏷️ COGS (Cost):   {format_amount(total_cost)}",
             f"━━━━━━━━━━━━━━━━━━━━",
-            f"📈 *Gross Margin:  {format_amount(total_margin)}  ({margin_pct}%)*",
+            f"📈 *Gross Profit:  {format_amount(total_margin)}  ({margin_pct}%)*",
             f"",
         ]
 

@@ -159,7 +159,7 @@ class DebtHandler:
         return self.show_summary(phone_number)
 
     def _handle_confirming(self, phone_number: str, text: str, context: dict) -> list:
-        """Confirm and save debt."""
+        """Confirm and save debt, then ask if they want to also record as transaction."""
         if text.lower() in ("yes", "y", "confirm", "btn_yes", "✅ confirm"):
             try:
                 name = context.get("name", "")
@@ -169,12 +169,46 @@ class DebtHandler:
 
                 if direction == "they_owe":
                     self.db.record_debt(phone_number, name, float(amount), 'owed_to_me', reason)
+                    # Also record as a credit sale transaction
+                    desc = reason or f"Credit sale to {name}"
+                    self.db.save_transaction(
+                        phone_number, int(amount), "sale", desc,
+                        "Sales & Income", vendor=name,
+                        payment_method="credit",
+                    )
                     self.session.reset(phone_number)
-                    return [text_response(f"✅ Recorded! *{name}* owes you {format_amount(amount)}.")]
+                    return [
+                        text_response(
+                            f"✅ Recorded! *{name}* owes you {format_amount(amount)}.\n"
+                            f"💰 Also saved as a credit sale."
+                        ),
+                        button_response("What's next?", [
+                            {"id": "record_sale", "title": "💰 Record Sale"},
+                            {"id": "menu_debts", "title": "💳 View Debts"},
+                            {"id": "menu_home", "title": "☰ Menu"},
+                        ])
+                    ]
                 else:
                     self.db.record_debt(phone_number, name, float(amount), 'i_owe', reason)
+                    # Also record as a credit purchase transaction
+                    desc = reason or f"Credit purchase from {name}"
+                    self.db.save_transaction(
+                        phone_number, int(amount), "purchase", desc,
+                        "Goods & Stock", vendor=name,
+                        payment_method="credit",
+                    )
                     self.session.reset(phone_number)
-                    return [text_response(f"✅ Recorded! You owe *{name}* {format_amount(amount)}.")]
+                    return [
+                        text_response(
+                            f"✅ Recorded! You owe *{name}* {format_amount(amount)}.\n"
+                            f"📦 Also saved as a credit purchase."
+                        ),
+                        button_response("What's next?", [
+                            {"id": "record_purchase", "title": "📦 Record Purchase"},
+                            {"id": "menu_debts", "title": "💳 View Debts"},
+                            {"id": "menu_home", "title": "☰ Menu"},
+                        ])
+                    ]
             except Exception as e:
                 logger.error(f"Debt save error: {e}\n{traceback.format_exc()}")
                 self.session.reset(phone_number)
@@ -211,11 +245,28 @@ class DebtHandler:
                 name = match.group(1).strip()
 
         if name:
-            # Record payment
+            # Record payment — settle debt AND record as income transaction
             try:
                 self.db.settle_debt(phone_number, name, float(amount), 'owed_to_me')
+                # Also record as income transaction (debt payment received)
+                self.db.save_transaction(
+                    phone_number, int(amount), "sale",
+                    f"Debt payment from {name}",
+                    "Sales & Income", vendor=name,
+                    payment_method="cash",
+                )
                 self.session.reset(phone_number)
-                return [text_response(f"✅ Payment recorded! *{name}* paid {format_amount(amount)}.")]
+                return [
+                    text_response(
+                        f"✅ Payment recorded! *{name}* paid {format_amount(amount)}.\n"
+                        f"💰 Debt reduced and payment logged."
+                    ),
+                    button_response("What's next?", [
+                        {"id": "menu_debts", "title": "💳 View Debts"},
+                        {"id": "record_sale", "title": "💰 Record Sale"},
+                        {"id": "menu_home", "title": "☰ Menu"},
+                    ])
+                ]
             except Exception as e:
                 logger.error(f"Payment record error: {e}")
                 self.session.reset(phone_number)

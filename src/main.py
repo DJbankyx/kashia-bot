@@ -118,6 +118,9 @@ class KashiaBot:
             # Handle special internal markers
             responses = self._resolve_markers(phone_number, responses)
 
+            # Add navigation footer (Menu/Back) if missing from last response
+            responses = self._ensure_navigation(responses)
+
             # Send all responses
             for response in responses:
                 self._send_response(phone_number, response)
@@ -225,6 +228,65 @@ class KashiaBot:
             resolved.append(resp)
 
         return resolved
+
+    def _ensure_navigation(self, responses: list) -> list:
+        """
+        Ensure the last response in a chain has a navigation option (Menu/Back).
+        
+        Rules:
+        - If last response is already buttons/list → check if it has a menu/back option, add if not
+        - If last response is plain text → append a small menu button after it
+        - Skip for confirmation flows (those already have Yes/Edit/Cancel)
+        - Skip for document responses or forward prompts
+        """
+        if not responses:
+            return responses
+
+        # Find the last "real" response (not document/forward_prompt)
+        last_idx = len(responses) - 1
+        while last_idx >= 0 and responses[last_idx].get("type") in ("document", "forward_prompt", "__SHOW_HOME_MENU__"):
+            last_idx -= 1
+
+        if last_idx < 0:
+            return responses
+
+        last = responses[last_idx]
+        resp_type = last.get("type", "text")
+
+        # Skip if it's a confirmation flow (has confirm_yes or confirm_edit)
+        if resp_type == "buttons":
+            buttons = last.get("content", {}).get("buttons", [])
+            btn_ids = [b.get("id", "") for b in buttons]
+            # Already has menu/home or is a confirmation → skip
+            if any(bid in ("menu_home", "confirm_yes", "confirm_edit", "confirm_cancel") for bid in btn_ids):
+                return responses
+            # Already has 3 buttons (WhatsApp max) → can't add more
+            if len(buttons) >= 3:
+                return responses
+            # Add menu button
+            buttons.append({"id": "menu_home", "title": "☰ Menu"})
+            return responses
+
+        if resp_type == "list":
+            # Lists already have their own navigation — skip
+            return responses
+
+        if resp_type == "text":
+            content = last.get("content", "")
+            # Skip very short acknowledgments or if it already mentions menu
+            if "☰ Menu" in content or "tap the menu" in content.lower():
+                return responses
+            # Don't add after text that's asking for input (ending with : or ?)
+            if content.strip().endswith(":") or content.strip().endswith("_"):
+                return responses
+            # Append a menu button after the text
+            from utils.whatsapp_ui import button_response
+            responses.append(button_response(
+                "☰ Navigation",
+                [{"id": "menu_home", "title": "☰ Menu"}]
+            ))
+
+        return responses
 
     def _send_response(self, phone_number: str, response: dict):
         """Send a single response via WhatsApp based on its type."""

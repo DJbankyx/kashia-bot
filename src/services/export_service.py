@@ -106,25 +106,49 @@ class ExportService:
         ws2 = wb.create_sheet("Summary")
 
         income = sum(int(tx.get('amount', 0)) for tx in transactions if tx.get('type') in ('income', 'sale'))
-        expenses = sum(int(tx.get('amount', 0)) for tx in transactions if tx.get('type') in ('expense', 'purchase'))
-        profit = income - expenses
+        purchases = sum(int(tx.get('amount', 0)) for tx in transactions if tx.get('type') == 'purchase')
+        expenses = sum(int(tx.get('amount', 0)) for tx in transactions if tx.get('type') == 'expense')
+        gross_profit = income - purchases
+        net_profit = gross_profit - expenses
 
         ws2.cell(row=1, column=1, value="Financial Summary").font = Font(bold=True, size=14)
         ws2.cell(row=2, column=1, value=f"Period: {start_date} to {end_date}")
 
         summary_data = [
-            ('Total Income', income),
-            ('Total Expenses', expenses),
-            ('Net Profit/Loss', profit),
+            ('Total Revenue (Sales)', income),
+            ('Cost of Goods Sold (Purchases)', purchases),
+            ('Gross Profit', gross_profit),
+            ('Operating Expenses', expenses),
+            ('Net Profit/Loss', net_profit),
             ('Total Transactions', len(transactions)),
         ]
 
         # Calculate True Margin if landing cost data exists
+        # Check both transaction-level and catalog-level costs
+        from features.catalog import CatalogHandler
+        cat_handler = CatalogHandler(None, self.db)
+
         costed_sales = []
         for tx in transactions:
             if tx.get('type') in ('income', 'sale'):
                 extra = tx.get('extra_details', {}) or {}
                 lc = extra.get('landing_cost') or tx.get('landing_cost')
+
+                # Fallback: lookup from catalog
+                if not lc or int(lc) <= 0:
+                    desc = tx.get('description', tx.get('item_name', ''))
+                    brand = tx.get('brand', '')
+                    search_name = f"{brand} {desc}".strip() if brand else desc
+                    catalog_cost = cat_handler.get_landing_cost(phone_number, search_name)
+                    if catalog_cost > 0:
+                        import re as _re
+                        qty_str = tx.get('quantity', '1')
+                        qty = 1
+                        if qty_str:
+                            match = _re.match(r'^(\d+)', str(qty_str))
+                            qty = int(match.group(1)) if match else 1
+                        lc = catalog_cost * qty
+
                 if lc and int(lc) > 0:
                     costed_sales.append({
                         "revenue": int(tx.get('amount', 0)),

@@ -375,10 +375,18 @@ class TransactionHandler:
             if tx_data["type"] == "sale":
                 return self._ask_landing_cost(phone_number, tx_id, tx_data)
 
-            # ── For PURCHASES: auto-save cost to catalog + add stock ──
+            # ── For PURCHASES: update inventory (add stock + save cost) ──
             if tx_data["type"] == "purchase":
-                self._save_cost_to_catalog(phone_number, tx_data)
-                self._update_inventory(phone_number, tx_data, "add")
+                qty = self._parse_qty(tx_data.get("quantity", "1"))
+                unit_cost = int(tx_data.get("unit_cost") or 0)
+                desc = tx_data.get("description", "")
+                brand = tx_data.get("brand", "")
+                search_name = f"{brand} {desc}".strip() if brand else desc
+
+                from features.catalog import CatalogHandler
+                cat = CatalogHandler(self.session, self.db)
+                qty_str = tx_data.get("quantity", "")
+                stock_result = cat.update_stock(phone_number, search_name, qty, unit_cost, qty_str)
 
             self.session.reset(phone_number)
 
@@ -435,18 +443,32 @@ class TransactionHandler:
                 # I owe them
                 self.db.record_debt(phone_number, vendor, amount, 'i_owe', f"Credit purchase: {description}")
                 self.session.reset(phone_number)
-                return [text_response(
-                    f"✅ Saved! {format_amount(amount)} purchase on credit.\n"
-                    f"📝 You owe *{vendor}* {format_amount(amount)}."
-                )]
+                return [
+                    text_response(
+                        f"✅ Saved! {format_amount(amount)} purchase on credit.\n"
+                        f"📝 You owe *{vendor}* {format_amount(amount)}."
+                    ),
+                    button_response("What's next?", [
+                        {"id": "record_purchase", "title": "📦 Buy More"},
+                        {"id": "menu_debts", "title": "💳 View Debts"},
+                        {"id": "menu_home", "title": "☰ Menu"},
+                    ])
+                ]
             else:
-                # They owe me
+                # They owe me — this is a credit sale, offer invoice
                 self.db.record_debt(phone_number, vendor, amount, 'owed_to_me', f"Credit sale: {description}")
                 self.session.reset(phone_number)
-                return [text_response(
-                    f"✅ Saved! {format_amount(amount)} sale on credit.\n"
-                    f"📝 *{vendor}* owes you {format_amount(amount)}."
-                )]
+                return [
+                    text_response(
+                        f"✅ Saved! {format_amount(amount)} sale on credit.\n"
+                        f"📝 *{vendor}* owes you {format_amount(amount)}."
+                    ),
+                    button_response("Generate a document?", [
+                        {"id": f"gen_invoice_{tx_id}", "title": "🧾 Invoice"},
+                        {"id": f"gen_receipt_{tx_id}", "title": "🧾 Receipt"},
+                        {"id": "menu_home", "title": "☰ Menu"},
+                    ])
+                ]
 
         except Exception as e:
             logger.error(f"Credit save error: {e}\n{traceback.format_exc()}")
@@ -480,9 +502,14 @@ class TransactionHandler:
         brand       = tx_data.get("brand", "")
         catalog_key = tx_data.get("catalog_product", "")
         amount      = tx_data.get("amount", 0)
+        quantity    = tx_data.get("quantity", "1")
 
         # Try to find a saved landing cost from catalog
         saved_cost = self._get_catalog_landing_cost(phone_number, catalog_key, description, brand)
+
+        # Ensure quantity defaults to "1" if empty (so stock always decrements)
+        if not quantity or quantity.strip() == "":
+            quantity = "1"
 
         self.session.save(phone_number, states.LANDING_COST, {
             "lc_tx_id": tx_id,
@@ -491,7 +518,7 @@ class TransactionHandler:
             "lc_catalog_key": catalog_key,
             "lc_saved_cost": saved_cost,
             "lc_catalog_path": tx_data.get("catalog_path", []),
-            "lc_quantity": tx_data.get("quantity", "1"),
+            "lc_quantity": quantity,
         })
 
         if saved_cost:
@@ -524,17 +551,12 @@ class TransactionHandler:
         catalog_key = context.get("lc_catalog_key", "")
         saved_cost = context.get("lc_saved_cost", 0)
         text_low   = text.lower().strip()
+        qty        = self._parse_qty(context.get("lc_quantity", "1"))
 
         # ── Skip ──
         if text_low in ("skip", "no", "nah", "lc_skip"):
-            # Still subtract from inventory even without cost
-            if catalog_key:
-                inv_data = {
-                    "catalog_product": catalog_key,
-                    "catalog_path": context.get("lc_catalog_path", []),
-                    "quantity": context.get("lc_quantity", "1"),
-                }
-                self._update_inventory(phone_number, inv_data, "subtract")
+            # Still decrement inventory even when skipping landing cost
+            self._decrement_stock_on_sale(phone_number, desc, qty, context)
 
             self.session.reset(phone_number)
             return [
@@ -543,11 +565,11 @@ class TransactionHandler:
                     f"_Send your next transaction or tap ☰ Menu._"
                 ),
                 button_response(
-                    "Generate a document for this sale?",
+                    "What's next?",
                     [
                         {"id": f"gen_invoice_{tx_id}", "title": "🧾 Invoice"},
                         {"id": f"gen_receipt_{tx_id}", "title": "🧾 Receipt"},
-                        {"id": "gen_skip", "title": "⏭️ Done"},
+                        {"id": "menu_home", "title": "☰ Menu"},
                     ]
                 )
             ]
@@ -575,14 +597,8 @@ class TransactionHandler:
         if catalog_key:
             self._update_catalog_cost(phone_number, catalog_key, landing_cost)
 
-        # Subtract from inventory (sale reduces stock)
-        if catalog_key:
-            inv_data = {
-                "catalog_product": catalog_key,
-                "catalog_path": context.get("lc_catalog_path", []),
-                "quantity": context.get("lc_quantity", "1"),
-            }
-            self._update_inventory(phone_number, inv_data, "subtract")
+        # Decrement stock on sale
+        self._decrement_stock_on_sale(phone_number, desc, qty, context)
 
         # Calculate and show margin
         margin = int(amount) - landing_cost
@@ -598,57 +614,37 @@ class TransactionHandler:
                 f"📈 Margin: {format_amount(margin)} ({margin_pct}%)"
             ),
             button_response(
-                "Generate a document for this sale?",
+                "What's next?",
                 [
                     {"id": f"gen_invoice_{tx_id}", "title": "🧾 Invoice"},
                     {"id": f"gen_receipt_{tx_id}", "title": "🧾 Receipt"},
-                    {"id": "gen_skip", "title": "⏭️ Done"},
+                    {"id": "menu_home", "title": "☰ Menu"},
                 ]
             )
         ]
 
+    def _decrement_stock_on_sale(self, phone_number: str, description: str, qty: int, context: dict):
+        """Decrement stock when a sale is recorded. Searches catalog by description."""
+        try:
+            from features.catalog import CatalogHandler
+            cat = CatalogHandler(self.session, self.db)
+            qty_str = context.get("lc_quantity", "")
+            result = cat.update_stock(phone_number, description, -qty, quantity_str=qty_str)
+            if result.get("matched"):
+                logger.info(f"Stock decremented: {description} by {qty}, new stock: {result.get('new_stock')}")
+            else:
+                logger.info(f"No catalog match for sale item: {description}")
+        except Exception as e:
+            logger.error(f"Error decrementing stock on sale: {e}")
+
     def _get_catalog_landing_cost(self, phone_number: str, catalog_key: str,
                                    description: str, brand: str) -> int:
-        """
-        Look up saved landing cost from catalog — searches from most specific
-        (deepest tree path) to least specific (product level).
-        """
+        """Look up landing cost from the flat product catalog."""
         try:
-            user = self.db.get_user(phone_number)
-            if not user:
-                return 0
-            catalog = user.get("product_catalog", {})
-            products = catalog.get("products", {})
-
-            target_key = None
-
-            # Find the matching product
-            if catalog_key and catalog_key in products:
-                target_key = catalog_key
-            else:
-                desc_lower = (description or "").lower()
-                for key, data in products.items():
-                    name = data.get("name", "").lower()
-                    if name and (name in desc_lower or desc_lower in name):
-                        target_key = key
-                        break
-
-            if not target_key:
-                return 0
-
-            product = products[target_key]
-            tree = product.get("tree", {})
-
-            # Search for __cost__ in tree nodes — try to match description/brand
-            # Walk the tree looking for __cost__ at nodes that match our item
-            if tree:
-                cost = self._find_deepest_cost(tree, description, brand)
-                if cost:
-                    return cost
-
-            # Fallback: product-level landing_cost
-            return int(product.get("landing_cost", 0))
-
+            from features.catalog import CatalogHandler
+            cat = CatalogHandler(self.session, self.db)
+            search_name = f"{brand} {description}".strip() if brand else description
+            return cat.get_landing_cost(phone_number, search_name)
         except Exception:
             return 0
 
@@ -807,12 +803,14 @@ class TransactionHandler:
             logger.error(f"Inventory update error: {e}")
 
     def _parse_qty(self, quantity_str: str) -> int:
-        """Extract numeric quantity from strings like '5', '10 pairs', '3 cartons'."""
+        """Extract numeric quantity from strings like '5', '10 pairs', '3 cartons'.
+        Returns at least 1 (every transaction involves at least 1 unit).
+        """
         if not quantity_str:
-            return 0
+            return 1
         import re
         match = re.match(r'^(\d+)', str(quantity_str))
-        return int(match.group(1)) if match else 0
+        return int(match.group(1)) if match else 1
 
     def _low_stock_alert(self, phone_number: str, product: dict, path: list, qty: int):
         """Flag a low stock item — stored for the next session greeting or report."""
@@ -1335,7 +1333,7 @@ class TransactionHandler:
                     return [text_response("💰 Enter a valid amount (e.g. 50000, 150K):")]
                 self.db.update_transaction(phone_number, tx_id, {"amount": int(new_amount)})
                 self.session.reset(phone_number)
-                return [text_response(f"✅ Amount updated to *{format_amount(new_amount)}*!")]
+                return self._edit_success(f"✅ Amount updated to *{format_amount(new_amount)}*!")
 
             elif field == "description":
                 self.db.update_transaction(phone_number, tx_id, {
@@ -1343,12 +1341,12 @@ class TransactionHandler:
                     "item_name": text.strip(),
                 })
                 self.session.reset(phone_number)
-                return [text_response(f"✅ Description updated to *{text.strip()}*!")]
+                return self._edit_success(f"✅ Description updated to *{text.strip()}*!")
 
             elif field == "vendor":
                 self.db.update_transaction(phone_number, tx_id, {"vendor": text.strip()})
                 self.session.reset(phone_number)
-                return [text_response(f"✅ Vendor updated to *{text.strip()}*!")]
+                return self._edit_success(f"✅ Vendor updated to *{text.strip()}*!")
 
             elif field == "date":
                 # Parse multiple date formats
@@ -1369,13 +1367,13 @@ class TransactionHandler:
                     )]
                 self.db.update_transaction(phone_number, tx_id, {"date": parsed_date})
                 self.session.reset(phone_number)
-                return [text_response(f"✅ Date updated to *{parsed_date}*!")]
+                return self._edit_success(f"✅ Date updated to *{parsed_date}*!")
 
             elif field == "type":
                 if text.lower() in ("sale", "purchase", "expense"):
                     self.db.update_transaction(phone_number, tx_id, {"type": text.lower()})
                     self.session.reset(phone_number)
-                    return [text_response(f"✅ Type changed to *{text.title()}*!")]
+                    return self._edit_success(f"✅ Type changed to *{text.title()}*!")
                 return [text_response("Enter: *sale*, *purchase*, or *expense*")]
 
         # Fallback
@@ -1437,13 +1435,12 @@ class TransactionHandler:
         return [text_response("Something went wrong. Send a transaction or tap the menu.")]
 
     def _catrec_pick_product(self, phone_number: str, text: str, context: dict) -> list:
-        """Handle product selection from catalog list."""
+        """Handle product selection — flat catalog, go straight to quantity."""
         tx_type = context.get("cat_rec_type", "sale")
 
         # "Other" option — fall back to free-text
         if text == "catrec___other__" or text.lower() == "other":
             self.session.reset(phone_number)
-            # Redirect to free-text guided
             industry = self._get_industry(phone_number)
             prompt = "📦 What did you sell/buy?\n\n_Type it manually:_"
             if industry:
@@ -1456,7 +1453,7 @@ class TransactionHandler:
             })
             return [text_response(prompt)]
 
-        # Extract product key from button ID (catrec_[key])
+        # Extract product key from button ID
         product_key = text.replace("catrec_", "") if text.startswith("catrec_") else text.lower().replace(" ", "_")
 
         # Get catalog
@@ -1465,9 +1462,8 @@ class TransactionHandler:
         products = catalog.get("products", {})
 
         if product_key not in products:
-            # Try matching by name
             for k, v in products.items():
-                if v.get("name", "").lower() == text.lower():
+                if isinstance(v, dict) and v.get("name", "").lower() == text.lower():
                     product_key = k
                     break
             else:
@@ -1475,24 +1471,21 @@ class TransactionHandler:
 
         product = products[product_key]
         product_name = product.get("name", product_key)
-        pattern = product.get("pattern", [])
-        tree = product.get("tree", {})
 
         context["cat_rec_product_key"] = product_key
         context["cat_rec_product_name"] = product_name
-        context["cat_rec_path"] = []
-        context["cat_rec_selections"] = {}
 
-        # If product has a tree pattern, start walking it
-        if pattern and tree:
-            context["cat_rec_step"] = "walk_tree"
-            self.session.save(phone_number, states.CATALOG_RECORDING, context)
-            return self._catrec_show_tree_level(phone_number, product, context)
-        else:
-            # No tree — go straight to quantity
-            context["cat_rec_step"] = "ask_quantity"
-            self.session.save(phone_number, states.CATALOG_RECORDING, context)
-            return [text_response(f"📐 How many *{product_name}*?\n\n_e.g. 5, 10 pairs, 3 cartons. Or type *skip*_")]
+        # Go straight to quantity (no tree walk)
+        context["cat_rec_step"] = "ask_quantity"
+        self.session.save(phone_number, states.CATALOG_RECORDING, context)
+
+        stock = int(product.get("stock", 0))
+        stock_str = f"\n📊 Current stock: {stock}" if stock > 0 else ""
+
+        return [text_response(
+            f"📦 *{product_name}*{stock_str}\n\n"
+            f"📐 How many?\n\n_e.g. 5, 10, 3. Or type *skip*_"
+        )]
 
     def _catrec_walk_tree(self, phone_number: str, text: str, context: dict) -> list:
         """Handle tree level navigation — user picked a value, show next level."""
@@ -1749,6 +1742,17 @@ class TransactionHandler:
             return None
         except Exception:
             return None
+
+    def _edit_success(self, message: str) -> list:
+        """Return edit success message with next action buttons."""
+        return [
+            text_response(message),
+            button_response("What's next?", [
+                {"id": "record_sale", "title": "💰 Record Sale"},
+                {"id": "record_purchase", "title": "📦 Record Purchase"},
+                {"id": "menu_report", "title": "📊 Reports"},
+            ])
+        ]
 
     def _is_payment(self, text_lower: str) -> bool:
         """Check if text looks like a debt payment rather than a new transaction."""
