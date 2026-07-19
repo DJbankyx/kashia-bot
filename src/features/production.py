@@ -51,7 +51,7 @@ class ProductionHandler:
         for key, data in list(products.items())[:9]:
             name = data.get("name", key)
             recipe = data.get("recipe", [])
-            stock = data.get("stock_count", 0)
+            stock = data.get("stock", data.get("stock_count", 0))
             tree = data.get("tree", {})
             if tree:
                 from features.catalog import CatalogHandler
@@ -111,6 +111,9 @@ class ProductionHandler:
 
         if step == "enter_quantity":
             return self._handle_quantity(phone_number, text_s, context)
+
+        if step == "yield_check":
+            return self._handle_yield(phone_number, text_s, context)
 
         if step == "confirm_production":
             return self._handle_confirm(phone_number, text_s, context)
@@ -207,7 +210,7 @@ class ProductionHandler:
         )]
 
     def _handle_quantity(self, phone_number: str, text: str, context: dict) -> list:
-        """Handle quantity input — show confirmation with material usage."""
+        """Handle quantity input — ask about yield/waste."""
         qty_match = re.match(r'^(\d+)', text)
         if not qty_match:
             return [text_response("Please enter a number (e.g. 200):")]
@@ -216,6 +219,46 @@ class ProductionHandler:
         if quantity <= 0:
             return [text_response("Please enter a quantity greater than 0:")]
 
+        context["prod_quantity"] = quantity
+        context["prod_step"] = "yield_check"
+        self.session.save(phone_number, states.PRODUCTION_RECORDING, context)
+
+        product_name = context.get("prod_product_name", "Product")
+
+        return [text_response(
+            f"🏭 Produced *{quantity}* {product_name}\n\n"
+            f"📊 How many were *good/usable*?\n\n"
+            f"_Type a number, or *all* if there was no waste._"
+        )]
+
+    def _handle_yield(self, phone_number: str, text: str, context: dict) -> list:
+        """Handle yield/waste input — then show confirmation."""
+        quantity = context.get("prod_quantity", 0)
+        text_low = text.lower().strip()
+
+        if text_low in ("all", "same", "no waste", "none"):
+            good_qty = quantity
+        else:
+            qty_match = re.match(r'^(\d+)', text)
+            if not qty_match:
+                return [text_response(f"Enter a number (max {quantity}), or type *all*:")]
+            good_qty = int(qty_match.group(1))
+            if good_qty > quantity:
+                good_qty = quantity
+            if good_qty <= 0:
+                return [text_response("Please enter at least 1:")]
+
+        waste = quantity - good_qty
+        waste_pct = int(waste / quantity * 100) if quantity > 0 else 0
+        context["prod_good_qty"] = good_qty
+        context["prod_waste"] = waste
+
+        # Generate batch number
+        import time
+        batch_num = f"B{int(time.time()) % 100000:05d}"
+        context["prod_batch"] = batch_num
+
+        # Now calculate materials and show confirmation
         product_key = context.get("prod_product_key", "")
         product_name = context.get("prod_product_name", "Product")
 
@@ -244,11 +287,17 @@ class ProductionHandler:
         # Build confirmation
         lines = [
             f"━━━━━━━━━━━━━━━━━━━━",
-            f"🏭  *PRODUCTION*",
+            f"🏭  *PRODUCTION*  _{batch_num}_",
             f"━━━━━━━━━━━━━━━━━━━━",
             f"",
-            f"📦 *{product_name}* × {quantity}",
+            f"📦 *{product_name}* × {quantity} produced",
         ]
+
+        # Yield/waste info
+        if waste > 0:
+            lines.append(f"✅ Good: {good_qty}  |  🗑️ Waste: {waste} ({waste_pct}%)")
+        else:
+            lines.append(f"✅ All {quantity} good — no waste")
 
         if materials_needed:
             lines.append(f"")
@@ -299,6 +348,9 @@ class ProductionHandler:
         product_key     = context.get("prod_product_key", "")
         product_name    = context.get("prod_product_name", "Product")
         quantity        = context.get("prod_quantity", 0)
+        good_qty        = context.get("prod_good_qty", quantity)
+        waste           = context.get("prod_waste", 0)
+        batch_num       = context.get("prod_batch", "")
         materials_needed = context.get("prod_materials_needed", [])
         total_cost      = context.get("prod_total_cost", 0)
         cost_per_unit   = context.get("prod_cost_per_unit", 0)
@@ -307,27 +359,32 @@ class ProductionHandler:
         catalog = user.get("product_catalog", {}) if user else {}
         products = catalog.get("products", {})
 
-        # 1. Deduct raw materials from stock
+        # 1. Deduct raw materials from stock (based on TOTAL quantity attempted, not good qty)
         deduction_results = []
+        low_material_warnings = []
         for mat in materials_needed:
             mat_name = mat["material"]
             mat_qty = mat["quantity_needed"]
-            # Find material in catalog
             mat_key = mat_name.lower().replace(" ", "_")
             if mat_key in products:
-                current_stock = products[mat_key].get("stock_count", 0)
+                current_stock = products[mat_key].get("stock", products[mat_key].get("stock_count", 0))
                 new_stock = max(0, current_stock - mat_qty)
-                products[mat_key]["stock_count"] = new_stock
+                products[mat_key]["stock"] = new_stock
                 deduction_results.append(f"  • {mat_name}: -{mat_qty:.0f} (remaining: {new_stock:.0f})")
+                # Check for low material
+                if new_stock <= 5:
+                    low_material_warnings.append(f"⚠️ *{mat_name}* is LOW — only {int(new_stock)} left!")
 
-        # 2. Add finished goods to stock
+        # 2. Add GOOD finished goods to stock (waste not added)
         if product_key in products:
-            current_stock = products[product_key].get("stock_count", 0)
-            products[product_key]["stock_count"] = current_stock + quantity
+            current_stock = products[product_key].get("stock", products[product_key].get("stock_count", 0))
+            products[product_key]["stock"] = current_stock + good_qty
 
-            # Update landing cost (production cost per unit)
-            if cost_per_unit > 0:
-                products[product_key]["landing_cost"] = int(cost_per_unit)
+            # Update landing cost (production cost per unit — based on good units)
+            if cost_per_unit > 0 and good_qty > 0:
+                # Actual cost per good unit (accounts for waste)
+                actual_cost_per_unit = total_cost / good_qty
+                products[product_key]["landing_cost"] = int(actual_cost_per_unit)
 
         # 3. Save catalog
         catalog["products"] = products
@@ -338,38 +395,56 @@ class ProductionHandler:
             phone_number,
             int(total_cost) if total_cost > 0 else 0,
             "production",
-            f"Produced {quantity} × {product_name}",
+            f"Batch {batch_num}: {quantity} × {product_name}" + (f" ({waste} waste)" if waste else ""),
             "Production & Manufacturing",
             sub_category="Production Run",
-            quantity=str(quantity),
+            quantity=str(good_qty),
             item_name=product_name,
-            unit_cost=int(cost_per_unit) if cost_per_unit > 0 else None,
+            unit_cost=int(total_cost / good_qty) if good_qty > 0 and total_cost > 0 else None,
             extra_details={
+                "batch_number": batch_num,
                 "production_quantity": quantity,
+                "good_quantity": good_qty,
+                "waste": waste,
+                "waste_percent": int(waste / quantity * 100) if quantity > 0 else 0,
                 "product_key": product_key,
                 "materials_used": materials_needed,
-                "cost_per_unit": cost_per_unit,
+                "cost_per_unit": total_cost / good_qty if good_qty > 0 else cost_per_unit,
             }
         )
 
         self.session.reset(phone_number)
 
         # Build result message
+        actual_cost = int(total_cost / good_qty) if good_qty > 0 and total_cost > 0 else 0
         lines = [
-            f"✅ *Production Recorded!*",
+            f"✅ *Production Recorded!*  _{batch_num}_",
             f"",
-            f"📦 +{quantity} *{product_name}* added to stock",
+            f"📦 +{good_qty} *{product_name}* added to stock",
         ]
+        if waste > 0:
+            waste_pct = int(waste / quantity * 100)
+            lines.append(f"🗑️ Waste: {waste} units ({waste_pct}%)")
+            if actual_cost > 0:
+                lines.append(f"💰 Actual cost/unit: {format_amount(actual_cost)} _(adjusted for waste)_")
         if deduction_results:
             lines.append(f"")
             lines.append(f"🧱 *Materials deducted:*")
             lines.extend(deduction_results)
-        if cost_per_unit > 0:
+        if total_cost > 0 and waste == 0:
             lines.append(f"")
             lines.append(f"💰 Cost per unit: {format_amount(cost_per_unit)}")
             lines.append(f"💰 Total batch cost: {format_amount(total_cost)}")
 
         lines.append(f"\n_Send next transaction or tap ☰ Menu._")
+
+        # Add low material warnings
+        if low_material_warnings:
+            lines.append("")
+            lines.append("━━━━━━━━━━━━━━━━━━━━")
+            lines.append("🚨 *Low Material Alert:*")
+            lines.extend(low_material_warnings)
+            lines.append("_Restock soon!_")
 
         return [text_response("\n".join(lines))]
 

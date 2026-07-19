@@ -102,6 +102,10 @@ class ManufacturingIndustry(BaseIndustry):
         if button_id == "sec_settings":
             return self._show_settings_menu(phone_number)
 
+        # ── Manufacturing dashboard ──
+        if button_id == "biz_dashboard":
+            return self._show_dashboard(phone_number)
+
         # ── All sub-buttons delegate to router ──
         if button_id.startswith("pi_"):
             return None
@@ -145,6 +149,10 @@ class ManufacturingIndustry(BaseIndustry):
                      "description": "Who owes, supplier credits"},
                     {"id": "menu_catalog", "title": "📋 Products & Materials",
                      "description": "Product catalog & recipes"},
+                    {"id": "biz_docs", "title": "🧾 Documents",
+                     "description": "Invoice, receipt, statement"},
+                    {"id": "biz_export", "title": "📁 Export Data",
+                     "description": "Excel, CSV download"},
                 ]
             }]
         )]
@@ -215,6 +223,103 @@ class ManufacturingIndustry(BaseIndustry):
              "description": "Purchased inputs/supplies"},
             {"id": "record_expense", "title": "💸 Production Cost",
              "description": "Labour, overhead, utilities"},
+        ]
+
+    # ─────────────────────────────────────────────────────────
+    # MANUFACTURING DASHBOARD
+    # ─────────────────────────────────────────────────────────
+
+    def _show_dashboard(self, phone_number: str) -> list:
+        """Manufacturing dashboard — output summary, material costs, yield rates."""
+        from services.database import Database
+        from utils.whatsapp_ui import text_response, button_response, format_amount
+        from datetime import datetime, timedelta
+
+        db = Database()
+        now = datetime.now()
+        start_date = now.strftime("%Y-%m-01")
+        end_date = now.strftime("%Y-%m-%d")
+
+        user = db.get_user(phone_number) or {}
+        business_name = user.get("business_name", "Factory")
+
+        transactions = db.get_transactions_by_period(phone_number, start_date, end_date) or []
+
+        # Categorize
+        sales = [t for t in transactions if t.get("type") == "sale"]
+        productions = [t for t in transactions if t.get("type") == "production"]
+        purchases = [t for t in transactions if t.get("type") == "purchase"]
+        expenses = [t for t in transactions if t.get("type") == "expense"]
+
+        revenue = sum(int(t.get("amount", 0)) for t in sales)
+        material_cost = sum(int(t.get("amount", 0)) for t in purchases)
+        production_cost = sum(int(t.get("amount", 0)) for t in productions)
+        opex = sum(int(t.get("amount", 0)) for t in expenses)
+        total_cogs = material_cost + production_cost
+        gross_profit = revenue - total_cogs
+        net_profit = gross_profit - opex
+
+        # Production stats
+        total_produced = 0
+        total_waste = 0
+        for p in productions:
+            extra = p.get("extra_details", {}) or {}
+            total_produced += int(extra.get("good_quantity", p.get("quantity", 0)) or 0)
+            total_waste += int(extra.get("waste", 0) or 0)
+
+        yield_rate = int(total_produced / (total_produced + total_waste) * 100) if (total_produced + total_waste) > 0 else 0
+
+        # Build dashboard
+        lines = [
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"🏭  *{business_name}*",
+            f"_{now.strftime('%B %Y')} Dashboard_",
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"",
+            f"💰 *Revenue:*        {format_amount(revenue)}",
+            f"🧱 *Materials:*      {format_amount(material_cost)}",
+            f"🏭 *Production:*     {format_amount(production_cost)}",
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"📈 *Gross Profit:*   {format_amount(gross_profit)}",
+            f"💸 *Expenses:*       {format_amount(opex)}",
+            f"{'📈' if net_profit >= 0 else '📉'} *Net Profit:*     {format_amount(net_profit)}",
+            f"",
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"🏭 *Production Stats:*",
+            f"  📦 Output: {total_produced} units",
+            f"  🗑️ Waste: {total_waste} units",
+            f"  ✅ Yield: {yield_rate}%",
+            f"  🔄 Batches: {len(productions)}",
+            f"━━━━━━━━━━━━━━━━━━━━",
+        ]
+
+        # Low stock materials warning
+        catalog = user.get("product_catalog", {})
+        products = catalog.get("products", {}) if isinstance(catalog, dict) else {}
+        low_materials = []
+        for key, prod in products.items():
+            recipe_used_in = any(
+                any(m.get("material", "").lower().replace(" ", "_") == key
+                    for m in p.get("recipe", []))
+                for p in products.values()
+            )
+            # Check if it's a raw material (used in recipes or has no recipe of its own)
+            stock = int(prod.get("stock", 0))
+            if stock <= 5 and stock >= 0:
+                low_materials.append(f"  ⚠️ {prod.get('name', key)}: {stock} left")
+
+        if low_materials:
+            lines.append("")
+            lines.append("🚨 *Low Materials:*")
+            lines.extend(low_materials[:5])
+
+        return [
+            text_response("\n".join(lines)),
+            button_response("Quick actions:", [
+                {"id": "record_production", "title": "🏭 Produce"},
+                {"id": "record_purchase", "title": "🧱 Buy Materials"},
+                {"id": "menu_home", "title": "☰ Menu"},
+            ])
         ]
 
     # ─────────────────────────────────────────────────────────
@@ -316,7 +421,7 @@ class ManufacturingIndustry(BaseIndustry):
         # Get stock levels for materials
         for mat_key, mat_info in materials_used.items():
             if mat_key in products:
-                mat_info["stock"] = products[mat_key].get("stock_count", 0)
+                mat_info["stock"] = products[mat_key].get("stock", products[mat_key].get("stock_count", 0))
                 mat_info["landing_cost"] = products[mat_key].get("landing_cost", 0)
 
         if not materials_used:

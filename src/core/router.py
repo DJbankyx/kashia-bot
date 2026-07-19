@@ -178,6 +178,15 @@ class Router:
         if text_lower in CATALOG_WORDS:
             return self.catalog.show_menu(phone_number)
 
+        # Production/batch shortcuts (manufacturing)
+        if text_lower.startswith("batch ") or text_lower == "production":
+            if self.production:
+                if text_lower == "production":
+                    return self.production.start_production(phone_number)
+                # Batch lookup: "batch B12345"
+                batch_query = text_stripped[6:].strip()  # After "batch "
+                return self._lookup_batch(phone_number, batch_query)
+
         # Export shortcuts
         if text_lower in {'export', 'excel', 'csv', 'download'}:
             return self.export.show_options(phone_number)
@@ -438,6 +447,75 @@ class Router:
                 ]
             }]
         )]
+
+    def _lookup_batch(self, phone_number: str, batch_query: str) -> list:
+        """Look up a production batch by batch number."""
+        from datetime import datetime, timedelta
+
+        # Search recent transactions for the batch
+        now = datetime.now()
+        start_date = (now - timedelta(days=90)).strftime("%Y-%m-%d")
+        end_date = now.strftime("%Y-%m-%d")
+        transactions = self.db.get_transactions_by_period(phone_number, start_date, end_date) or []
+
+        batch_query_lower = batch_query.lower()
+        found = None
+        for t in transactions:
+            if t.get("type") != "production":
+                continue
+            extra = t.get("extra_details", {}) or {}
+            batch_num = extra.get("batch_number", "")
+            desc = t.get("description", "")
+            if batch_query_lower in batch_num.lower() or batch_query_lower in desc.lower():
+                found = t
+                break
+
+        if not found:
+            return [text_response(
+                f"❓ Batch *{batch_query}* not found.\n\n"
+                f"_Type the full batch number (e.g. B12345) or check Production History._"
+            )]
+
+        # Display batch details
+        extra = found.get("extra_details", {}) or {}
+        batch_num = extra.get("batch_number", "?")
+        product_name = found.get("item_name", found.get("description", "Product"))
+        quantity = extra.get("production_quantity", 0)
+        good_qty = extra.get("good_quantity", quantity)
+        waste = extra.get("waste", 0)
+        waste_pct = extra.get("waste_percent", 0)
+        cost_per_unit = extra.get("cost_per_unit", 0)
+        materials_used = extra.get("materials_used", [])
+        amount = int(found.get("amount", 0))
+        date = found.get("date", "")
+
+        from utils.whatsapp_ui import format_amount
+        lines = [
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"🏭  *Batch {batch_num}*",
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"",
+            f"📦 Product: *{product_name}*",
+            f"📅 Date: {date}",
+            f"📐 Produced: {quantity} units",
+            f"✅ Good: {good_qty} | 🗑️ Waste: {waste} ({waste_pct}%)",
+            f"",
+            f"💰 Total Cost: {format_amount(amount)}",
+            f"📐 Cost/Unit: {format_amount(cost_per_unit)}",
+        ]
+
+        if materials_used:
+            lines.append(f"")
+            lines.append(f"🧱 *Materials Used:*")
+            for mat in materials_used:
+                mat_name = mat.get("material", "")
+                mat_qty = mat.get("quantity_needed", 0)
+                unit = mat.get("unit", "")
+                lines.append(f"  • {mat_qty:.0f} {unit} {mat_name}")
+
+        lines.append(f"━━━━━━━━━━━━━━━━━━━━")
+
+        return [text_response("\n".join(lines))]
 
     # ─────────────────────────────────────────────────────────
     # Guided Recording

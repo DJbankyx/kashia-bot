@@ -205,6 +205,15 @@ class ReportsHandler:
         if margin_report:
             responses.append(text_response(margin_report))
 
+        # ════════════════════════════════════════════════════
+        # MANUFACTURING: Production summary (if user has production records)
+        # ════════════════════════════════════════════════════
+        production_txns = [t for t in transactions if t.get("type") == "production"]
+        if production_txns:
+            prod_report = self._build_production_summary(production_txns, label)
+            if prod_report:
+                responses.append(text_response(prod_report))
+
         responses.append(button_response(
             "Export or drill into a section:",
             [
@@ -421,6 +430,49 @@ class ReportsHandler:
         # Export service is wired in main.py — use the existing export handler
         # We return a routing marker that main.py resolves
         return [{"type": "__EXPORT_REPORT__", "content": {"period": period}}]
+
+    # ─────────────────────────────────────────────────────────
+    # PRODUCTION SUMMARY — Manufacturing P&L addon
+    # ─────────────────────────────────────────────────────────
+
+    def _build_production_summary(self, production_txns: list, period_label: str) -> str:
+        """
+        Build production summary for manufacturing users.
+        Shows: batches, total output, yield rate, cost breakdown.
+        """
+        total_produced = 0
+        total_waste = 0
+        total_cost = 0
+        batch_count = len(production_txns)
+
+        for p in production_txns:
+            extra = p.get("extra_details", {}) or {}
+            good_qty = int(extra.get("good_quantity", p.get("quantity", 0)) or 0)
+            waste = int(extra.get("waste", 0) or 0)
+            total_produced += good_qty
+            total_waste += waste
+            total_cost += int(p.get("amount", 0))
+
+        total_attempted = total_produced + total_waste
+        yield_rate = int(total_produced / total_attempted * 100) if total_attempted > 0 else 100
+        cost_per_unit = total_cost / total_produced if total_produced > 0 else 0
+
+        lines = [
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"🏭  *PRODUCTION — {period_label}*",
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"",
+            f"🔄 Batches:     {batch_count}",
+            f"📦 Output:      {total_produced} units",
+            f"🗑️ Waste:       {total_waste} units",
+            f"✅ Yield Rate:  {yield_rate}%",
+            f"",
+            f"💰 Total Cost:  {format_amount(total_cost)}",
+            f"📐 Cost/Unit:   {format_amount(cost_per_unit)}",
+            f"━━━━━━━━━━━━━━━━━━━━",
+        ]
+
+        return "\n".join(lines)
 
 
 # ─────────────────────────────────────────────────────────

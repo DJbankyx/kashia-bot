@@ -399,6 +399,10 @@ class TransactionHandler:
                 qty_str = tx_data.get("quantity", "")
                 stock_result = cat.update_stock(phone_number, search_name, qty, unit_cost, qty_str)
 
+                # For manufacturing: also update recipe costs where this material is used
+                if unit_cost > 0:
+                    self._update_recipe_costs(phone_number, search_name, unit_cost)
+
             self.session.reset(phone_number)
 
             # Trigger CRM hint for large transactions without vendor
@@ -740,6 +744,38 @@ class TransactionHandler:
             logger.error(f"Error auto-saving cost to catalog: {e}")
 
     # ═══════════════════════════════════════════════════════════
+    # RECIPE COST UPDATE — Manufacturing: update recipe costs when materials are purchased
+    # ═══════════════════════════════════════════════════════════
+
+    def _update_recipe_costs(self, phone_number: str, material_name: str, unit_cost: int):
+        """
+        When a raw material is purchased, update cost_per_unit in all recipes
+        that use this material. This keeps production cost calculations accurate.
+        """
+        try:
+            user = self.db.get_user(phone_number)
+            if not user:
+                return
+            catalog = user.get("product_catalog", {})
+            products = catalog.get("products", {})
+            mat_lower = material_name.lower()
+
+            updated = False
+            for key, product in products.items():
+                recipe = product.get("recipe", [])
+                for mat in recipe:
+                    mat_name = mat.get("material", "").lower()
+                    if mat_name in mat_lower or mat_lower in mat_name:
+                        mat["cost_per_unit"] = float(unit_cost)
+                        updated = True
+
+            if updated:
+                self.db.update_user_field(phone_number, "product_catalog", catalog)
+                logger.info(f"Updated recipe costs for material: {material_name} @ {unit_cost}")
+        except Exception as e:
+            logger.error(f"Error updating recipe costs: {e}")
+
+    # ═══════════════════════════════════════════════════════════
     # INVENTORY — Update stock counts from transactions
     # ═══════════════════════════════════════════════════════════
 
@@ -797,13 +833,13 @@ class TransactionHandler:
                     self._low_stock_alert(phone_number, product, catalog_path, new_qty)
             else:
                 # No tree path — update product-level stock count
-                current = product.get("stock_count", 0)
+                current = product.get("stock", 0)
                 if direction == "add":
-                    product["stock_count"] = current + qty
+                    product["stock"] = current + qty
                 else:
-                    product["stock_count"] = max(0, current - qty)
+                    product["stock"] = max(0, current - qty)
 
-                new_qty = product["stock_count"]
+                new_qty = product["stock"]
                 if direction == "subtract" and new_qty <= 3:
                     self._low_stock_alert(phone_number, product, [], new_qty)
 
