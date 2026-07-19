@@ -183,7 +183,8 @@ class Router:
             return self.export.show_options(phone_number)
 
         # CRM shortcuts
-        if text_lower in {'contacts', 'customers', 'suppliers', 'crm'}:
+        if text_lower in {'contacts', 'customers', 'suppliers', 'crm',
+                          'all contacts', 'my contacts', 'contact list'}:
             return self.contacts.show(phone_number)
 
 

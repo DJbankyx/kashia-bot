@@ -367,9 +367,20 @@ class TransactionHandler:
                 brand=tx_data.get("brand"),
                 item_name=tx_data.get("description"),
                 unit_cost=tx_data.get("unit_cost"),
+                payment_method=tx_data.get("payment_method"),
                 extra_details=extra if extra else None,
             )
             tx_id = result.get("transaction_id", "") if isinstance(result, dict) else ""
+
+            # ── Update CRM contact totals ──
+            if vendor:
+                try:
+                    self.db.update_contact_totals(
+                        phone_number, vendor,
+                        int(tx_data["amount"]), tx_data["type"]
+                    )
+                except Exception as e:
+                    logger.warning(f"CRM update failed: {e}")
 
             # ── For SALES: ask landing cost ──
             if tx_data["type"] == "sale":
@@ -1181,6 +1192,12 @@ class TransactionHandler:
         vendor = tx.get("vendor", "")
         date   = tx.get("date", "")
         tx_type = tx.get("type", "")
+        quantity = tx.get("quantity", "")
+        landing_cost = tx.get("landing_cost", 0)
+        payment_method = tx.get("payment_method", "")
+        extra = tx.get("extra_details", {}) or {}
+        if not landing_cost:
+            landing_cost = extra.get("landing_cost", 0)
 
         type_emoji = {"sale": "💰", "purchase": "📦", "expense": "💸"}.get(tx_type, "📝")
 
@@ -1195,6 +1212,12 @@ class TransactionHandler:
         if vendor:
             lines.append(f"👤 {vendor}")
         lines.append(f"📅 {date}")
+        if quantity:
+            lines.append(f"📐 Qty: {quantity}")
+        if landing_cost:
+            lines.append(f"🏷️ Cost: {format_amount(landing_cost)}")
+        if payment_method:
+            lines.append(f"💳 Payment: {payment_method.title()}")
         lines.append("")
         lines.append("_What would you like to change?_")
 
@@ -1203,26 +1226,35 @@ class TransactionHandler:
             "edit_tx_id": tx_id,
         })
 
+        # Build full list of editable fields (always show all)
+        rows = [
+            {"id": f"txact_amount_{tx_id}", "title": "💰 Edit Amount",
+             "description": f"Currently: {amount}"},
+            {"id": f"txact_desc_{tx_id}", "title": "📦 Edit Description",
+             "description": f"Currently: {desc[:40]}"},
+            {"id": f"txact_vendor_{tx_id}", "title": "👤 Edit Customer/Vendor",
+             "description": f"Currently: {vendor or 'None'}"},
+            {"id": f"txact_date_{tx_id}", "title": "📅 Edit Date",
+             "description": f"Currently: {date}"},
+            {"id": f"txact_type_{tx_id}", "title": "🔄 Change Type",
+             "description": f"Currently: {tx_type.title()}"},
+            {"id": f"txact_quantity_{tx_id}", "title": "📐 Edit Quantity",
+             "description": f"Currently: {quantity or 'Not set'}"},
+            {"id": f"txact_cost_{tx_id}", "title": "🏷️ Edit Landing Cost",
+             "description": f"Currently: {format_amount(landing_cost) if landing_cost else 'Not set'}"},
+            {"id": f"txact_payment_{tx_id}", "title": "💳 Payment Method",
+             "description": f"Currently: {payment_method.title() if payment_method else 'Not set'}"},
+            {"id": f"txact_delete_{tx_id}", "title": "🗑️ Delete",
+             "description": "Remove this record permanently"},
+        ]
+
         return [
             text_response("\n".join(lines)),
             list_response(
                 header="✏️ Actions",
                 body="Pick an action:",
                 button_text="Select Action",
-                sections=[{"title": "Edit Options", "rows": [
-                    {"id": f"txact_amount_{tx_id}", "title": "💰 Edit Amount",
-                     "description": f"Currently: {amount}"},
-                    {"id": f"txact_desc_{tx_id}", "title": "📦 Edit Description",
-                     "description": f"Currently: {desc[:40]}"},
-                    {"id": f"txact_vendor_{tx_id}", "title": "👤 Edit Customer/Vendor",
-                     "description": f"Currently: {vendor or 'None'}"},
-                    {"id": f"txact_date_{tx_id}", "title": "📅 Edit Date",
-                     "description": f"Currently: {date}"},
-                    {"id": f"txact_type_{tx_id}", "title": "🔄 Change Type",
-                     "description": f"Currently: {tx_type.title()}"},
-                    {"id": f"txact_delete_{tx_id}", "title": "🗑️ Delete",
-                     "description": "Remove this record permanently"},
-                ]}]
+                sections=[{"title": "Edit Options", "rows": rows}]
             )
         ]
 
@@ -1290,6 +1322,37 @@ class TransactionHandler:
                 ]
             )]
 
+        # ── Edit Quantity ──
+        if action == "quantity":
+            self.session.save(phone_number, states.EDIT_TRANSACTION, {
+                "edit_tx_id": tx_id,
+                "edit_field": "quantity",
+            })
+            return [text_response("📐 Enter the quantity:\n\n_(e.g. 5, 10 pairs, 3 cartons)_")]
+
+        # ── Edit Landing Cost ──
+        if action == "cost":
+            self.session.save(phone_number, states.EDIT_TRANSACTION, {
+                "edit_tx_id": tx_id,
+                "edit_field": "landing_cost",
+            })
+            return [text_response("🏷️ Enter the landing cost per unit:\n\n_(e.g. 50000, 150K, 19M)_")]
+
+        # ── Edit Payment Method ──
+        if action == "payment":
+            self.session.save(phone_number, states.EDIT_TRANSACTION, {
+                "edit_tx_id": tx_id,
+                "edit_field": "payment_method",
+            })
+            return [button_response(
+                "💳 Select payment method:",
+                [
+                    {"id": "txact_setpay_cash", "title": "💵 Cash"},
+                    {"id": "txact_setpay_transfer", "title": "🏦 Transfer/POS"},
+                    {"id": "txact_setpay_credit", "title": "📝 On Credit"},
+                ]
+            )]
+
         # ── Set type from button ──
         if action == "settype":
             new_type = tx_id  # in this case tx_id holds "sale"/"purchase"/"expense"
@@ -1298,6 +1361,18 @@ class TransactionHandler:
                 self.db.update_transaction(phone_number, real_tx_id, {"type": new_type})
                 self.session.reset(phone_number)
                 return [text_response(f"✅ Type changed to *{new_type.title()}*!")]
+            self.session.reset(phone_number)
+            return [text_response("❌ Something went wrong.")]
+
+        # ── Set payment method from button ──
+        if action == "setpay":
+            method_map = {"cash": "cash", "transfer": "transfer", "credit": "credit"}
+            new_method = method_map.get(tx_id, tx_id)  # tx_id holds "cash"/"transfer"/"credit"
+            real_tx_id = context.get("edit_tx_id", "")
+            if real_tx_id:
+                self.db.update_transaction(phone_number, real_tx_id, {"payment_method": new_method})
+                self.session.reset(phone_number)
+                return [text_response(f"✅ Payment method updated to *{new_method.title()}*!")]
             self.session.reset(phone_number)
             return [text_response("❌ Something went wrong.")]
 
@@ -1375,6 +1450,31 @@ class TransactionHandler:
                     self.session.reset(phone_number)
                     return self._edit_success(f"✅ Type changed to *{text.title()}*!")
                 return [text_response("Enter: *sale*, *purchase*, or *expense*")]
+
+            elif field == "quantity":
+                self.db.update_transaction(phone_number, tx_id, {"quantity": text.strip()})
+                self.session.reset(phone_number)
+                return self._edit_success(f"✅ Quantity updated to *{text.strip()}*!")
+
+            elif field == "landing_cost":
+                cost = parse_amount(text)
+                if not cost:
+                    return [text_response("🏷️ Enter a valid amount (e.g. 50000, 150K, 19M):")]
+                self.db.update_transaction(phone_number, tx_id, {"landing_cost": int(cost)})
+                self.session.reset(phone_number)
+                return self._edit_success(f"✅ Landing cost updated to *{format_amount(cost)}*!")
+
+            elif field == "payment_method":
+                method = text.lower().strip()
+                if method in ("cash", "transfer", "pos", "credit", "on credit"):
+                    if method in ("on credit",):
+                        method = "credit"
+                    if method == "pos":
+                        method = "transfer"
+                    self.db.update_transaction(phone_number, tx_id, {"payment_method": method})
+                    self.session.reset(phone_number)
+                    return self._edit_success(f"✅ Payment method updated to *{method.title()}*!")
+                return [text_response("Enter: *cash*, *transfer*, or *credit*")]
 
         # Fallback
         self.session.reset(phone_number)

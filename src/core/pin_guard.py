@@ -124,7 +124,11 @@ def verify_pin(db, session_mgr, phone_number: str, text: str, session: dict) -> 
         session_mgr.reset(phone_number)
 
         # Return marker so main.py can re-execute the original action
-        return [{"type": "__PIN_VERIFIED__", "content": {"action_id": action_id}}]
+        # Also remind user to delete their PIN message
+        return [
+            text_response("⚠️ _For security, please delete the message where you typed your PIN._"),
+            {"type": "__PIN_VERIFIED__", "content": {"action_id": action_id}},
+        ]
 
     else:
         # ❌ Wrong PIN

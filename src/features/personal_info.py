@@ -243,6 +243,8 @@ class PersonalInfoHandler:
                      "description": address_desc},
                     {"id": "pi_email",   "title": "📧 Email",
                      "description": email_desc},
+                    {"id": "pi_logo",    "title": "🖼️ Business Logo",
+                     "description": "For invoices & receipts"},
                     {"id": "set_password", "title": "🔒 PIN / Password",
                      "description": pin_desc},
                 ]
@@ -467,6 +469,8 @@ class PersonalInfoHandler:
         return [text_response(
             "✅ *PIN set successfully!*\n\n"
             "🔒 Your account is now protected.\n\n"
+            "⚠️ *Security tip:* Please delete the messages where you typed "
+            "your PIN from this chat for safety.\n\n"
             "_You can change your PIN anytime from Help & Settings._"
         )]
 
