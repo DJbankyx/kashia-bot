@@ -109,6 +109,11 @@ class DebtHandler:
         if button_id == "debt_remind":
             return self._show_remind_list(phone_number)
 
+        # ── Send reminder to specific debtor (debt_remind_[contact_id]) ──
+        if button_id.startswith("debt_remind_"):
+            contact_id = button_id[12:]  # after "debt_remind_"
+            return self._send_reminder(phone_number, contact_id)
+
         return self.show_summary(phone_number)
 
     def _handle_recording(self, phone_number: str, text: str, context: dict) -> list:
@@ -241,18 +246,84 @@ class DebtHandler:
         )]
 
     def _show_remind_list(self, phone_number: str) -> list:
-        """Show debtors to send reminder to."""
+        """Show debtors as tappable list for sending reminders."""
         debts = self.db.get_all_debtors(phone_number) or []
-        unpaid = [d for d in debts if not d.get("paid")]
+        unpaid = [d for d in debts if not d.get("paid") and d.get("amount", 0) > 0]
 
         if not unpaid:
-            return [text_response("No outstanding debts to remind about.")]
+            return [text_response("✅ No outstanding debts to remind about.")]
 
-        lines = ["⏰ *Send Reminder*\n\nDebtors with outstanding balances:\n"]
+        rows = []
         for d in unpaid[:10]:
-            name = d.get("name", "Unknown")
-            amt = format_amount(d.get("amount", 0))
-            lines.append(f"• {name}: {amt}")
+            name       = d.get("name", "Unknown")
+            amount     = d.get("amount", 0)
+            contact_id = d.get("contact_id", name.lower().replace(" ", "_"))
+            rows.append({
+                "id": f"debt_remind_{contact_id}",
+                "title": f"⏰ {name}"[:24],
+                "description": f"Owes {format_amount(amount)}"[:72],
+            })
 
-        lines.append("\n_Reminder feature coming soon! For now, contact them directly._")
-        return [text_response("\n".join(lines))]
+        return [list_response(
+            header="⏰ Send Reminder",
+            body="Pick a debtor to send a payment reminder:",
+            button_text="Select Person",
+            sections=[{"title": "Debtors", "rows": rows}]
+        )]
+
+    def _send_reminder(self, phone_number: str, contact_id: str) -> list:
+        """Send a payment reminder to a debtor via WhatsApp (or provide copy text)."""
+        # Look up contact
+        contact_name = contact_id.replace("_", " ").title()
+        contact = self.db.get_contact_by_name(phone_number, contact_name)
+
+        if not contact:
+            return [text_response(f"❓ Contact *{contact_name}* not found.")]
+
+        name         = contact.get("name", contact_name)
+        debt_amount  = int(contact.get("debt_owed_to_me", 0))
+        debtor_phone = contact.get("contact_phone", "")
+
+        if debt_amount <= 0:
+            return [text_response(f"✅ *{name}* doesn't owe you anything!")]
+
+        # Get business name for the reminder message
+        user = self.db.get_user(phone_number)
+        business_name = user.get("business_name", "your supplier") if user else "your supplier"
+
+        # Build the reminder message
+        reminder_text = (
+            f"Hello {name},\n\n"
+            f"This is a friendly reminder from *{business_name}* "
+            f"that you have an outstanding balance of *₦{debt_amount:,}*.\n\n"
+            f"Please make payment at your earliest convenience.\n\n"
+            f"Thank you! 🙏"
+        )
+
+        if debtor_phone and len(debtor_phone) >= 10:
+            # Has phone number — return marker for main.py to send via WhatsApp
+            return [
+                {"type": "__SEND_REMINDER__", "content": {
+                    "debtor_phone": debtor_phone,
+                    "debtor_name": name,
+                    "reminder_text": reminder_text,
+                    "amount": debt_amount,
+                }},
+                text_response(
+                    f"✅ *Reminder sent to {name}!*\n\n"
+                    f"📱 Sent to: {debtor_phone}\n"
+                    f"💰 Amount: ₦{debt_amount:,}\n\n"
+                    f"_They'll receive the message on WhatsApp._"
+                )
+            ]
+        else:
+            # No phone number — show copy-paste text
+            return [text_response(
+                f"⏰ *Reminder for {name}*\n\n"
+                f"📱 No phone number saved for {name}.\n\n"
+                f"Copy and send this message manually:\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"{reminder_text}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"_To save their number: type \"save number {name} 08012345678\"_"
+            )]

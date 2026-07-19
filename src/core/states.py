@@ -37,12 +37,28 @@ DELETE_CONFIRM = "DELETE_CONFIRM"
 
 # ─── Guided Recording (button-driven) ───
 GUIDED_RECORDING = "GUIDED_RECORDING"
+CATALOG_RECORDING = "CATALOG_RECORDING"
+
+# ─── Landing Cost (after sale) ───
+LANDING_COST = "LANDING_COST"
+
+# ─── Payment Method (Cash/Credit after confirmation) ───
+PAYMENT_METHOD = "PAYMENT_METHOD"
+
+# ─── Production Recording (manufacturing only) ───
+PRODUCTION_RECORDING = "PRODUCTION_RECORDING"
 
 # ─── Personal Info ───
 PERSONAL_INFO = "PERSONAL_INFO"
 
 # ─── Settings ───
 SETTINGS_FLOW = "SETTINGS_FLOW"
+
+# ─── CRM Add Contact ───
+CRM_ADDING = "CRM_ADDING"
+
+# ─── PIN Verification ───
+PIN_VERIFYING = "PIN_VERIFYING"
 
 # ─── Groups ───
 # States where tier/limit check should NOT apply
@@ -55,5 +71,6 @@ EXEMPT_STATES = {
     EXPORTING, INVOICING,
     DEBT_RECORDING, DEBT_CONFIRMING, DEBT_PAYMENT,
     CRM_HINT, GUIDED_RECORDING,
-    PERSONAL_INFO, SETTINGS_FLOW,
+    PERSONAL_INFO, SETTINGS_FLOW, CRM_ADDING, CATALOG_RECORDING, PIN_VERIFYING,
+    LANDING_COST, PAYMENT_METHOD, PRODUCTION_RECORDING,
 }

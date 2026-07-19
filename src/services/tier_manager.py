@@ -266,31 +266,58 @@ class TierManager:
 
     def handle_upgrade_request(self, phone_number, plan):
         """
-        Handle upgrade request. Generate payment link.
+        Handle upgrade request. Generate real Paystack payment link.
         Args: plan: "basic" or "pro"
         Returns: list of response dicts
         """
         plan_lower = plan.lower().strip()
 
         if plan_lower in ['basic', '1', 'basic plan']:
+            plan_key = "basic"
             price = 3000
             plan_name = "Basic"
         elif plan_lower in ['pro', '2', 'pro plan']:
+            plan_key = "pro"
             price = 6000
             plan_name = "Pro"
         else:
             return [{"type": "text", "content": "Please reply *BASIC* or *PRO* to choose a plan."}]
 
-        # TODO: Replace with actual Paystack payment link (Step 21)
-        payment_link = f"https://paystack.com/pay/kashia-{plan_lower}-{price}"
+        # Get user email if available
+        user = self.db.get_user(phone_number)
+        email = user.get("email", "") if user else ""
 
-        return [{"type": "text", "content": (
-            f"💳 *Upgrade to {plan_name} — ₦{price:,}/month*\n\n"
-            f"Click to pay:\n{payment_link}\n\n"
-            f"✅ Your account will be upgraded instantly after payment.\n"
-            f"📱 Supports: Card, Bank Transfer, USSD\n\n"
-            f"_Cancel anytime. No commitment._"
-        )}]
+        # Initialize Paystack transaction
+        try:
+            from services.paystack import PaystackService
+            paystack = PaystackService()
+            result = paystack.initialize_transaction(phone_number, plan_key, email)
+
+            if result.get("success"):
+                payment_url = result["payment_url"]
+                return [{"type": "text", "content": (
+                    f"💳 *Upgrade to {plan_name} — ₦{price:,}/month*\n\n"
+                    f"Tap to pay:\n{payment_url}\n\n"
+                    f"✅ Your account upgrades instantly after payment.\n"
+                    f"📱 Supports: Card, Bank Transfer, USSD\n\n"
+                    f"_Cancel anytime. No commitment._"
+                )}]
+            else:
+                # Paystack failed — show fallback link
+                logger.warning(f"Paystack init failed: {result.get('error')}")
+                return [{"type": "text", "content": (
+                    f"💳 *Upgrade to {plan_name} — ₦{price:,}/month*\n\n"
+                    f"Payment link generation failed. Please try again later.\n\n"
+                    f"Or contact support: support@kashia.app"
+                )}]
+
+        except Exception as e:
+            logger.error(f"Upgrade request error: {e}")
+            return [{"type": "text", "content": (
+                f"💳 *Upgrade to {plan_name} — ₦{price:,}/month*\n\n"
+                f"Something went wrong. Please try again later.\n\n"
+                f"Or contact support: support@kashia.app"
+            )}]
 
     def upgrade_user(self, phone_number, new_tier):
         """Upgrade a user to a new tier (called after successful payment)"""

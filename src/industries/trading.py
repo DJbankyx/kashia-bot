@@ -31,6 +31,7 @@ class TradingIndustry(BaseIndustry):
         "ask_amount": "💰 How much?\n\n_(e.g. 50000, 150K, 1.2M)_",
         "ask_vendor_sale": "👤 Who did you sell to?\n\n_(customer name or type *skip*)_",
         "ask_vendor_purchase": "👤 Who did you buy from?\n\n_(supplier name or type *skip*)_",
+        "ask_vendor_expense": "👤 Who did you pay?\n\n_(name or type *skip*)_",
         "ask_details": "🏷️ Any extra details?\n\nBrand, color, size, model...\n\nType details or *skip*",
     }
 
@@ -72,7 +73,7 @@ class TradingIndustry(BaseIndustry):
     def handle_button(self, phone_number: str, button_id: str, session: dict) -> list:
         """Handle trading-specific section buttons."""
         if button_id == "sec_personal":
-            return self._show_personal_menu(phone_number)
+            return None  # Router handles → shows profile summary + sub-menu
 
         if button_id == "sec_business":
             return self._show_business_menu(phone_number)

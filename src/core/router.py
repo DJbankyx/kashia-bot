@@ -48,6 +48,7 @@ class Router:
         self.profile = None
         self.personal_info = None
         self.settings = None
+        self.production = None
 
         # Industry handlers — set after construction by main.py
         self.industries = {}  # {"trading": TradingIndustry, ...}
@@ -128,6 +129,31 @@ class Router:
         if state == states.SETTINGS_FLOW:
             return self.settings.handle(phone_number, text_stripped, session)
 
+        # ── CRM Add Contact flow ──
+        if state == states.CRM_ADDING:
+            return self.contacts.handle(phone_number, text_stripped, session)
+
+        # ── Catalog-aware recording flow ──
+        if state == states.CATALOG_RECORDING:
+            return self.transactions.handle_catalog_recording(phone_number, text_stripped, session)
+
+        # ── PIN verification flow ──
+        if state == states.PIN_VERIFYING:
+            from core.pin_guard import verify_pin
+            return verify_pin(self.db, self.session, phone_number, text_stripped, session)
+
+        # ── Landing cost flow (after sale) ──
+        if state == states.LANDING_COST:
+            return self.transactions.handle_landing_cost(phone_number, text_stripped, session)
+
+        # ── Payment method flow (cash/credit after confirmation) ──
+        if state == states.PAYMENT_METHOD:
+            return self.transactions.handle_payment_method(phone_number, text_stripped, session)
+
+        # ── Production recording flow (manufacturing) ──
+        if state == states.PRODUCTION_RECORDING:
+            return self.production.handle(phone_number, text_stripped, session)
+
         # ═══════════════════════════════════════════════════════
         # 5. IDLE STATE — the default
         # ═══════════════════════════════════════════════════════
@@ -195,6 +221,10 @@ class Router:
             self.session.reset(phone_number)
             return [text_response("❌ Cancelled. Send a transaction or tap the menu.")]
 
+        # ── Edit field selection (from pending transaction correction flow) ──
+        if bid.startswith("edit_") and state == states.AWAITING_CORRECTION:
+            return self.transactions.handle_correction(phone_number, bid, session)
+
         # ── Done button ──
         if bid == "btn_done":
             if state in (states.CATALOG_SETUP_DETAILS, states.CATALOG_ORGANIZE, states.CATALOG_ADD_DATA):
@@ -244,13 +274,51 @@ class Router:
             if result:
                 return result
 
-        # ── CRM hint buttons ──
+        # ── CRM buttons ──
         if bid.startswith("crm_"):
-            return self._handle_crm_button(phone_number, bid, session)
+            # CRM hint buttons (cash/transfer/credit) from transaction flow
+            if bid in ("crm_cash", "crm_transfer", "crm_credit"):
+                return self._handle_crm_button(phone_number, bid, session)
+            # CRM type selection during add contact flow
+            if bid.startswith("crm_type_"):
+                session = self.session.get(phone_number)
+                return self.contacts.handle(phone_number, bid, session)
+            # All other crm_ buttons → contacts handler
+            return self.contacts.handle_button(phone_number, bid, session)
 
         # ── Catalog buttons ──
         if bid.startswith("cat_"):
             return self.catalog.handle_button(phone_number, bid, session)
+
+        # ── Catalog Recording buttons (catrec_*) ──
+        if bid.startswith("catrec_"):
+            return self.transactions.handle_catalog_recording(phone_number, bid, session)
+
+        # ── Transaction Edit buttons (txedit_* and txact_*) ──
+        if bid.startswith("txedit_") or bid.startswith("txact_"):
+            return self.transactions.handle_edit_button(phone_number, bid, session)
+
+        # ── Landing Cost buttons (lc_*) ──
+        if bid.startswith("lc_"):
+            return self.transactions.handle_landing_cost(phone_number, bid, session)
+
+        # ── Payment Method buttons (pm_*) ──
+        if bid.startswith("pm_"):
+            return self.transactions.handle_payment_method(phone_number, bid, session)
+
+        # ── Generate Invoice/Receipt after sale (gen_*) ──
+        if bid.startswith("gen_invoice_"):
+            tx_id = bid[12:]
+            return [{"type": "__GEN_INVOICE__", "content": {"tx_id": tx_id}}]
+        if bid.startswith("gen_receipt_"):
+            tx_id = bid[12:]
+            return [{"type": "__GEN_RECEIPT__", "content": {"tx_id": tx_id}}]
+        if bid == "gen_skip":
+            return [text_response("👍 _Send your next transaction or tap ☰ Menu._")]
+
+        # ── Production buttons (prod_*) ──
+        if bid.startswith("prod_"):
+            return self.production.handle_button(phone_number, bid, session)
 
         # ── Debt buttons ──
         if bid.startswith("debt_"):
@@ -268,6 +336,10 @@ class Router:
                 result = industry.handle_button(phone_number, bid, session)
                 if result:
                     return result
+
+            # ── sec_personal → show profile summary + sub-menu ──
+            if bid == "sec_personal" and self.personal_info:
+                return self.personal_info.show_profile(phone_number)
 
             # ── Personal Info buttons ──
             if bid.startswith("pi_") or bid == "set_password":
@@ -349,7 +421,10 @@ class Router:
     # ─────────────────────────────────────────────────────────
 
     def _start_guided_recording(self, phone_number: str, button_id: str) -> list:
-        """Start a button-driven guided recording flow."""
+        """Start a button-driven guided recording flow.
+        If user has a catalog with products, show product list first (catalog-aware).
+        Otherwise fall back to free-text guided flow.
+        """
         # Map button IDs to transaction types
         type_map = {
             "record_sale": "sale",
@@ -360,12 +435,36 @@ class Router:
         }
 
         tx_type = type_map.get(button_id, "sale")
+
+        # Production uses its own dedicated handler (manufacturing only)
+        if tx_type == "production":
+            return self.production.start_production(phone_number)
+
+        # Expenses don't use catalog — always free-text
+        if tx_type == "expense":
+            return self._start_freetext_guided(phone_number, tx_type)
+
+        # Check if user has catalog products
+        user = self.db.get_user(phone_number)
+        catalog = user.get("product_catalog", {}) if user else {}
+        products = catalog.get("products", {}) if isinstance(catalog, dict) else {}
+
+        # Filter to valid products (must be dicts with at least a name)
+        valid_products = {k: v for k, v in products.items() if isinstance(v, dict)}
+
+        if valid_products:
+            # Show catalog products as selection list
+            return self._start_catalog_recording(phone_number, tx_type, valid_products)
+        else:
+            # No catalog — use free-text guided flow
+            return self._start_freetext_guided(phone_number, tx_type)
+
+    def _start_freetext_guided(self, phone_number: str, tx_type: str) -> list:
+        """Original free-text guided recording (no catalog)."""
         industry = self._get_industry_handler(phone_number)
-        
-        # Get industry-specific prompt for step 1
+
         prompt = "What did you sell/buy?"
         if industry:
-            terms = industry.get_terms()
             if tx_type == "sale":
                 prompt = industry.get_guided_prompt("ask_item_sale")
             elif tx_type == "purchase":
@@ -381,6 +480,66 @@ class Router:
 
         return [text_response(prompt)]
 
+    def _start_catalog_recording(self, phone_number: str, tx_type: str, products: dict) -> list:
+        """Show catalog products as the first step — user picks from their own catalog."""
+        from utils.whatsapp_ui import list_response, button_response
+
+        label = "sell" if tx_type == "sale" else "buy"
+        rows  = []
+
+        for key, data in list(products.items())[:9]:
+            if not isinstance(data, dict):
+                continue  # Skip corrupted entries
+            name    = data.get("name", key.replace("_", " ").title())
+            pattern = data.get("pattern", [])
+            tree    = data.get("tree", {})
+            landing = data.get("landing_cost", 0)
+
+            # Build useful description
+            parts = []
+            if tree:
+                # Count stock in tree (sum all leaf integers)
+                def _sum_tree(node):
+                    if isinstance(node, (int, float)):
+                        return max(0, int(node))
+                    if isinstance(node, dict):
+                        return sum(_sum_tree(v) for v in node.values())
+                    return 0
+                stock = _sum_tree(tree)
+                if stock > 0:
+                    parts.append(f"{stock} in stock")
+            if landing:
+                parts.append(f"Cost: ₦{int(landing):,}")
+            if pattern and not parts:
+                parts.append(f"{' → '.join(pattern)}")
+            desc = " · ".join(parts) if parts else "Tap to select"
+
+            rows.append({
+                "id": f"catrec_{key}",
+                "title": f"📦 {name}"[:24],
+                "description": desc[:72],
+            })
+
+        # Add "Other" option for items not in catalog
+        rows.append({
+            "id": "catrec___other__",
+            "title": "📝 Other / Not Listed",
+            "description": "Type the item name manually",
+        })
+
+        self.session.save(phone_number, states.CATALOG_RECORDING, {
+            "cat_rec_type": tx_type,
+            "cat_rec_step": "pick_product",
+            "cat_rec_path": [],
+        })
+
+        return [list_response(
+            header=f"📦 What did you {label}?",
+            body="Pick from your catalog:",
+            button_text="Select Product",
+            sections=[{"title": "Your Products", "rows": rows}]
+        )]
+
     # ─────────────────────────────────────────────────────────
     # CRM Hint (post-transaction prompt)
     # ─────────────────────────────────────────────────────────
@@ -391,7 +550,11 @@ class Router:
         step = context.get("crm_step", "ask_name")
         text_lower = text.lower().strip()
 
-        # Skip / break out
+        # Skip / break out — greetings, cancel, or skip words
+        if text_lower in GREETING_WORDS or text_lower in HELP_WORDS:
+            self.session.reset(phone_number)
+            return self._show_home_menu(phone_number)
+
         if text_lower in ('skip', 'no', 'nah', 'nope') or text_lower in CANCEL_WORDS:
             self.session.reset(phone_number)
             return [text_response("👍 No problem. Send your next transaction anytime!")]

@@ -82,7 +82,7 @@ class ReportGenerator:
             amount = int(tx.get('amount', 0))
             category = tx.get('category', 'Other')
 
-            if tx.get('type') == 'income':
+            if tx.get('type') in ('income', 'sale'):
                 income_cats[category] = income_cats.get(category, 0) + amount
             else:
                 expense_cats[category] = expense_cats.get(category, 0) + amount
@@ -144,12 +144,12 @@ class ReportGenerator:
         )
 
         # Calculate totals
-        this_income = sum(int(tx.get('amount', 0)) for tx in this_month_txns if tx.get('type') == 'income')
-        this_expense = sum(int(tx.get('amount', 0)) for tx in this_month_txns if tx.get('type') == 'expense')
+        this_income = sum(int(tx.get('amount', 0)) for tx in this_month_txns if tx.get('type') in ('income', 'sale'))
+        this_expense = sum(int(tx.get('amount', 0)) for tx in this_month_txns if tx.get('type') in ('expense', 'purchase'))
         this_profit = this_income - this_expense
 
-        last_income = sum(int(tx.get('amount', 0)) for tx in last_month_txns if tx.get('type') == 'income')
-        last_expense = sum(int(tx.get('amount', 0)) for tx in last_month_txns if tx.get('type') == 'expense')
+        last_income = sum(int(tx.get('amount', 0)) for tx in last_month_txns if tx.get('type') in ('income', 'sale'))
+        last_expense = sum(int(tx.get('amount', 0)) for tx in last_month_txns if tx.get('type') in ('expense', 'purchase'))
         last_profit = last_income - last_expense
 
         # Calculate changes
@@ -188,14 +188,17 @@ class ReportGenerator:
             return f"📊 No transactions recorded for *{period_label}* yet."
 
         # Calculate totals
-        income = sum(int(tx.get('amount', 0)) for tx in transactions if tx.get('type') == 'income')
-        expenses = sum(int(tx.get('amount', 0)) for tx in transactions if tx.get('type') == 'expense')
+        # Support both v1 naming (income/expense) and v2 naming (sale/purchase/expense)
+        income = sum(int(tx.get('amount', 0)) for tx in transactions
+                     if tx.get('type') in ('income', 'sale'))
+        expenses = sum(int(tx.get('amount', 0)) for tx in transactions
+                       if tx.get('type') in ('expense', 'purchase'))
         profit = income - expenses
 
-        # Category breakdown (expenses)
+        # Category breakdown (expenses + purchases)
         categories = {}
         for tx in transactions:
-            if tx.get('type') == 'expense':
+            if tx.get('type') in ('expense', 'purchase'):
                 cat = tx.get('category', 'Other')
                 categories[cat] = categories.get(cat, 0) + int(tx.get('amount', 0))
 

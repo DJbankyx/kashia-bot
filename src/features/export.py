@@ -42,7 +42,15 @@ class ExportHandler:
         return self.show_options(phone_number)
 
     def handle_button(self, phone_number: str, button_id: str, session: dict) -> list:
-        """Handle export buttons."""
+        """Handle export buttons — PIN-protected for data exports."""
+        from core.pin_guard import requires_pin
+
+        # PIN-protected actions
+        if button_id in ("export_excel", "export_csv", "export_statement"):
+            pin_check = requires_pin(self.db, self.session, phone_number, button_id)
+            if pin_check:
+                return pin_check
+
         if button_id == "export_excel":
             return self.export_service.handle_export_request(phone_number, "month")
 

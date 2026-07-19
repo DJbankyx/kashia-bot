@@ -27,6 +27,7 @@ from features.invoices import InvoiceHandler
 from features.profile import ProfileHandler
 from features.personal_info import PersonalInfoHandler
 from features.settings import SettingsHandler
+from features.production import ProductionHandler
 
 from core.states import EXEMPT_STATES
 
@@ -89,6 +90,7 @@ class KashiaBot:
         self.router.settings = SettingsHandler(
             self.router.session, self.db, self.tier_manager
         )
+        self.router.production = ProductionHandler(self.router.session, self.db)
 
     def handle_message(self, phone_number: str, text: str, message_type: str = "text"):
         """
@@ -154,6 +156,70 @@ class KashiaBot:
                     phone_number, period
                 )
                 resolved.extend(export_responses)
+                continue
+
+            if resp.get("type") == "__EXPORT_PDF_STATEMENT__":
+                # Generate and send PDF financial statement
+                pdf_responses = self.pdf_generator.handle_statement_request(phone_number)
+                resolved.extend(pdf_responses)
+                continue
+
+            if resp.get("type") == "__EDIT_RECORDS__":
+                # Triggered from a tab report — show edit list for that type
+                content = resp.get("content", {})
+                tx_type = content.get("tx_type")
+                edit_responses = self.router.transactions.show_edit_list(phone_number, tx_type)
+                resolved.extend(edit_responses)
+                continue
+
+            if resp.get("type") == "__SEND_REMINDER__":
+                # Send a WhatsApp message to a debtor's phone number
+                content = resp.get("content", {})
+                debtor_phone = content.get("debtor_phone", "")
+                reminder_text = content.get("reminder_text", "")
+                if debtor_phone and reminder_text:
+                    self.whatsapp.send_text(debtor_phone, reminder_text)
+                continue
+
+            if resp.get("type") == "__GEN_INVOICE__":
+                # Generate invoice for a specific transaction
+                content = resp.get("content", {})
+                tx_id = content.get("tx_id", "")
+                if tx_id:
+                    inv_responses = self.pdf_generator.handle_multi_invoice_request(
+                        phone_number, [tx_id]
+                    )
+                    resolved.extend(inv_responses)
+                continue
+
+            if resp.get("type") == "__GEN_RECEIPT__":
+                # Generate receipt for a specific transaction
+                content = resp.get("content", {})
+                tx_id = content.get("tx_id", "")
+                if tx_id:
+                    rcpt_responses = self.pdf_generator.handle_multi_receipt_request(
+                        phone_number, [tx_id]
+                    )
+                    resolved.extend(rcpt_responses)
+                continue
+
+            if resp.get("type") == "__PIN_VERIFIED__":
+                # PIN was verified — re-execute the original protected action
+                content = resp.get("content", {})
+                action_id = content.get("action_id", "")
+                pin_action_map = {
+                    "export_excel": lambda: self.export_service.handle_export_request(phone_number, "month"),
+                    "export_csv": lambda: self.export_service.handle_export_request(phone_number, "csv"),
+                    "export_statement": lambda: self.pdf_generator.handle_statement_request(phone_number),
+                    "pi_bank": lambda: self.router.personal_info._start_bank_details(phone_number),
+                    "set_reset": lambda: self.router.settings._confirm_reset(phone_number),
+                    "export": lambda: self.router.export.show_options(phone_number),
+                }
+                handler = pin_action_map.get(action_id)
+                if handler:
+                    resolved.extend(handler())
+                else:
+                    resolved.append({"type": "text", "content": "✅ PIN verified. Please tap the option again."})
                 continue
 
             resolved.append(resp)

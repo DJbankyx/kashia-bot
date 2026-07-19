@@ -56,6 +56,10 @@ class SettingsHandler:
             return self._show_bug_report()
 
         if button_id == "set_reset":
+            from core.pin_guard import requires_pin
+            pin_check = requires_pin(self.db, self.session, phone_number, "set_reset")
+            if pin_check:
+                return pin_check
             return self._confirm_reset(phone_number)
 
         # Confirm buttons from within flows

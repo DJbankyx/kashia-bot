@@ -86,6 +86,15 @@ class ReportsHandler:
             period = button_id.replace("report_export_", "")
             return self._export_report(phone_number, period)
 
+        # ── PDF export from report ──
+        if button_id.startswith("report_pdf_"):
+            return [{"type": "__EXPORT_PDF_STATEMENT__", "content": {}}]
+
+        # ── Edit records from tab (report_edit_sale, report_edit_purchase, etc) ──
+        if button_id.startswith("report_edit_"):
+            tx_type = button_id.replace("report_edit_", "")
+            return [{"type": "__EDIT_RECORDS__", "content": {"tx_type": tx_type}}]
+
         return self.show(phone_number)
 
     # ─────────────────────────────────────────────────────────
@@ -187,17 +196,24 @@ class ReportsHandler:
                 pct = int(amt / opex * 100) if opex > 0 else 0
                 lines.append(f"  • {cat}: {format_amount(amt)} ({pct}%)")
 
-        return [
-            text_response("\n".join(lines)),
-            button_response(
-                "Export this report or drill into a section:",
-                [
-                    {"id": f"report_export_{period}", "title": "📎 Export Excel"},
-                    {"id": "biz_sales",    "title": "💰 My Sales"},
-                    {"id": "biz_purchases","title": "📦 My Purchases"},
-                ]
-            )
-        ]
+        # ── Build Report B (True Margin) if landing cost data exists ──
+        margin_report = self._build_margin_report(sales, label)
+
+        responses = [text_response("\n".join(lines))]
+
+        if margin_report:
+            responses.append(text_response(margin_report))
+
+        responses.append(button_response(
+            "Export or drill into a section:",
+            [
+                {"id": f"report_pdf_{period}", "title": "📄 Download PDF"},
+                {"id": f"report_export_{period}", "title": "📎 Export Excel"},
+                {"id": "biz_sales",    "title": "💰 My Sales"},
+            ]
+        ))
+
+        return responses
 
     # ─────────────────────────────────────────────────────────
     # BUSINESS TABS — Sales / Purchases / Expenses
@@ -274,16 +290,90 @@ class ReportsHandler:
         if count > 15:
             lines.append(f"\n_...and {count - 15} more. Export for full list._")
 
+        # Map tab_type to edit button ID
+        edit_btn_id = f"report_edit_{tab_type}"
+
         return [
             text_response("\n".join(lines)),
             button_response(
-                "View a different period or export:",
+                "Actions:",
                 [
+                    {"id": edit_btn_id,             "title": "✏️ Edit Records"},
                     {"id": "report_month",          "title": "🗓️ Full P&L"},
                     {"id": f"report_export_month",  "title": "📎 Export Excel"},
                 ]
             )
         ]
+
+    # ─────────────────────────────────────────────────────────
+    # REPORT B — True Margin (landing cost based)
+    # ─────────────────────────────────────────────────────────
+
+    def _build_margin_report(self, sales: list, period_label: str) -> str:
+        """
+        Build Report B — True Gross Margin using landing_cost data.
+        Only shows if at least one sale has landing_cost recorded.
+        Returns formatted text string or None if no data.
+        """
+        # Filter sales that have landing_cost
+        costed_sales = []
+        for t in sales:
+            extra = t.get("extra_details", {}) or {}
+            lc = extra.get("landing_cost") or t.get("landing_cost")
+            if lc and int(lc) > 0:
+                costed_sales.append({
+                    "description": t.get("description", t.get("item_name", "Item")),
+                    "revenue": int(t.get("amount", 0)),
+                    "cost": int(lc),
+                    "vendor": t.get("vendor", ""),
+                })
+
+        if not costed_sales:
+            return None  # No landing cost data — skip Report B
+
+        total_revenue = sum(s["revenue"] for s in costed_sales)
+        total_cost    = sum(s["cost"] for s in costed_sales)
+        total_margin  = total_revenue - total_cost
+        margin_pct    = int(total_margin / total_revenue * 100) if total_revenue > 0 else 0
+        uncosted      = len(sales) - len(costed_sales)
+
+        lines = [
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"📈  *TRUE MARGIN — {period_label}*",
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"",
+            f"_Based on {len(costed_sales)} sale{'s' if len(costed_sales) != 1 else ''} with recorded cost_",
+            f"",
+            f"💰 Revenue:       {format_amount(total_revenue)}",
+            f"🏷️ Landing Cost:  {format_amount(total_cost)}",
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"📈 *Gross Margin:  {format_amount(total_margin)}  ({margin_pct}%)*",
+            f"",
+        ]
+
+        # Show per-item breakdown (top 5)
+        if len(costed_sales) > 1:
+            lines.append("*Item Margins:*")
+            sorted_items = sorted(costed_sales, key=lambda x: x["revenue"], reverse=True)
+            for s in sorted_items[:5]:
+                item_margin = s["revenue"] - s["cost"]
+                item_pct    = int(item_margin / s["revenue"] * 100) if s["revenue"] > 0 else 0
+                desc        = s["description"][:20]
+                lines.append(
+                    f"  • {desc}: {format_amount(s['revenue'])} - {format_amount(s['cost'])} "
+                    f"= {format_amount(item_margin)} ({item_pct}%)"
+                )
+            lines.append("")
+
+        if uncosted > 0:
+            lines.append(
+                f"⚠️ _{uncosted} sale{'s' if uncosted != 1 else ''} without cost data "
+                f"(not included above)_"
+            )
+
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+
+        return "\n".join(lines)
 
     # ─────────────────────────────────────────────────────────
     # EXPORT from report button

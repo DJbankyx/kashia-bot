@@ -113,6 +113,33 @@ class PDFGenerator:
                 spaceAfter=10
             ))
 
+    def _add_logo_to_story(self, story: list, user: dict):
+        """Add business logo to the top of a PDF document if user has one uploaded."""
+        logo_s3_key = user.get("logo_s3_key", "") if user else ""
+        if not logo_s3_key:
+            return  # No logo uploaded
+
+        try:
+            import os
+            import boto3
+            from reportlab.platypus import Image
+
+            bucket = os.environ.get('GENERATED_FILES_BUCKET', 'kashia-generated-files-dev')
+            s3 = boto3.client("s3")
+
+            # Download logo to /tmp
+            local_path = f"/tmp/logo_{logo_s3_key.replace('/', '_')}"
+            s3.download_file(bucket, logo_s3_key, local_path)
+
+            # Add to story — constrain to reasonable size
+            logo = Image(local_path, width=4*cm, height=4*cm, kind='proportional')
+            story.append(logo)
+            story.append(Spacer(1, 3*mm))
+
+        except Exception as e:
+            logger.warning(f"Could not add logo to PDF: {e}")
+            # Non-critical — continue without logo
+
     def generate_invoice(self, phone_number, customer_name, amount, description, items=None, discount=None, tax=None):
         """
         Generate a professional invoice PDF.
@@ -146,6 +173,9 @@ class PDFGenerator:
             )
 
             story = []
+
+            # Add logo if user has one uploaded
+            self._add_logo_to_story(story, user)
 
             # Header
             story.append(Paragraph("INVOICE", self.styles['KashiaTitle']))
@@ -334,6 +364,9 @@ class PDFGenerator:
 
             story = []
 
+            # Add logo if user has one uploaded
+            self._add_logo_to_story(story, user)
+
             # Header
             story.append(Paragraph("PAYMENT RECEIPT", self.styles['KashiaTitle']))
             story.append(Spacer(1, 5*mm))
@@ -410,7 +443,7 @@ class PDFGenerator:
                 details.append(['Unit Price', f"NGN {int(unit_cost):,}"])
 
             # Add payment type
-            payment_method = tx.get('payment_method', 'Cash').title() if tx.get('payment_method') else ('Cash' if tx_type == 'income' else 'Payment')
+            payment_method = tx.get('payment_method', 'Cash').title() if tx.get('payment_method') else ('Cash' if tx_type in ('income', 'sale') else 'Payment')
             details.append(['Payment', payment_method])
 
             # Add discount/tax breakdown if present in transaction
@@ -505,6 +538,7 @@ class PDFGenerator:
             story = []
 
             # ─── HEADER ───
+            self._add_logo_to_story(story, user)
             story.append(Paragraph(business_name, self.styles['KashiaTitle']))
             # Industry-specific title
             industry = industry_class or 'trading'
@@ -524,11 +558,11 @@ class PDFGenerator:
 
             # Separate transactions
             income_txns = [tx for tx in transactions 
-                         if tx.get('type') == 'income' and 'Debt payment' not in tx.get('description', '')]
+                         if tx.get('type') in ('income', 'sale') and 'Debt payment' not in tx.get('description', '')]
             debt_payments = [tx for tx in transactions
-                           if tx.get('type') == 'income' and 'Debt payment' in tx.get('description', '')]
+                           if tx.get('type') in ('income', 'sale') and 'Debt payment' in tx.get('description', '')]
             cogs_txns = [tx for tx in transactions
-                        if tx.get('type') == 'expense' and tx.get('category', '') in COGS_CATEGORIES]
+                        if tx.get('type') in ('expense', 'purchase') and tx.get('category', '') in COGS_CATEGORIES]
             opex_txns = [tx for tx in transactions
                         if tx.get('type') == 'expense' and tx.get('category', '') not in COGS_CATEGORIES]
 
@@ -592,7 +626,7 @@ class PDFGenerator:
 
             cogs_table = Table(cogs_data, colWidths=[10*cm, 6*cm])
             cogs_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), HexColor('#e74c3c')),
+                ('BACKGROUND', (0, 0), (-1, 0), HexColor('#7f8c8d')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), white),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
@@ -607,7 +641,7 @@ class PDFGenerator:
             story.append(Spacer(1, 6*mm))
 
             # ─── GROSS PROFIT ───
-            gp_color = '#27ae60' if gross_profit >= 0 else '#e74c3c'
+            gp_color = '#27ae60' if gross_profit >= 0 else '#c0392b'
             gp_data = [
                 [pnl_labels['gross_title'], f"{gross_profit:,}"],
                 ['Gross Margin', f"{gross_margin}%"],
@@ -645,7 +679,7 @@ class PDFGenerator:
 
             opex_table = Table(opex_data, colWidths=[10*cm, 6*cm])
             opex_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), HexColor('#f39c12')),
+                ('BACKGROUND', (0, 0), (-1, 0), HexColor('#95a5a6')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), white),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
@@ -660,20 +694,20 @@ class PDFGenerator:
             story.append(Spacer(1, 8*mm))
 
             # ─── NET PROFIT ═══
-            np_color = '#27ae60' if net_profit >= 0 else '#e74c3c'
+            np_color = '#27ae60' if net_profit >= 0 else '#c0392b'
             np_data = [
                 [pnl_labels['net_title'], f"{net_profit:,}"],
                 ['Net Margin', f"{net_margin}%"],
             ]
             np_table = Table(np_data, colWidths=[10*cm, 6*cm])
             np_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, -1), HexColor('#2c3e50')),
+                ('BACKGROUND', (0, 0), (-1, -1), HexColor('#34495e')),
                 ('TEXTCOLOR', (0, 0), (-1, -1), white),
                 ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (0, 0), 12),
                 ('FONTSIZE', (0, 1), (-1, 1), 10),
                 ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
-                ('TEXTCOLOR', (1, 0), (1, 0), HexColor('#2ecc71') if net_profit >= 0 else HexColor('#e74c3c')),
+                ('TEXTCOLOR', (1, 0), (1, 0), HexColor('#2ecc71') if net_profit >= 0 else HexColor('#c0392b')),
                 ('TOPPADDING', (0, 0), (-1, -1), 10),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
                 ('BOX', (0, 0), (-1, -1), 2, HexColor('#2c3e50')),
@@ -695,6 +729,88 @@ class PDFGenerator:
                 ))
                 story.append(Spacer(1, 6*mm))
 
+            # ─── TRUE MARGIN (Report B) ───
+            # Show margin based on landing cost data from sales
+            costed_sales = []
+            for tx in income_txns:
+                extra = tx.get('extra_details', {}) or {}
+                lc = extra.get('landing_cost') or tx.get('landing_cost')
+                if lc and int(lc) > 0:
+                    costed_sales.append({
+                        "description": self._clean_item_description(tx),
+                        "revenue": int(tx.get('amount', 0)),
+                        "cost": int(lc),
+                    })
+
+            if costed_sales:
+                story.append(Paragraph("<b>TRUE MARGIN (Landing Cost Analysis)</b>", self.styles['KashiaHeading']))
+                story.append(Paragraph(
+                    f"<i>Based on {len(costed_sales)} sale{'s' if len(costed_sales) != 1 else ''} with recorded cost</i>",
+                    self.styles['KashiaSmall']
+                ))
+                story.append(Spacer(1, 3*mm))
+
+                margin_total_rev  = sum(s["revenue"] for s in costed_sales)
+                margin_total_cost = sum(s["cost"] for s in costed_sales)
+                margin_profit     = margin_total_rev - margin_total_cost
+                margin_pct        = int(margin_profit / margin_total_rev * 100) if margin_total_rev > 0 else 0
+
+                margin_data = [['', 'Amount (\u20a6)']]
+                margin_data.append(['Revenue (costed sales)', f"{margin_total_rev:,}"])
+                margin_data.append(['Landing Cost', f"({margin_total_cost:,})"])
+                margin_data.append(['GROSS MARGIN', f"{margin_profit:,} ({margin_pct}%)"])
+
+                margin_table = Table(margin_data, colWidths=[10*cm, 6*cm])
+                margin_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), HexColor('#8e44ad')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), white),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 10),
+                    ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+                    ('GRID', (0, 0), (-1, -1), 0.5, HexColor('#cccccc')),
+                    ('TOPPADDING', (0, 0), (-1, -1), 6),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                    ('LINEABOVE', (0, -1), (-1, -1), 1.5, black),
+                ]))
+                story.append(margin_table)
+                story.append(Spacer(1, 3*mm))
+
+                # Per-item margins
+                if len(costed_sales) > 1:
+                    item_data = [['Item', 'Sold', 'Cost', 'Margin']]
+                    for s in sorted(costed_sales, key=lambda x: x["revenue"], reverse=True)[:8]:
+                        item_margin = s["revenue"] - s["cost"]
+                        item_pct = int(item_margin / s["revenue"] * 100) if s["revenue"] > 0 else 0
+                        item_data.append([
+                            s["description"][:30],
+                            f"{s['revenue']:,}",
+                            f"({s['cost']:,})",
+                            f"{item_margin:,} ({item_pct}%)",
+                        ])
+                    item_table = Table(item_data, colWidths=[5*cm, 3.5*cm, 3.5*cm, 4*cm])
+                    item_table.setStyle(TableStyle([
+                        ('BACKGROUND', (0, 0), (-1, 0), HexColor('#9b59b6')),
+                        ('TEXTCOLOR', (0, 0), (-1, 0), white),
+                        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                        ('FONTSIZE', (0, 0), (-1, -1), 8),
+                        ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
+                        ('GRID', (0, 0), (-1, -1), 0.5, HexColor('#eeeeee')),
+                        ('TOPPADDING', (0, 0), (-1, -1), 4),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                    ]))
+                    story.append(item_table)
+
+                uncosted = len(income_txns) - len(costed_sales)
+                if uncosted > 0:
+                    story.append(Spacer(1, 3*mm))
+                    story.append(Paragraph(
+                        f"<i>Note: {uncosted} sale{'s' if uncosted != 1 else ''} without cost data not included above.</i>",
+                        self.styles['KashiaSmall']
+                    ))
+
+                story.append(Spacer(1, 8*mm))
+
             # ─── TRANSACTION DETAILS ───
             display_txns = [tx for tx in transactions if 'Debt payment' not in tx.get('description', '')]
             story.append(Paragraph(f"<b>Transaction Details ({len(display_txns)} entries)</b>", self.styles['KashiaHeading']))
@@ -712,7 +828,7 @@ class PDFGenerator:
                     display_desc += f" x{qty}"
                 tx_type = tx.get('type', '')
                 category = tx.get('category', '')[:18]
-                amount_str = f"{amount:,}" if tx_type == 'income' else f"({amount:,})"
+                amount_str = f"{amount:,}" if tx_type in ('income', 'sale') else f"({amount:,})"
                 tx_data.append([
                     tx.get('date', ''),
                     display_desc[:40],

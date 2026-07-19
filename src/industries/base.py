@@ -45,6 +45,7 @@ class BaseIndustry:
         "ask_amount": "💰 How much?",
         "ask_vendor_sale": "👤 Who did you sell to? (or type *skip*)",
         "ask_vendor_purchase": "👤 Who did you buy from? (or type *skip*)",
+        "ask_vendor_expense": "👤 Who did you pay? (or type *skip*)",
         "ask_details": "🏷️ Any extra details? (brand, size, color — or type *skip*)",
     }
 
@@ -71,7 +72,7 @@ class BaseIndustry:
                     {"id": "menu_report", "title": "📊 Reports", "description": "Today, this week, this month"},
                     {"id": "menu_debts", "title": "💳 Debts & Credits", "description": "Who owes, who I owe"},
                     {"id": "menu_contacts", "title": "📇 Contacts", "description": "Customers & suppliers"},
-                    {"id": "menu_catalog", "title": f"📋 {self.TERMS['catalog']}", "description": "Products & pricing"},
+                    {"id": "menu_catalog", "title": "📋 Catalog", "description": self.TERMS['catalog']},
                     {"id": "menu_export", "title": "📁 Export & Docs", "description": "Excel, invoices, receipts"},
                 ]
             }

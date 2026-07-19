@@ -48,6 +48,10 @@ class PersonalInfoHandler:
             return self._show_phone(phone_number)
 
         if button_id == "pi_bank":
+            from core.pin_guard import requires_pin
+            pin_check = requires_pin(self.db, self.session, phone_number, "pi_bank")
+            if pin_check:
+                return pin_check
             return self._start_bank_details(phone_number)
 
         if button_id == "pi_address":
@@ -68,6 +72,27 @@ class PersonalInfoHandler:
 
         if button_id == "pi_edit":
             return self._show_edit_menu(phone_number)
+
+        if button_id == "pi_logo":
+            user = self.db.get_user(phone_number) or {}
+            has_logo = bool(user.get("logo_url", ""))
+            if has_logo:
+                return [text_response(
+                    "🖼️ *Business Logo*\n\n"
+                    "✅ You already have a logo uploaded.\n\n"
+                    "To update it, simply send a new image in this chat.\n"
+                    "It will replace the current logo on all documents."
+                )]
+            else:
+                return [text_response(
+                    "🖼️ *Business Logo*\n\n"
+                    "Send your logo as an image in this chat.\n\n"
+                    "It will appear on all your:\n"
+                    "• Invoices\n"
+                    "• Receipts\n"
+                    "• Financial statements\n\n"
+                    "_Just send a photo/image right now._"
+                )]
 
         if button_id == "set_password":
             return self._start_set_pin(phone_number)

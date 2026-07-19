@@ -37,3 +37,8 @@ def get_openai_key():
 
 def get_app_secret():
     return get_parameter('/kashia/meta-app-secret')
+
+
+def get_paystack_secret():
+    """Paystack secret key for payment processing"""
+    return get_parameter('/kashia/paystack-secret-key')

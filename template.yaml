@@ -110,6 +110,30 @@ Resources:
         - SSMParameterReadPolicy:
             ParameterName: "kashia/*"
 
+  # Paystack Webhook (payment confirmations)
+  PaystackWebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub kashia-paystack-webhook-${Stage}
+      Handler: handlers/paystack_webhook.lambda_handler
+      CodeUri: src/
+      Layers:
+        - !Ref DependenciesLayer
+      Description: Kashia Paystack Payment Webhook
+      Timeout: 30
+      Events:
+        PaystackPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /paystack
+            Method: post
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UsersTable
+        - SSMParameterReadPolicy:
+            ParameterName: "kashia/*"
+
   # ============================================
   # DYNAMODB TABLES
   # ============================================

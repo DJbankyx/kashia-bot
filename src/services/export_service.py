@@ -90,7 +90,7 @@ class ExportService:
             ws1.cell(row=row_idx, column=5, value=tx.get('category', ''))
             ws1.cell(row=row_idx, column=6, value=tx.get('vendor', ''))
 
-            fill = income_fill if tx.get('type') == 'income' else expense_fill
+            fill = income_fill if tx.get('type') in ('income', 'sale') else expense_fill
             for col in range(1, 7):
                 ws1.cell(row=row_idx, column=col).fill = fill
                 ws1.cell(row=row_idx, column=col).border = border
@@ -105,8 +105,8 @@ class ExportService:
         # ---- SHEET 2: Summary ----
         ws2 = wb.create_sheet("Summary")
 
-        income = sum(int(tx.get('amount', 0)) for tx in transactions if tx.get('type') == 'income')
-        expenses = sum(int(tx.get('amount', 0)) for tx in transactions if tx.get('type') == 'expense')
+        income = sum(int(tx.get('amount', 0)) for tx in transactions if tx.get('type') in ('income', 'sale'))
+        expenses = sum(int(tx.get('amount', 0)) for tx in transactions if tx.get('type') in ('expense', 'purchase'))
         profit = income - expenses
 
         ws2.cell(row=1, column=1, value="Financial Summary").font = Font(bold=True, size=14)
@@ -118,6 +118,32 @@ class ExportService:
             ('Net Profit/Loss', profit),
             ('Total Transactions', len(transactions)),
         ]
+
+        # Calculate True Margin if landing cost data exists
+        costed_sales = []
+        for tx in transactions:
+            if tx.get('type') in ('income', 'sale'):
+                extra = tx.get('extra_details', {}) or {}
+                lc = extra.get('landing_cost') or tx.get('landing_cost')
+                if lc and int(lc) > 0:
+                    costed_sales.append({
+                        "revenue": int(tx.get('amount', 0)),
+                        "cost": int(lc),
+                    })
+
+        if costed_sales:
+            margin_rev  = sum(s["revenue"] for s in costed_sales)
+            margin_cost = sum(s["cost"] for s in costed_sales)
+            margin      = margin_rev - margin_cost
+            margin_pct  = int(margin / margin_rev * 100) if margin_rev > 0 else 0
+            summary_data.extend([
+                ('', ''),
+                ('--- TRUE MARGIN ---', ''),
+                ('Revenue (costed sales)', margin_rev),
+                ('Landing Cost', margin_cost),
+                ('Gross Margin', margin),
+                ('Margin %', f"{margin_pct}%"),
+            ])
 
         ws2.cell(row=4, column=1, value="Metric").font = Font(bold=True)
         ws2.cell(row=4, column=2, value="Amount (NGN)").font = Font(bold=True)
@@ -136,7 +162,7 @@ class ExportService:
 
         categories = {}
         for tx in transactions:
-            if tx.get('type') == 'expense':
+            if tx.get('type') in ('expense', 'purchase'):
                 cat = tx.get('category', 'Other')
                 categories[cat] = categories.get(cat, 0) + int(tx.get('amount', 0))
 
@@ -156,7 +182,7 @@ class ExportService:
             ws3.cell(row=i, column=2, value=amount).number_format = money_format
             pct = (amount / total_expense * 100) if total_expense > 0 else 0
             ws3.cell(row=i, column=3, value=f"{pct:.1f}%")
-            count = len([tx for tx in transactions if tx.get('category') == cat and tx.get('type') == 'expense'])
+            count = len([tx for tx in transactions if tx.get('category') == cat and tx.get('type') in ('expense', 'purchase')])
             ws3.cell(row=i, column=4, value=count)
 
         ws3.column_dimensions['A'].width = 25
@@ -322,12 +348,12 @@ class ExportService:
 
             if filter_type == 'my_sales':
                 filtered = [tx for tx in transactions
-                           if tx.get('type') == 'income'
+                           if tx.get('type') in ('income', 'sale')
                            and 'Debt payment' not in tx.get('description', '')]
                 label = 'Sales'
             elif filter_type == 'my_purchases':
                 filtered = [tx for tx in transactions
-                           if tx.get('type') == 'expense'
+                           if tx.get('type') in ('expense', 'purchase')
                            and tx.get('category', '') in COGS_CATEGORIES]
                 label = 'Purchases'
             elif filter_type == 'my_expenses':

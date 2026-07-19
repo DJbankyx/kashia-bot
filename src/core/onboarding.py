@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 STEP_WELCOME = "welcome"
 STEP_BUSINESS_NAME = "business_name"
 STEP_INDUSTRY = "industry"
+STEP_WHAT_YOU_DO = "what_you_do"
 STEP_COMPLETE = "complete"
 
 
@@ -35,6 +36,9 @@ class OnboardingHandler:
 
         if step == STEP_INDUSTRY:
             return self._save_industry(phone_number, text)
+
+        if step == STEP_WHAT_YOU_DO:
+            return self._save_what_you_do(phone_number, text)
 
         # Fallback — restart onboarding
         return self._welcome(phone_number)
@@ -101,14 +105,13 @@ class OnboardingHandler:
         )]
 
     def _save_industry(self, phone_number: str, text: str) -> list:
-        """Save industry, complete onboarding, create user record."""
+        """Save industry, then ask what they do in natural language."""
         # Map button IDs to industry keys
         industry_map = {
             "industry_trading": "trading",
             "industry_manufacturing": "manufacturing",
             "industry_services": "services",
             "industry_hybrid": "hybrid",
-            # Also handle raw text input
             "trading": "trading",
             "manufacturing": "manufacturing",
             "services": "services",
@@ -131,15 +134,81 @@ class OnboardingHandler:
         context = self.session.get_context(phone_number)
         business_name = context.get("business_name", "My Business")
 
-        # Create user record in DynamoDB
-        self.db.create_user(phone_number, {
+        # Save industry to context, ask what they do naturally
+        self.session.save(phone_number, ONBOARDING, {
+            "onboarding_step": STEP_WHAT_YOU_DO,
             "business_name": business_name,
-            "industry_class": industry,
-            "tier": "free",
-            "onboarding_complete": True,
+            "industry": industry,
         })
 
-        # Reset to IDLE — ready to use
+        # Industry-specific natural question
+        prompts = {
+            "trading": (
+                "🛍️ Great! *What does your business sell?*\n\n"
+                "Just describe it naturally:\n\n"
+                "_e.g. \"I sell new and second hand Honda cars\"_\n"
+                "_e.g. \"We sell shoes, bags and accessories\"_\n"
+                "_e.g. \"I sell rice, oil and provisions\"_"
+            ),
+            "manufacturing": (
+                "🏭 Great! *What does your business make?*\n\n"
+                "Just describe it naturally:\n\n"
+                "_e.g. \"We produce soap, detergent and cleaning products\"_\n"
+                "_e.g. \"I make furniture — tables, chairs, cabinets\"_\n"
+                "_e.g. \"We bake bread, cakes and pastries\"_"
+            ),
+            "services": (
+                "💼 Great! *What services do you offer?*\n\n"
+                "Just describe it naturally:\n\n"
+                "_e.g. \"I do hair braiding, nails and makeup\"_\n"
+                "_e.g. \"We offer cleaning and fumigation services\"_\n"
+                "_e.g. \"I do web design and digital marketing\"_"
+            ),
+            "hybrid": (
+                "🔄 Great! *What do you sell or offer?*\n\n"
+                "Just describe it naturally:\n\n"
+                "_e.g. \"I sell phones and also do phone repairs\"_\n"
+                "_e.g. \"We do catering and also sell food items\"_"
+            ),
+        }
+
+        return [text_response(prompts.get(industry, prompts["trading"]))]
+
+    def _save_what_you_do(self, phone_number: str, text: str) -> list:
+        """Parse natural description, extract products, seed catalog, complete onboarding."""
+        import re
+
+        context = self.session.get_context(phone_number)
+        business_name = context.get("business_name", "My Business")
+        industry = context.get("industry", "trading")
+        description = text.strip()
+
+        if len(description) < 3:
+            return [text_response("Please describe what your business does (even one sentence is fine):")]
+
+        # Extract product/service names from the natural description
+        items = self._extract_products_from_description(description, industry)
+
+        # Create user record
+        self.db.create_user(phone_number, industry, business_name)
+        self.db.update_user_field(phone_number, "industry_class", industry)
+        self.db.update_user_field(phone_number, "business_description", description)
+
+        # Seed catalog if products were extracted
+        if items:
+            catalog = {"products": {}}
+            for item in items[:10]:
+                key = item.lower().replace(" ", "_")
+                catalog["products"][key] = {
+                    "name": item,
+                    "pattern": [],
+                    "tree": {},
+                    "attributes": {},
+                    "conversions": {},
+                }
+            self.db.update_user_field(phone_number, "product_catalog", catalog)
+
+        # Reset to IDLE
         self.session.reset(phone_number)
 
         industry_labels = {
@@ -149,15 +218,71 @@ class OnboardingHandler:
             "hybrid": "🔄 Hybrid",
         }
 
-        return [text_response(
-            f"✅ All set!\n\n"
-            f"*{business_name}*\n"
-            f"{industry_labels[industry]}\n\n"
-            f"You're ready to go! Here's how I work:\n\n"
-            f"💬 *Type what you bought or sold* and I'll record it.\n"
-            f"Example: \"{self._get_example(industry)}\"\n\n"
-            f"Or tap the menu below to explore features. 👇"
-        ), self._trigger_home_menu(phone_number, industry)]
+        # Build completion message
+        lines = [
+            f"✅ *All set!*\n",
+            f"*{business_name}*",
+            f"{industry_labels[industry]}",
+        ]
+        if items:
+            lines.append(f"📦 Catalog: {', '.join(items[:5])}")
+            if len(items) > 5:
+                lines.append(f"   _+{len(items) - 5} more_")
+        lines.append("")
+        lines.append("You're ready to go! Here's how I work:\n")
+        lines.append(f"💬 *Type what you bought or sold* and I'll record it.")
+        lines.append(f"Example: \"{self._get_example(industry)}\"")
+        lines.append("\nOr tap the menu below to explore features. 👇")
+
+        return [
+            text_response("\n".join(lines)),
+            self._trigger_home_menu(phone_number, industry)
+        ]
+
+    def _extract_products_from_description(self, description: str, industry: str) -> list:
+        """
+        Extract product/service names from a natural business description.
+        Uses keyword parsing — no AI call needed (keeps onboarding fast).
+        """
+        import re
+
+        desc = description.lower()
+
+        # Remove common filler words
+        fillers = [
+            "i sell", "we sell", "i make", "we make", "we produce",
+            "i do", "we do", "i offer", "we offer", "i provide", "we provide",
+            "new and", "second hand", "brand new", "fairly used",
+            "all kinds of", "different types of", "various",
+            "like", "such as", "including", "e.g.", "for example",
+            "and also", "as well as",
+        ]
+        cleaned = desc
+        for filler in fillers:
+            cleaned = cleaned.replace(filler, " ")
+
+        # Split on common separators: comma, "and", "&"
+        parts = re.split(r'[,&]|\band\b', cleaned)
+
+        # Clean each part
+        items = []
+        for part in parts:
+            item = part.strip().strip('.')
+            # Remove trailing "etc", "products", "items", "services"
+            item = re.sub(r'\s*(etc|products?|items?|services?|goods?)\s*$', '', item)
+            item = item.strip()
+            if len(item) >= 2 and len(item) <= 40:
+                items.append(item.title())
+
+        # Deduplicate
+        seen = set()
+        unique = []
+        for item in items:
+            if item.lower() not in seen:
+                seen.add(item.lower())
+                unique.append(item)
+
+        return unique
 
     def _get_example(self, industry: str) -> str:
         """Industry-specific example transaction."""
