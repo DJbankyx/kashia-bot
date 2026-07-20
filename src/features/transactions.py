@@ -388,11 +388,14 @@ class TransactionHandler:
                 user = self.db.get_user(phone_number)
                 industry = user.get("industry_class", "trading") if user else "trading"
 
-                if industry == "services":
-                    # Services: ask about supplies used (optional)
+                # For hybrid: check if this was a service job (record_job button)
+                is_service_job = tx_data.get("is_service_job", False)
+
+                if industry == "services" or (industry == "hybrid" and is_service_job):
+                    # Services / hybrid service job: ask about supplies used (optional)
                     return self._ask_supplies_used(phone_number, tx_id, tx_data)
                 else:
-                    # Trading/Manufacturing: check if product has variants → ask which one
+                    # Trading/Manufacturing/Hybrid product: check variants → ask landing cost
                     return self._check_variants_then_landing_cost(phone_number, tx_id, tx_data)
 
             # ── For PURCHASES: update inventory (add stock + save cost) ──
@@ -1491,6 +1494,7 @@ class TransactionHandler:
             "details": details,
             "raw_text": f"{guided_type} {item} {amount}",
             "has_credit": False,
+            "is_service_job": data.get("is_service_job", False),
         }
 
         # Save state for confirmation
@@ -2219,6 +2223,7 @@ class TransactionHandler:
             "details": details,
             "raw_text": f"{tx_type} {full_desc} {amount}",
             "has_credit": False,
+            "is_service_job": context.get("is_service_job", False),
             # Catalog linkage data
             "catalog_product": product_key,
             "catalog_path": path,

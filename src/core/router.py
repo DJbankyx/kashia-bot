@@ -563,6 +563,9 @@ class Router:
             "record_job": "sale",  # services "job" = sale
         }
 
+        # Track if this is a service job (for hybrid: determines supplies vs landing cost)
+        is_service_job = button_id == "record_job"
+
         tx_type = type_map.get(button_id, "sale")
 
         # Production uses its own dedicated handler (manufacturing only)
@@ -571,7 +574,7 @@ class Router:
 
         # Expenses don't use catalog — always free-text
         if tx_type == "expense":
-            return self._start_freetext_guided(phone_number, tx_type)
+            return self._start_freetext_guided(phone_number, tx_type, is_service_job)
 
         # Check if user has catalog products
         user = self.db.get_user(phone_number)
@@ -583,18 +586,20 @@ class Router:
 
         if valid_products:
             # Show catalog products as selection list
-            return self._start_catalog_recording(phone_number, tx_type, valid_products)
+            return self._start_catalog_recording(phone_number, tx_type, valid_products, is_service_job)
         else:
             # No catalog — use free-text guided flow
-            return self._start_freetext_guided(phone_number, tx_type)
+            return self._start_freetext_guided(phone_number, tx_type, is_service_job)
 
-    def _start_freetext_guided(self, phone_number: str, tx_type: str) -> list:
+    def _start_freetext_guided(self, phone_number: str, tx_type: str, is_service_job: bool = False) -> list:
         """Original free-text guided recording (no catalog)."""
         industry = self._get_industry_handler(phone_number)
 
         prompt = "What did you sell/buy?"
         if industry:
-            if tx_type == "sale":
+            if is_service_job:
+                prompt = industry.get_guided_prompt("ask_item_service") or industry.get_guided_prompt("ask_item_sale")
+            elif tx_type == "sale":
                 prompt = industry.get_guided_prompt("ask_item_sale")
             elif tx_type == "purchase":
                 prompt = industry.get_guided_prompt("ask_item_purchase")
@@ -604,12 +609,12 @@ class Router:
         self.session.save(phone_number, states.GUIDED_RECORDING, {
             "guided_type": tx_type,
             "guided_step": "item",
-            "guided_data": {},
+            "guided_data": {"is_service_job": is_service_job},
         })
 
         return [text_response(prompt)]
 
-    def _start_catalog_recording(self, phone_number: str, tx_type: str, products: dict) -> list:
+    def _start_catalog_recording(self, phone_number: str, tx_type: str, products: dict, is_service_job: bool = False) -> list:
         """Show flat product list for sale/purchase recording."""
         from utils.whatsapp_ui import list_response
 
@@ -629,6 +634,7 @@ class Router:
             "cat_rec_type": tx_type,
             "cat_rec_step": "pick_product",
             "cat_rec_path": [],
+            "is_service_job": is_service_job,
         })
 
         return [list_response(
