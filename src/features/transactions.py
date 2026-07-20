@@ -382,9 +382,18 @@ class TransactionHandler:
                 except Exception as e:
                     logger.warning(f"CRM update failed: {e}")
 
-            # ── For SALES: ask landing cost ──
+            # ── For SALES: ask landing cost (trading/manufacturing) or materials used (services) ──
             if tx_data["type"] == "sale":
-                return self._ask_landing_cost(phone_number, tx_id, tx_data)
+                # Check user's industry
+                user = self.db.get_user(phone_number)
+                industry = user.get("industry_class", "trading") if user else "trading"
+
+                if industry == "services":
+                    # Services: ask about supplies used (optional)
+                    return self._ask_supplies_used(phone_number, tx_id, tx_data)
+                else:
+                    # Trading/Manufacturing: ask landing cost
+                    return self._ask_landing_cost(phone_number, tx_id, tx_data)
 
             # ── For PURCHASES: update inventory (add stock + save cost) ──
             if tx_data["type"] == "purchase":
@@ -558,7 +567,7 @@ class TransactionHandler:
             )]
 
     def handle_landing_cost(self, phone_number: str, text: str, session: dict) -> list:
-        """Handle landing cost input — text or button."""
+        """Handle landing cost input — text or button. Also handles supplies mode for services."""
         context    = session.get("context", {})
         tx_id      = context.get("lc_tx_id", "")
         amount     = context.get("lc_amount", 0)
@@ -566,7 +575,24 @@ class TransactionHandler:
         catalog_key = context.get("lc_catalog_key", "")
         saved_cost = context.get("lc_saved_cost", 0)
         text_low   = text.lower().strip()
-        qty        = self._parse_qty(context.get("lc_quantity", "1"))
+        lc_mode    = context.get("lc_mode", "cost")  # "cost" or "supplies"
+
+        # ── Services mode: handle supplies deduction ──
+        if lc_mode == "supplies":
+            if text_low in ("skip", "no", "nah", "lc_skip", "none"):
+                self.session.reset(phone_number)
+                return [
+                    text_response("👍 No supplies deducted."),
+                    button_response("What's next?", [
+                        {"id": f"gen_invoice_{tx_id}", "title": "🧾 Invoice"},
+                        {"id": "record_sale", "title": "💼 Next Job"},
+                        {"id": "menu_home", "title": "☰ Menu"},
+                    ])
+                ]
+            return self._handle_supplies_deduction(phone_number, text, context)
+
+        # ── Normal landing cost mode ──
+        qty = self._parse_qty(context.get("lc_quantity", "1"))
 
         # ── Skip ──
         if text_low in ("skip", "no", "nah", "lc_skip"):
@@ -651,6 +677,121 @@ class TransactionHandler:
                 logger.info(f"No catalog match for sale item: {description}")
         except Exception as e:
             logger.error(f"Error decrementing stock on sale: {e}")
+
+    # ═══════════════════════════════════════════════════════════
+    # SUPPLIES USED — Services: deduct consumables after a job
+    # ═══════════════════════════════════════════════════════════
+
+    def _ask_supplies_used(self, phone_number: str, tx_id: str, tx_data: dict) -> list:
+        """After saving a service job, ask if supplies were used (optional)."""
+        amount = tx_data.get("amount", 0)
+        description = tx_data.get("description", "Job")
+
+        # Check if user has consumables in catalog
+        user = self.db.get_user(phone_number)
+        catalog = user.get("product_catalog", {}) if user else {}
+        products = catalog.get("products", {})
+
+        consumables = {k: v for k, v in products.items()
+                       if v.get("item_type") == "consumable" or int(v.get("stock", 0)) > 0}
+
+        if not consumables:
+            # No consumables tracked — just show success
+            self.session.reset(phone_number)
+            return [
+                text_response(f"✅ *Job saved!* {format_amount(amount)}\n\n_{description}_"),
+                button_response("What's next?", [
+                    {"id": f"gen_invoice_{tx_id}", "title": "🧾 Invoice"},
+                    {"id": "record_sale", "title": "💼 Next Job"},
+                    {"id": "menu_home", "title": "☰ Menu"},
+                ])
+            ]
+
+        # Has consumables — offer to deduct
+        self.session.save(phone_number, states.LANDING_COST, {
+            "lc_tx_id": tx_id,
+            "lc_amount": amount,
+            "lc_description": description,
+            "lc_mode": "supplies",  # Flag to handle differently
+        })
+
+        # Build supply list
+        supply_names = [v.get("name", k) for k, v in list(consumables.items())[:5]]
+        supply_str = ", ".join(supply_names)
+
+        return [button_response(
+            f"✅ *Job saved!* {format_amount(amount)}\n\n"
+            f"📦 Did you use any supplies?\n"
+            f"_({supply_str})_\n\n"
+            f"Type supplies used, e.g.:\n"
+            f"_2 blades, 1 oil_\n\n"
+            f"Or tap Skip if none used.",
+            [
+                {"id": "lc_skip", "title": "⏭️ No Supplies"},
+                {"id": f"gen_invoice_{tx_id}", "title": "🧾 Invoice"},
+            ]
+        )]
+
+    def _handle_supplies_deduction(self, phone_number: str, text: str, context: dict) -> list:
+        """Parse supplies text like '2 blades, 1 oil' and deduct from catalog."""
+        tx_id = context.get("lc_tx_id", "")
+        amount = context.get("lc_amount", 0)
+
+        # Parse comma-separated items: "2 blades, 1 oil, 3 gloves"
+        items = [item.strip() for item in text.split(",") if item.strip()]
+        deducted = []
+        total_supply_cost = 0
+
+        from features.catalog import CatalogHandler
+        cat = CatalogHandler(self.session, self.db)
+
+        for item in items:
+            # Parse "2 blades" or "1 oil" or just "blade"
+            match = re.match(r'^(\d+)\s*(.+)', item.strip())
+            if match:
+                qty = int(match.group(1))
+                name = match.group(2).strip()
+            else:
+                qty = 1
+                name = item.strip()
+
+            # Deduct from catalog
+            result = cat.update_stock(phone_number, name, -qty)
+            if result.get("matched"):
+                cost = result.get("landing_cost", 0) * qty
+                total_supply_cost += cost
+                deducted.append(f"  • {qty} × {result['product']} (-{qty})")
+
+        self.session.reset(phone_number)
+
+        if deducted:
+            deduct_str = "\n".join(deducted)
+            cost_str = f"\n💰 Supply cost: {format_amount(total_supply_cost)}" if total_supply_cost > 0 else ""
+
+            # Save supply cost to transaction
+            if tx_id and total_supply_cost > 0:
+                self.db.update_transaction(phone_number, tx_id, {
+                    "supply_cost": total_supply_cost,
+                })
+
+            return [
+                text_response(
+                    f"📦 *Supplies deducted:*\n{deduct_str}{cost_str}"
+                ),
+                button_response("What's next?", [
+                    {"id": f"gen_invoice_{tx_id}", "title": "🧾 Invoice"},
+                    {"id": "record_sale", "title": "💼 Next Job"},
+                    {"id": "menu_home", "title": "☰ Menu"},
+                ])
+            ]
+        else:
+            return [
+                text_response("❓ Couldn't match those supplies. No stock deducted."),
+                button_response("What's next?", [
+                    {"id": "record_sale", "title": "💼 Next Job"},
+                    {"id": "menu_home", "title": "☰ Menu"},
+                ])
+            ]
 
     def _get_catalog_landing_cost(self, phone_number: str, catalog_key: str,
                                    description: str, brand: str) -> int:

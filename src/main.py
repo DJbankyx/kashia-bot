@@ -28,6 +28,7 @@ from features.profile import ProfileHandler
 from features.personal_info import PersonalInfoHandler
 from features.settings import SettingsHandler
 from features.production import ProductionHandler
+from features.recurring import RecurringHandler
 
 from core.states import EXEMPT_STATES
 
@@ -91,6 +92,7 @@ class KashiaBot:
             self.router.session, self.db, self.tier_manager
         )
         self.router.production = ProductionHandler(self.router.session, self.db)
+        self.router.recurring = RecurringHandler(self.router.session, self.db)
 
     def handle_message(self, phone_number: str, text: str, message_type: str = "text"):
         """
