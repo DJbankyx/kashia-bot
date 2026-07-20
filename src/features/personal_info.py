@@ -42,7 +42,14 @@ class PersonalInfoHandler:
         """Route pi_* and set_password buttons."""
 
         if button_id == "pi_business_name":
-            return self._show_field(phone_number, "business_name")
+            user = self.db.get_user(phone_number) or {}
+            current = user.get("business_name", "")
+            current_str = f"\nCurrent: *{current}*\n" if current else ""
+            return self._start_edit_field(
+                phone_number, "business_name",
+                "🏢 *Business Name*",
+                f"{current_str}Type your new business name:"
+            )
 
         if button_id == "pi_phone":
             return self._show_phone(phone_number)

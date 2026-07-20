@@ -752,6 +752,10 @@ class TransactionHandler:
             # Still decrement inventory even when skipping landing cost
             self._decrement_stock_on_sale(phone_number, desc, qty, context)
 
+            # Save last_sale_price for auto-suggest next time
+            sale_unit_price = int(amount) // qty if qty > 0 else int(amount)
+            self._save_last_sale_price(phone_number, desc, sale_unit_price, context.get("lc_variant", ""))
+
             self.session.reset(phone_number)
             return [
                 text_response(
@@ -796,6 +800,10 @@ class TransactionHandler:
         # Decrement stock on sale
         self._decrement_stock_on_sale(phone_number, desc, qty, context)
 
+        # Save last_sale_price on the catalog product for auto-suggest next time
+        sale_unit_price = int(amount) // qty if qty > 0 else int(amount)
+        self._save_last_sale_price(phone_number, desc, sale_unit_price, context.get("lc_variant", ""))
+
         # Calculate and show margin (landing_cost is per unit, multiply by qty)
         margin = int(amount) - total_cost
         margin_pct = int(margin / int(amount) * 100) if int(amount) > 0 else 0
@@ -838,6 +846,30 @@ class TransactionHandler:
                 logger.info(f"No catalog match for sale item: {description}")
         except Exception as e:
             logger.error(f"Error decrementing stock on sale: {e}")
+
+    def _save_last_sale_price(self, phone_number: str, description: str, unit_price: int, variant: str = ""):
+        """Save the last sale price per unit on the catalog product for auto-suggest."""
+        try:
+            from features.catalog import CatalogHandler
+            cat = CatalogHandler(self.session, self.db)
+            products = cat._get_products(phone_number)
+            matched_key = cat._find_product_key(products, description)
+            if not matched_key:
+                return
+
+            product = products[matched_key]
+            product["last_sale_price"] = unit_price
+
+            # Also save per-variant sale price if variant is specified
+            if variant:
+                variant_sale_prices = product.get("variant_sale_prices", {})
+                variant_sale_prices[variant] = unit_price
+                product["variant_sale_prices"] = variant_sale_prices
+
+            cat._save_products(phone_number, products)
+            logger.info(f"Saved last_sale_price: {description} (variant={variant}) = {unit_price}")
+        except Exception as e:
+            logger.error(f"Error saving last_sale_price: {e}")
 
     # ═══════════════════════════════════════════════════════════
     # SUPPLIES USED — Services: deduct consumables after a job
@@ -1864,7 +1896,14 @@ class TransactionHandler:
 
         # ── Step: ask_amount ──
         if step == "ask_amount":
-            amount = parse_amount(text_s)
+            # Handle auto-suggest button: catrec_amt_37000000
+            if text_s.startswith("catrec_amt_"):
+                try:
+                    amount = float(text_s[11:])  # After "catrec_amt_"
+                except (ValueError, IndexError):
+                    amount = None
+            else:
+                amount = parse_amount(text_s)
             if not amount:
                 return [text_response("💰 Please enter the amount (e.g. 50000, 150K, 1.2M):")]
             context["cat_rec_amount"] = float(amount)
@@ -2070,9 +2109,51 @@ class TransactionHandler:
         else:
             context["cat_rec_quantity"] = text.strip()
 
+        # Check for last_sale_price to auto-suggest amount
+        tx_type = context.get("cat_rec_type", "sale")
+        product_key = context.get("cat_rec_product_key", "")
+        quantity_str = context.get("cat_rec_quantity", "")
+
+        if tx_type == "sale" and product_key and quantity_str:
+            suggested = self._get_suggested_sale_amount(phone_number, product_key, quantity_str)
+            if suggested:
+                context["cat_rec_step"] = "ask_amount"
+                self.session.save(phone_number, states.CATALOG_RECORDING, context)
+                return [button_response(
+                    f"💰 How much total?\n\n"
+                    f"Last sale price: *{format_amount(suggested)}*\n\n"
+                    f"_Use this or type a different amount._",
+                    [
+                        {"id": f"catrec_amt_{suggested}", "title": f"✅ {format_amount(suggested)}"},
+                    ]
+                )]
+
         context["cat_rec_step"] = "ask_amount"
         self.session.save(phone_number, states.CATALOG_RECORDING, context)
         return [text_response("💰 How much total?\n\n_(e.g. 50000, 150K, 1.2M)_")]
+
+    def _get_suggested_sale_amount(self, phone_number: str, product_key: str, quantity_str: str) -> int:
+        """Look up last_sale_price and calculate suggested total from qty."""
+        try:
+            from features.catalog import CatalogHandler
+            cat = CatalogHandler(self.session, self.db)
+            products = cat._get_products(phone_number)
+            if product_key not in products:
+                return 0
+
+            product = products[product_key]
+            last_price = int(product.get("last_sale_price", 0))
+            if not last_price:
+                return 0
+
+            # Parse qty
+            qty = self._parse_qty(quantity_str)
+            if qty <= 0:
+                return 0
+
+            return last_price * qty
+        except Exception:
+            return 0
 
     def _catrec_finalize(self, phone_number: str, context: dict) -> list:
         """Build tx_data from catalog recording and show confirmation."""

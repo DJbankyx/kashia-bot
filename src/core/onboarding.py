@@ -67,6 +67,32 @@ class OnboardingHandler:
         if len(business_name) > 100:
             return [text_response("That's too long! Please use a shorter business name:")]
 
+        # Reject button IDs that get accidentally passed as text
+        # Common pattern: contains underscore and matches known prefixes
+        BUTTON_PREFIXES = (
+            "menu_", "record_", "sec_", "pi_", "biz_", "cat_", "crm_",
+            "set_", "report_", "export_", "gen_", "txedit_", "txact_",
+            "debt_", "lc_", "pm_", "prod_", "rec_", "confirm_", "btn_",
+            "catrec_", "industry_", "var_",
+        )
+        text_lower = business_name.lower()
+        if any(text_lower.startswith(p) for p in BUTTON_PREFIXES):
+            return [text_response(
+                "📝 *What's your business name?*\n\n"
+                "_e.g. Sandra's Fashion, Alhaji Motors, ABC Electronics_"
+            )]
+
+        # Also reject if it looks like a command/keyword
+        COMMANDS = {
+            "menu", "help", "hi", "hello", "hey", "cancel", "back",
+            "done", "skip", "yes", "no", "ok", "okay",
+        }
+        if text_lower in COMMANDS:
+            return [text_response(
+                "📝 *What's your business name?*\n\n"
+                "_e.g. Sandra's Fashion, Alhaji Motors, ABC Electronics_"
+            )]
+
         # Save to context (will write to users table at the end)
         self.session.save(phone_number, ONBOARDING, {
             "onboarding_step": STEP_INDUSTRY,
