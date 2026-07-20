@@ -73,6 +73,24 @@ class PersonalInfoHandler:
         if button_id == "pi_edit":
             return self._show_edit_menu(phone_number)
 
+        if button_id == "pi_terms":
+            return self._start_edit_field(
+                phone_number, "terms_conditions",
+                "📋 *Terms & Conditions*",
+                "Type your custom terms for invoices:\n\n"
+                "_e.g. Payment due within 7 days. No refunds after delivery._\n\n"
+                "Or type *clear* to use the default."
+            )
+
+        if button_id == "pi_prefix":
+            return self._start_edit_field(
+                phone_number, "invoice_prefix",
+                "🔢 *Invoice Prefix*",
+                "Type your preferred prefix (2-4 letters):\n\n"
+                "_e.g. SHP, AUTO, KAS_\n\n"
+                "This will appear as SHP-00001, SHP-00002, etc."
+            )
+
         if button_id == "pi_logo":
             user = self.db.get_user(phone_number) or {}
             has_logo = bool(user.get("logo_url", ""))
@@ -145,6 +163,32 @@ class PersonalInfoHandler:
             return self._save_field(
                 phone_number, "email", text_s.lower(),
                 f"✅ Email saved: {text_s.lower()}"
+            )
+
+        # ── Terms & Conditions ──
+        if step == "edit_terms_conditions":
+            if text_s.lower() == "clear":
+                return self._save_field(
+                    phone_number, "terms_conditions", "",
+                    "✅ Terms cleared. Default will be used on invoices."
+                )
+            return self._save_field(
+                phone_number, "terms_conditions", text_s,
+                f"✅ Terms & Conditions saved!\n\n_{text_s}_"
+            )
+
+        # ── Invoice Prefix ──
+        if step == "edit_invoice_prefix":
+            prefix = re.sub(r'[^A-Za-z]', '', text_s).upper()[:4]
+            if len(prefix) < 2:
+                return [text_response(
+                    "❌ Prefix must be 2-4 letters (e.g. SHP, AUTO).\n\n"
+                    "Try again or type *cancel*:"
+                )]
+            return self._save_field(
+                phone_number, "invoice_prefix", prefix,
+                f"✅ Invoice prefix set to *{prefix}*\n\n"
+                f"Your documents will be numbered: {prefix}-00001, {prefix}-00002, etc."
             )
 
         # ── Bank details — 3 steps ──
@@ -245,6 +289,10 @@ class PersonalInfoHandler:
                      "description": email_desc},
                     {"id": "pi_logo",    "title": "🖼️ Business Logo",
                      "description": "For invoices & receipts"},
+                    {"id": "pi_terms",   "title": "📋 Terms & Conditions",
+                     "description": "Custom text on invoices"},
+                    {"id": "pi_prefix",  "title": "🔢 Invoice Prefix",
+                     "description": "e.g. SHP-00001"},
                     {"id": "set_password", "title": "🔒 PIN / Password",
                      "description": pin_desc},
                 ]

@@ -346,6 +346,23 @@ class ReportsHandler:
             extra = t.get("extra_details", {}) or {}
             lc = extra.get("landing_cost") or t.get("landing_cost")
 
+            # Determine quantity for this transaction
+            import re
+            qty_str = t.get("quantity", "1")
+            qty = 1
+            if qty_str:
+                match = re.match(r'^(\d+)', str(qty_str))
+                qty = int(match.group(1)) if match else 1
+
+            # Check if this transaction uses the new format (has landing_cost_per_unit)
+            # New format: landing_cost is already total. Old format: per-unit, needs multiply.
+            has_per_unit_field = extra.get("landing_cost_per_unit") or t.get("landing_cost_per_unit")
+
+            if lc and int(lc) > 0:
+                if not has_per_unit_field:
+                    # Old format: landing_cost is per-unit, multiply by qty
+                    lc = int(lc) * qty
+
             # Source 2: Lookup from catalog by description/product name
             if not lc or int(lc) <= 0:
                 desc = t.get("description", t.get("item_name", ""))
@@ -353,14 +370,6 @@ class ReportsHandler:
                 search_name = f"{brand} {desc}".strip() if brand else desc
                 catalog_cost = cat.get_landing_cost(phone_number, search_name)
                 if catalog_cost > 0:
-                    lc = catalog_cost
-                    # Calculate total cost based on quantity
-                    qty_str = t.get("quantity", "1")
-                    qty = 1
-                    if qty_str:
-                        import re
-                        match = re.match(r'^(\d+)', str(qty_str))
-                        qty = int(match.group(1)) if match else 1
                     lc = catalog_cost * qty  # Total cost = unit cost × qty
 
             if lc and int(lc) > 0:
@@ -523,6 +532,9 @@ def _clean_desc(tx: dict) -> str:
     item = tx.get("item_name", "")
     brand = tx.get("brand", "")
     if item and brand:
+        # Avoid duplication: if item already starts with brand
+        if item.lower().startswith(brand.lower()):
+            return item[:30]
         return f"{brand} {item}"[:30]
     if item:
         return item[:30]

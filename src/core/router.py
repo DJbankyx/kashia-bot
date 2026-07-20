@@ -147,6 +147,10 @@ class Router:
         if state == states.LANDING_COST:
             return self.transactions.handle_landing_cost(phone_number, text_stripped, session)
 
+        # ── Variant selection flow (after sale, before landing cost) ──
+        if state == states.VARIANT_SELECTION:
+            return self.transactions.handle_variant_selection(phone_number, text_stripped, session)
+
         # ── Payment method flow (cash/credit after confirmation) ──
         if state == states.PAYMENT_METHOD:
             return self.transactions.handle_payment_method(phone_number, text_stripped, session)
@@ -334,6 +338,10 @@ class Router:
         # ── Landing Cost buttons (lc_*) ──
         if bid.startswith("lc_"):
             return self.transactions.handle_landing_cost(phone_number, bid, session)
+
+        # ── Variant Selection buttons (var_*) ──
+        if bid.startswith("var_"):
+            return self.transactions.handle_variant_selection(phone_number, bid, session)
 
         # ── Payment Method buttons (pm_*) ──
         if bid.startswith("pm_"):

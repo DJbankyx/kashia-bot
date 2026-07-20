@@ -36,16 +36,23 @@ class PDFGenerator:
         """Generate a business-branded document number.
         Format: {INITIALS}-{COUNTER:05d} (e.g. BFH-00001)
         doc_type: 'INV' for invoice, 'RCP' for receipt
+        
+        Users can set a custom prefix via 'invoice_prefix' in their profile.
         """
         user = self.db.get_user(phone_number)
         business_name = user.get('business_name', 'Kashia') if user else 'Kashia'
         
-        # Generate initials from business name (first letter of each word)
-        words = business_name.split()
-        if len(words) >= 2:
-            initials = ''.join(w[0].upper() for w in words if w)[:4]
+        # Use custom prefix if user has set one, otherwise auto-generate from business name
+        custom_prefix = user.get('invoice_prefix', '') if user else ''
+        if custom_prefix:
+            initials = custom_prefix.upper()
         else:
-            initials = business_name[:3].upper()
+            # Generate initials from business name (first letter of each word)
+            words = business_name.split()
+            if len(words) >= 2:
+                initials = ''.join(w[0].upper() for w in words if w)[:4]
+            else:
+                initials = business_name[:3].upper()
         
         # Get and increment counter
         counter_field = f'{doc_type.lower()}_counter'
@@ -305,8 +312,11 @@ class PDFGenerator:
 
             # Terms
             story.append(Paragraph("<b>Terms &amp; Conditions:</b>", self.styles['KashiaSmall']))
+            # Use custom T&C from user profile, or default
+            custom_terms = user.get('terms_conditions', '') if user else ''
+            terms_text = custom_terms if custom_terms else "Payment is due upon receipt."
             story.append(Paragraph(
-                "Payment is due upon receipt. Late payments may attract additional charges.",
+                terms_text,
                 self.styles['KashiaSmall']
             ))
             story.append(Spacer(1, 15*mm))
@@ -383,9 +393,9 @@ class PDFGenerator:
             vendor = tx.get('vendor', '')
 
             if tx_type == 'expense':
-                story.append(Paragraph(f"<b>Paid To:</b> {vendor or 'N/A'}", self.styles['KashiaBody']))
+                story.append(Paragraph(f"<b>Paid To:</b> {vendor or 'Vendor'}", self.styles['KashiaBody']))
             else:
-                story.append(Paragraph(f"<b>Received From:</b> {vendor or 'N/A'}", self.styles['KashiaBody']))
+                story.append(Paragraph(f"<b>Received From:</b> {vendor or 'Customer'}", self.styles['KashiaBody']))
 
             story.append(Spacer(1, 8*mm))
 
@@ -401,7 +411,11 @@ class PDFGenerator:
 
             # Clean description line
             if item_desc and brand:
-                clean_desc = f"{brand} {item_desc}"
+                # Avoid duplication: if item_desc already starts with brand
+                if item_desc.lower().startswith(brand.lower()):
+                    clean_desc = item_desc
+                else:
+                    clean_desc = f"{brand} {item_desc}"
             elif item_desc:
                 clean_desc = item_desc
             else:
@@ -433,7 +447,6 @@ class PDFGenerator:
             details = [
                 ['Item', clean_desc.title()],
                 ['Date', tx.get('date', 'N/A')],
-                ['Category', tx.get('category', 'N/A')],
             ]
 
             # Add quantity/unit cost if available
@@ -477,7 +490,10 @@ class PDFGenerator:
 
             # Signature line
             story.append(Paragraph("_" * 40, self.styles['KashiaBody']))
-            story.append(Paragraph("Authorized Signature", self.styles['KashiaSmall']))
+            story.append(Paragraph(
+                f"{business_name}" if business_name and business_name != 'My Business' else "Authorized Signature",
+                self.styles['KashiaSmall']
+            ))
             story.append(Spacer(1, 15*mm))
 
             # Footer
@@ -740,6 +756,27 @@ class PDFGenerator:
                 extra = tx.get('extra_details', {}) or {}
                 lc = extra.get('landing_cost') or tx.get('landing_cost')
 
+                # Determine quantity for this transaction
+                import re as _re
+                qty_str = tx.get('quantity', '1')
+                qty = 1
+                if qty_str:
+                    match = _re.match(r'^(\d+)', str(qty_str))
+                    qty = int(match.group(1)) if match else 1
+
+                # If we have landing_cost_per_unit, it means the transaction
+                # was saved with the new format (landing_cost = total already).
+                # If not, the landing_cost might be per-unit (old format) — multiply by qty.
+                has_per_unit_field = extra.get('landing_cost_per_unit') or tx.get('landing_cost_per_unit')
+
+                if lc and int(lc) > 0:
+                    if has_per_unit_field:
+                        # New format: landing_cost is already total
+                        pass
+                    else:
+                        # Old format: landing_cost is per-unit, multiply by qty
+                        lc = int(lc) * qty
+
                 # Fallback: lookup from catalog
                 if not lc or int(lc) <= 0:
                     desc = tx.get('description', tx.get('item_name', ''))
@@ -747,12 +784,6 @@ class PDFGenerator:
                     search_name = f"{brand} {desc}".strip() if brand else desc
                     catalog_cost = cat_handler.get_landing_cost(phone_number, search_name)
                     if catalog_cost > 0:
-                        import re as _re
-                        qty_str = tx.get('quantity', '1')
-                        qty = 1
-                        if qty_str:
-                            match = _re.match(r'^(\d+)', str(qty_str))
-                            qty = int(match.group(1)) if match else 1
                         lc = catalog_cost * qty
 
                 if lc and int(lc) > 0:
@@ -910,7 +941,11 @@ class PDFGenerator:
         # Build from structured fields
         parts = []
         if brand and item_name:
-            parts.append(f"{brand} {item_name}")
+            # Avoid duplication: if item_name already starts with the brand, don't prepend
+            if item_name.lower().startswith(brand.lower()):
+                parts.append(item_name)
+            else:
+                parts.append(f"{brand} {item_name}")
         elif item_name:
             parts.append(item_name)
         elif brand:

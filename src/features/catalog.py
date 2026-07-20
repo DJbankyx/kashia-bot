@@ -214,10 +214,11 @@ class CatalogHandler:
             stock   = int(prod.get("stock", 0))
             cost    = int(prod.get("landing_cost", 0))
             category = prod.get("category", "")
-            variants = prod.get("variants", [])
+            variant_stock = prod.get("variant_stock", {})
+            variant_costs = prod.get("variant_costs", {})
+            cost_history = prod.get("cost_history", [])
 
             total_stock += stock
-            total_value += stock * cost
 
             # Stock indicator
             if stock <= 0:
@@ -231,10 +232,27 @@ class CatalogHandler:
             if category:
                 line += f" _{category}_"
             lines.append(line)
-            lines.append(f"   Stock: *{stock}*" + (f" · Cost: {format_amount(cost)}/unit" if cost else ""))
 
-            if variants:
-                lines.append(f"   Variants: {', '.join(variants[:5])}")
+            # If variant_stock exists, show per-variant breakdown
+            if variant_stock:
+                lines.append(f"   Stock: *{stock}* total")
+                for v_name, v_stock in variant_stock.items():
+                    v_cost = int(variant_costs.get(v_name, 0))
+                    v_stock_int = int(v_stock)
+                    total_value += v_stock_int * v_cost
+                    # Variant stock indicator
+                    v_ind = "🔴" if v_stock_int <= 0 else ("🟡" if v_stock_int <= 2 else "•")
+                    cost_str = f" · {format_amount(v_cost)}" if v_cost else ""
+                    lines.append(f"   {v_ind} {v_name}: {v_stock_int}{cost_str}")
+                # Show last cost update if history exists
+                if cost_history:
+                    last = cost_history[-1]
+                    lines.append(f"   _Last cost: {last.get('variant', '')} {format_amount(last.get('cost', 0))} on {last.get('date', '')}_")
+            else:
+                # No variants — simple display
+                total_value += stock * cost
+                lines.append(f"   Stock: *{stock}*" + (f" · Cost: {format_amount(cost)}/unit" if cost else ""))
+
             lines.append("")
 
         lines.append("━━━━━━━━━━━━━━━━━━━━")
@@ -260,12 +278,14 @@ class CatalogHandler:
         self.session.save(phone_number, states.CATALOG_ADD_DATA, {
             "cat_step": "adding_products",
         })
-        return [text_response(
+        return [button_response(
             "➕ *Add Products*\n\n"
             "Type product names (comma-separated for multiple):\n\n"
             "_e.g. Toyota Prado, Honda Civic, Kia Sportage_\n"
-            "_e.g. Detergent 1L, Soap Bar, Hand Wash_\n\n"
-            "Type *done* when finished."
+            "_e.g. Detergent 1L, Soap Bar, Hand Wash_",
+            [
+                {"id": "cat_cancel", "title": "✅ Done"},
+            ]
         )]
 
     def _handle_add_products(self, phone_number: str, text: str, context: dict) -> list:
@@ -300,9 +320,11 @@ class CatalogHandler:
             lines.append(f"✅ Added *{len(added)}* product{'s' if len(added) != 1 else ''}: {', '.join(added)}")
         if already_exists:
             lines.append(f"ℹ️ Already existed: {', '.join(already_exists)}")
-        lines.append("\n_Add more products, or type *done* to finish._")
+        lines.append("\n_Add more, or tap Done._")
 
-        return [text_response("\n".join(lines))]
+        return [button_response("\n".join(lines), [
+            {"id": "cat_cancel", "title": "✅ Done"},
+        ])]
 
     # ─────────────────────────────────────────────────────────
     # SET LANDING COST
@@ -741,9 +763,12 @@ class CatalogHandler:
                 "cat_step": "setting_cost",
                 "cat_product_key": product_key,
             })
-            return [text_response(
+            return [button_response(
                 f"🏷️ *{name}* — Landing Cost{cost_str}\n\n"
-                f"Enter cost per unit:\n_e.g. 50000, 150K, 10M_"
+                f"Enter cost per unit:\n_e.g. 50000, 150K, 10M_",
+                [
+                    {"id": "cat_cancel", "title": "← Cancel"},
+                ]
             )]
 
         if action == "adjust_stock":
@@ -752,12 +777,16 @@ class CatalogHandler:
                 "cat_step": "adjusting_stock",
                 "cat_product_key": product_key,
             })
-            return [text_response(
+            return [button_response(
                 f"📐 *{name}* — Current stock: *{current}*\n\n"
                 f"Enter adjustment:\n"
                 f"• _+5_ (add 5)\n"
                 f"• _-3_ (remove 3)\n"
-                f"• _10_ (set to 10)"
+                f"• _10_ (set to 10)",
+                [
+                    {"id": "cat_adjust", "title": "← Pick Another"},
+                    {"id": "cat_cancel", "title": "✕ Cancel"},
+                ]
             )]
 
         if action == "add_variants":
@@ -845,14 +874,16 @@ class CatalogHandler:
     # ─────────────────────────────────────────────────────────
 
     def update_stock(self, phone_number: str, product_name: str, qty_change: int,
-                     unit_cost: int = 0, quantity_str: str = "") -> dict:
+                     unit_cost: int = 0, quantity_str: str = "", variant: str = "") -> dict:
         """
         Update stock for a product. Called after purchase (+) or sale (-).
         Also updates landing_cost if provided.
         
         If quantity_str contains a unit (e.g. "3 cartons"), applies conversion.
+        If variant is provided, updates variant_stock and syncs to total.
+        On purchase with unit_cost, appends to cost_history and updates weighted avg.
         
-        Returns: {"matched": True/False, "product": name, "new_stock": int}
+        Returns: {"matched": True/False, "product": name, "new_stock": int, "variant": str}
         """
         products = self._get_products(phone_number)
 
@@ -871,27 +902,95 @@ class CatalogHandler:
             if converted is not None:
                 actual_qty = converted
 
-        current = int(product.get("stock", 0))
-        new_stock = max(0, current + actual_qty)
-        product["stock"] = new_stock
+        # ── Variant-level stock update ──
+        variant_stock = product.get("variant_stock", {})
+        resolved_variant = variant.strip() if variant else ""
 
-        # Update landing cost if provided (from purchase)
-        # If conversion was applied, adjust cost per base unit
+        if resolved_variant and resolved_variant in variant_stock:
+            # Update variant stock
+            current_variant = int(variant_stock.get(resolved_variant, 0))
+            new_variant_stock = max(0, current_variant + actual_qty)
+            variant_stock[resolved_variant] = new_variant_stock
+            product["variant_stock"] = variant_stock
+
+            # Recalculate total stock from all variants
+            product["stock"] = sum(int(v) for v in variant_stock.values())
+        elif resolved_variant and actual_qty > 0:
+            # New variant being added via purchase — initialize it
+            variant_stock[resolved_variant] = max(0, actual_qty)
+            product["variant_stock"] = variant_stock
+
+            # Add to variants list if not there
+            variants_list = product.get("variants", [])
+            if resolved_variant not in variants_list:
+                variants_list.append(resolved_variant)
+                product["variants"] = variants_list
+
+            # Recalculate total stock
+            product["stock"] = sum(int(v) for v in variant_stock.values())
+        else:
+            # No variant specified or no variant_stock exists — update total directly
+            current = int(product.get("stock", 0))
+            new_stock = max(0, current + actual_qty)
+            product["stock"] = new_stock
+
+        # ── Landing cost update (from purchase) ──
+        effective_unit_cost = unit_cost
         if unit_cost and unit_cost > 0:
+            # If conversion was applied, adjust cost per base unit
             if actual_qty != qty_change and abs(qty_change) > 0:
-                # Cost was per converted unit (e.g. per carton) — calculate per piece
-                cost_per_base = int(unit_cost * abs(qty_change) / abs(actual_qty)) if actual_qty != 0 else unit_cost
-                product["landing_cost"] = cost_per_base
+                effective_unit_cost = int(unit_cost * abs(qty_change) / abs(actual_qty)) if actual_qty != 0 else unit_cost
+
+            if resolved_variant:
+                # Update variant-specific cost (weighted average)
+                variant_costs = product.get("variant_costs", {})
+                old_cost = int(variant_costs.get(resolved_variant, 0))
+                old_stock = int(variant_stock.get(resolved_variant, 0)) - abs(actual_qty)
+                old_stock = max(0, old_stock)
+
+                if old_cost > 0 and old_stock > 0:
+                    # Weighted average: (old_cost × old_stock + new_cost × new_qty) / total
+                    total_units = old_stock + abs(actual_qty)
+                    weighted_avg = int((old_cost * old_stock + effective_unit_cost * abs(actual_qty)) / total_units)
+                    variant_costs[resolved_variant] = weighted_avg
+                else:
+                    variant_costs[resolved_variant] = effective_unit_cost
+
+                product["variant_costs"] = variant_costs
             else:
-                product["landing_cost"] = int(unit_cost)
+                # Update base landing_cost (weighted average)
+                old_cost = int(product.get("landing_cost", 0))
+                old_stock = int(product.get("stock", 0)) - abs(actual_qty)
+                old_stock = max(0, old_stock)
+
+                if old_cost > 0 and old_stock > 0:
+                    total_units = old_stock + abs(actual_qty)
+                    weighted_avg = int((old_cost * old_stock + effective_unit_cost * abs(actual_qty)) / total_units)
+                    product["landing_cost"] = weighted_avg
+                else:
+                    product["landing_cost"] = effective_unit_cost
+
+            # ── Append to cost_history (purchases only) ──
+            if actual_qty > 0:
+                from datetime import datetime
+                cost_history = product.get("cost_history", [])
+                cost_history.append({
+                    "date": datetime.now().strftime("%Y-%m-%d"),
+                    "cost": effective_unit_cost,
+                    "qty": abs(actual_qty),
+                    "variant": resolved_variant,
+                })
+                # Keep last 50 entries to avoid bloating
+                product["cost_history"] = cost_history[-50:]
 
         self._save_products(phone_number, products)
 
         return {
             "matched": True,
             "product": product.get("name", matched_key),
-            "new_stock": new_stock,
-            "landing_cost": int(product.get("landing_cost", 0)),
+            "new_stock": int(product.get("stock", 0)),
+            "variant": resolved_variant,
+            "landing_cost": int(product.get("variant_costs", {}).get(resolved_variant, product.get("landing_cost", 0))) if resolved_variant else int(product.get("landing_cost", 0)),
         }
 
     def get_landing_cost(self, phone_number: str, product_name: str) -> int:

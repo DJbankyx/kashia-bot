@@ -392,8 +392,8 @@ class TransactionHandler:
                     # Services: ask about supplies used (optional)
                     return self._ask_supplies_used(phone_number, tx_id, tx_data)
                 else:
-                    # Trading/Manufacturing: ask landing cost
-                    return self._ask_landing_cost(phone_number, tx_id, tx_data)
+                    # Trading/Manufacturing: check if product has variants → ask which one
+                    return self._check_variants_then_landing_cost(phone_number, tx_id, tx_data)
 
             # ── For PURCHASES: update inventory (add stock + save cost) ──
             if tx_data["type"] == "purchase":
@@ -403,10 +403,13 @@ class TransactionHandler:
                 brand = tx_data.get("brand", "")
                 search_name = f"{brand} {desc}".strip() if brand else desc
 
+                # Detect variant from description/details
+                variant = self._detect_variant(phone_number, search_name)
+
                 from features.catalog import CatalogHandler
                 cat = CatalogHandler(self.session, self.db)
                 qty_str = tx_data.get("quantity", "")
-                stock_result = cat.update_stock(phone_number, search_name, qty, unit_cost, qty_str)
+                stock_result = cat.update_stock(phone_number, search_name, qty, unit_cost, qty_str, variant=variant)
 
                 # For manufacturing: also update recipe costs where this material is used
                 if unit_cost > 0:
@@ -517,6 +520,141 @@ class TransactionHandler:
         )]
 
     # ═══════════════════════════════════════════════════════════
+    # VARIANT SELECTION — Ask which variant before landing cost
+    # ═══════════════════════════════════════════════════════════
+
+    def _check_variants_then_landing_cost(self, phone_number: str, tx_id: str, tx_data: dict) -> list:
+        """
+        Check if the sold product has variant_stock defined.
+        If yes → ask which variant.
+        If no → go straight to landing cost.
+        """
+        description = tx_data.get("description", "")
+        brand = tx_data.get("brand", "")
+        search_name = f"{brand} {description}".strip() if brand else description
+
+        # Look up the product in catalog
+        from features.catalog import CatalogHandler
+        cat = CatalogHandler(self.session, self.db)
+        products = cat._get_products(phone_number)
+        matched_key = cat._find_product_key(products, search_name)
+
+        if matched_key:
+            product = products[matched_key]
+            variant_stock = product.get("variant_stock", {})
+
+            if variant_stock:
+                # Product has variants — check if variant is already known from text
+                auto_variant = self._detect_variant(phone_number, search_name)
+                if auto_variant and auto_variant in variant_stock:
+                    # Variant auto-detected from description — skip asking
+                    tx_data["selected_variant"] = auto_variant
+                    return self._ask_landing_cost(phone_number, tx_id, tx_data)
+
+                # Ask which variant
+                return self._ask_variant(phone_number, tx_id, tx_data, product, matched_key)
+
+        # No variants — go straight to landing cost
+        return self._ask_landing_cost(phone_number, tx_id, tx_data)
+
+    def _ask_variant(self, phone_number: str, tx_id: str, tx_data: dict, product: dict, product_key: str) -> list:
+        """Show variant selection list to user."""
+        variant_stock = product.get("variant_stock", {})
+        variant_costs = product.get("variant_costs", {})
+        product_name = product.get("name", product_key)
+        amount = tx_data.get("amount", 0)
+
+        # Build list rows from variants with stock
+        rows = []
+        for v_name, v_stock in variant_stock.items():
+            v_cost = variant_costs.get(v_name, 0)
+            v_stock_int = int(v_stock)
+            stock_str = f"Stock: {v_stock_int}"
+            cost_str = f" · {format_amount(v_cost)}" if v_cost else ""
+            rows.append({
+                "id": f"var_{v_name}",
+                "title": v_name[:24],
+                "description": f"{stock_str}{cost_str}"[:72],
+            })
+
+        # Limit to 10 (WhatsApp max)
+        rows = rows[:10]
+
+        self.session.save(phone_number, states.VARIANT_SELECTION, {
+            "var_tx_id": tx_id,
+            "var_tx_data": tx_data,
+            "var_product_key": product_key,
+        })
+
+        return [list_response(
+            header=f"🏷️ Which variant?",
+            body=f"💰 {format_amount(amount)} sale — *{product_name}*\n\nSelect the variant sold:",
+            button_text="Select Variant",
+            sections=[{"title": "Variants", "rows": rows}]
+        )]
+
+    def handle_variant_selection(self, phone_number: str, text: str, session: dict) -> list:
+        """Handle variant selection — user tapped a variant or typed one."""
+        context = session.get("context", {})
+        tx_id = context.get("var_tx_id", "")
+        tx_data = context.get("var_tx_data", {})
+        product_key = context.get("var_product_key", "")
+        text_s = text.strip()
+
+        # Extract variant name from button ID
+        if text_s.startswith("var_"):
+            variant = text_s[4:]  # After "var_"
+        else:
+            variant = text_s
+
+        # Save variant to tx_data
+        tx_data["selected_variant"] = variant
+
+        # Update the transaction with variant info
+        if tx_id:
+            self.db.update_transaction(phone_number, tx_id, {
+                "variant": variant,
+            })
+
+        # Proceed to landing cost
+        return self._ask_landing_cost(phone_number, tx_id, tx_data)
+
+    def _detect_variant(self, phone_number: str, search_name: str) -> str:
+        """
+        Try to auto-detect a variant from the product name/description.
+        e.g. "Honda Accord 2016 Black" → matches variant "2016 Black"
+        Returns variant name or empty string.
+        """
+        from features.catalog import CatalogHandler
+        cat = CatalogHandler(self.session, self.db)
+        products = cat._get_products(phone_number)
+        matched_key = cat._find_product_key(products, search_name)
+
+        if not matched_key:
+            return ""
+
+        product = products[matched_key]
+        variant_stock = product.get("variant_stock", {})
+        if not variant_stock:
+            return ""
+
+        # Check if search_name contains a variant name
+        search_lower = search_name.lower()
+        product_name_lower = product.get("name", "").lower()
+
+        # Remove product name from search to isolate potential variant text
+        remainder = search_lower.replace(product_name_lower, "").strip()
+
+        # Try exact match first
+        for v_name in variant_stock:
+            if v_name.lower() == remainder:
+                return v_name
+            if v_name.lower() in search_lower:
+                return v_name
+
+        return ""
+
+    # ═══════════════════════════════════════════════════════════
     # LANDING COST — Ask cost after sale, pre-fill from catalog
     # ═══════════════════════════════════════════════════════════
 
@@ -527,13 +665,24 @@ class TransactionHandler:
         catalog_key = tx_data.get("catalog_product", "")
         amount      = tx_data.get("amount", 0)
         quantity    = tx_data.get("quantity", "1")
+        selected_variant = tx_data.get("selected_variant", "")
 
-        # Try to find a saved landing cost from catalog
-        saved_cost = self._get_catalog_landing_cost(phone_number, catalog_key, description, brand)
+        # Try variant-specific cost first, then fall back to general lookup
+        saved_cost = 0
+        if selected_variant:
+            saved_cost = self._get_variant_landing_cost(phone_number, description, brand, selected_variant)
+
+        if not saved_cost:
+            saved_cost = self._get_catalog_landing_cost(phone_number, catalog_key, description, brand)
 
         # Ensure quantity defaults to "1" if empty (so stock always decrements)
         if not quantity or quantity.strip() == "":
             quantity = "1"
+
+        # Build display name (include variant if selected)
+        display_name = description
+        if selected_variant:
+            display_name = f"{description} ({selected_variant})"
 
         self.session.save(phone_number, states.LANDING_COST, {
             "lc_tx_id": tx_id,
@@ -543,13 +692,14 @@ class TransactionHandler:
             "lc_saved_cost": saved_cost,
             "lc_catalog_path": tx_data.get("catalog_path", []),
             "lc_quantity": quantity,
+            "lc_variant": tx_data.get("selected_variant", ""),
         })
 
         if saved_cost:
             # Catalog has a saved cost — offer as suggestion
             return [button_response(
                 f"✅ *Sale saved!* {format_amount(amount)}\n\n"
-                f"🏷️ *Landing cost for {description}?*\n\n"
+                f"🏷️ *Landing cost for {display_name}?*\n\n"
                 f"Last recorded cost: *{format_amount(saved_cost)}*\n\n"
                 f"_Use this or type a different amount._",
                 [
@@ -559,11 +709,14 @@ class TransactionHandler:
             )]
         else:
             # No saved cost — ask directly
-            return [text_response(
+            return [button_response(
                 f"✅ *Sale saved!* {format_amount(amount)}\n\n"
-                f"🏷️ *What was your landing cost?*\n"
+                f"🏷️ *Landing cost for {display_name}?*\n"
                 f"_(How much did you buy/source this item for?)_\n\n"
-                f"Type the cost amount, or *skip* if you don't know."
+                f"Type the cost amount, or tap Skip.",
+                [
+                    {"id": "lc_skip", "title": "⏭️ Skip"},
+                ]
             )]
 
     def handle_landing_cost(self, phone_number: str, text: str, session: dict) -> list:
@@ -628,10 +781,12 @@ class TransactionHandler:
                 )]
             landing_cost = int(landing_cost_parsed)
 
-        # Save landing cost to the transaction
+        # Save landing cost (per unit) to the transaction, plus total cost
+        total_cost = landing_cost * qty
         if tx_id:
             self.db.update_transaction(phone_number, tx_id, {
-                "landing_cost": landing_cost,
+                "landing_cost": total_cost,
+                "landing_cost_per_unit": landing_cost,
             })
 
         # Also update catalog with this cost for future auto-fill
@@ -641,17 +796,22 @@ class TransactionHandler:
         # Decrement stock on sale
         self._decrement_stock_on_sale(phone_number, desc, qty, context)
 
-        # Calculate and show margin
-        margin = int(amount) - landing_cost
+        # Calculate and show margin (landing_cost is per unit, multiply by qty)
+        margin = int(amount) - total_cost
         margin_pct = int(margin / int(amount) * 100) if int(amount) > 0 else 0
 
         self.session.reset(phone_number)
+
+        # Show per-unit cost breakdown if qty > 1
+        cost_line = f"🏷️ Cost: {format_amount(total_cost)}"
+        if qty > 1:
+            cost_line += f" ({qty} × {format_amount(landing_cost)})"
 
         return [
             text_response(
                 f"✅ *Cost recorded!*\n\n"
                 f"💰 Sold for: {format_amount(amount)}\n"
-                f"🏷️ Cost: {format_amount(landing_cost)}\n"
+                f"{cost_line}\n"
                 f"📈 Margin: {format_amount(margin)} ({margin_pct}%)"
             ),
             button_response(
@@ -670,9 +830,10 @@ class TransactionHandler:
             from features.catalog import CatalogHandler
             cat = CatalogHandler(self.session, self.db)
             qty_str = context.get("lc_quantity", "")
-            result = cat.update_stock(phone_number, description, -qty, quantity_str=qty_str)
+            variant = context.get("lc_variant", "")
+            result = cat.update_stock(phone_number, description, -qty, quantity_str=qty_str, variant=variant)
             if result.get("matched"):
-                logger.info(f"Stock decremented: {description} by {qty}, new stock: {result.get('new_stock')}")
+                logger.info(f"Stock decremented: {description} (variant={variant}) by {qty}, new stock: {result.get('new_stock')}")
             else:
                 logger.info(f"No catalog match for sale item: {description}")
         except Exception as e:
@@ -801,6 +962,22 @@ class TransactionHandler:
             cat = CatalogHandler(self.session, self.db)
             search_name = f"{brand} {description}".strip() if brand else description
             return cat.get_landing_cost(phone_number, search_name)
+        except Exception:
+            return 0
+
+    def _get_variant_landing_cost(self, phone_number: str, description: str, brand: str, variant: str) -> int:
+        """Look up variant-specific landing cost directly from variant_costs."""
+        try:
+            from features.catalog import CatalogHandler
+            cat = CatalogHandler(self.session, self.db)
+            search_name = f"{brand} {description}".strip() if brand else description
+            products = cat._get_products(phone_number)
+            matched_key = cat._find_product_key(products, search_name)
+            if not matched_key:
+                return 0
+            product = products[matched_key]
+            variant_costs = product.get("variant_costs", {})
+            return int(variant_costs.get(variant, 0))
         except Exception:
             return 0
 
