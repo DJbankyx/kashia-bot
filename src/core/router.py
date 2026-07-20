@@ -373,6 +373,10 @@ class Router:
             if bid == "sec_inventory":
                 return self.catalog.show_menu(phone_number)
 
+            # ── sec_supplies → show catalog (services terminology) ──
+            if bid == "sec_supplies":
+                return self.catalog.show_menu(phone_number)
+
             # ── Personal Info buttons ──
             if bid.startswith("pi_") or bid == "set_password":
                 if self.personal_info:
@@ -398,6 +402,7 @@ class Router:
                 "biz_debts":      lambda: self.debt.show_summary(phone_number),
                 "biz_docs":       lambda: self.export.show_options(phone_number),
                 "biz_export":     lambda: self.export.show_options(phone_number),
+                "biz_recurring":  lambda: self._show_recurring_services(phone_number),
             }
             handler = biz_map.get(bid)
             if handler:
@@ -514,6 +519,59 @@ class Router:
                 lines.append(f"  • {mat_qty:.0f} {unit} {mat_name}")
 
         lines.append(f"━━━━━━━━━━━━━━━━━━━━")
+
+        return [text_response("\n".join(lines))]
+
+    def _show_recurring_services(self, phone_number: str) -> list:
+        """Show recurring services and allow adding new ones."""
+        user = self.db.get_user(phone_number) or {}
+        recurring = user.get("recurring_services", [])
+
+        if not recurring:
+            return [
+                text_response(
+                    "🔁 *Recurring Services*\n\n"
+                    "No recurring services set up yet.\n\n"
+                    "Recurring services are regular jobs you do for clients "
+                    "(e.g. monthly cleaning, weekly delivery).\n\n"
+                    "To add one, type:\n"
+                    "_[client name] [service] [amount] [frequency]_\n\n"
+                    "Example:\n"
+                    "_Mrs Oguntuase cleaning 50K monthly_\n"
+                    "_Dangote delivery 100K weekly_"
+                ),
+                button_response("Or:", [
+                    {"id": "record_sale", "title": "💼 Record Job"},
+                    {"id": "menu_home", "title": "☰ Menu"},
+                ])
+            ]
+
+        from datetime import datetime
+        now = datetime.now().strftime("%Y-%m-%d")
+
+        lines = [
+            "━━━━━━━━━━━━━━━━━━━━",
+            "🔁  *Recurring Services*",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "",
+        ]
+
+        for svc in recurring:
+            client = svc.get("client", "Unknown")
+            service = svc.get("service", "Service")
+            amount = int(svc.get("amount", 0))
+            frequency = svc.get("frequency", "monthly")
+            next_due = svc.get("next_due", "")
+
+            status = "🟢" if next_due > now else "🔴 OVERDUE"
+            lines.append(f"{status} *{client}*")
+            lines.append(f"  💼 {service} — {format_amount(amount)}")
+            lines.append(f"  🔄 {frequency.title()} | Next: {next_due}")
+            lines.append("")
+
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        lines.append("_To add: type [client] [service] [amount] [frequency]_")
+        lines.append("_e.g. Mrs Ade cleaning 30K weekly_")
 
         return [text_response("\n".join(lines))]
 

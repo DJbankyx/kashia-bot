@@ -32,6 +32,21 @@ def parse_amount(text):
     # Clean the text
     cleaned = text.strip()
 
+    # ─── Hours × Rate pattern: "4 x 5000", "3 hours x 10K", "2hr × 15000" ───
+    hours_match = re.search(
+        r'(\d+\.?\d*)\s*(?:hours?|hrs?|h)?\s*[x×*]\s*(\d+\.?\d*)\s*([kKmM]?)',
+        cleaned
+    )
+    if hours_match:
+        qty = float(hours_match.group(1))
+        rate = float(hours_match.group(2))
+        suffix = hours_match.group(3).lower()
+        if suffix == 'k':
+            rate *= 1000
+        elif suffix == 'm':
+            rate *= 1000000
+        return int(qty * rate)
+
     # Remove naira symbols and "naira" word
     cleaned = cleaned.replace('₦', '').replace('NGN', '').replace('ngn', '')
     cleaned = re.sub(r'\bnaira\b', '', cleaned, flags=re.IGNORECASE)
