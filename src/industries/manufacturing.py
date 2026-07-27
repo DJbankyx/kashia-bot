@@ -49,7 +49,7 @@ class ManufacturingIndustry(BaseIndustry):
     # ─────────────────────────────────────────────────────────
 
     def show_home_menu(self, phone_number: str) -> list:
-        """Manufacturing home menu with 4 sections."""
+        """Manufacturing home menu with quick actions + 5 sections."""
         return [list_response(
             header="🏭 Kashia",
             body="What would you like to do?",
@@ -73,8 +73,10 @@ class ManufacturingIndustry(BaseIndustry):
                     "rows": [
                         {"id": "sec_personal", "title": "👤 Personal Info",
                          "description": "Profile, bank, address"},
-                        {"id": "sec_business", "title": "🏭 Production",
-                         "description": "Reports, materials, costs, docs"},
+                        {"id": "sec_production", "title": "🏭 Production",
+                         "description": "History, materials, batches"},
+                        {"id": "sec_business", "title": "💼 Business",
+                         "description": "Reports, debts, docs, export"},
                         {"id": "sec_crm", "title": "👥 CRM",
                          "description": "Buyers, suppliers, contacts"},
                         {"id": "sec_settings", "title": "⚙️ Help & Settings",
@@ -93,6 +95,9 @@ class ManufacturingIndustry(BaseIndustry):
         if button_id == "sec_personal":
             return None  # Router → profile summary
 
+        if button_id == "sec_production":
+            return self._show_production_menu(phone_number)
+
         if button_id == "sec_business":
             return self._show_business_menu(phone_number)
 
@@ -106,13 +111,15 @@ class ManufacturingIndustry(BaseIndustry):
         if button_id == "biz_dashboard":
             return self._show_dashboard(phone_number)
 
-        # ── All sub-buttons delegate to router ──
-        if button_id.startswith("pi_"):
-            return None
+        # ── Production-specific buttons ──
         if button_id == "biz_production_history":
             return self._show_production_history(phone_number)
         if button_id == "biz_material_usage":
             return self._show_material_usage(phone_number)
+
+        # ── All sub-buttons delegate to router ──
+        if button_id.startswith("pi_"):
+            return None
         if button_id.startswith("biz_"):
             return None
         if button_id.startswith("crm_"):
@@ -122,33 +129,48 @@ class ManufacturingIndustry(BaseIndustry):
 
         return None
 
-    def _show_business_menu(self, phone_number: str) -> list:
-        """Production/Business sub-menu."""
+    def _show_production_menu(self, phone_number: str) -> list:
+        """Production sub-menu — manufacturing-specific tools."""
         return [list_response(
             header="🏭 Production",
-            body="Your manufacturing business tools.",
+            body="Your manufacturing & production tools.",
             button_text="Select",
             sections=[{
                 "title": "Production Tools",
                 "rows": [
+                    {"id": "record_production", "title": "🏭 Record Production",
+                     "description": "Log a new production run"},
+                    {"id": "biz_production_history", "title": "📜 Production History",
+                     "description": "Past production runs"},
+                    {"id": "biz_material_usage", "title": "📊 Material Usage",
+                     "description": "What materials were consumed"},
                     {"id": "biz_dashboard", "title": "📈 Dashboard",
-                     "description": "Today's output, month summary"},
+                     "description": "Output, yield, costs this month"},
+                    {"id": "menu_catalog", "title": "📋 Products & Materials",
+                     "description": "Catalog, recipes, stock levels"},
+                ]
+            }]
+        )]
+
+    def _show_business_menu(self, phone_number: str) -> list:
+        """Business sub-menu — same structure as Trading."""
+        return [list_response(
+            header="💼 Business",
+            body="Your core business tools.",
+            button_text="Select",
+            sections=[{
+                "title": "Business Tools",
+                "rows": [
                     {"id": "biz_sales", "title": "💰 Output Sales",
                      "description": "Finished goods sold"},
                     {"id": "biz_purchases", "title": "🧱 Raw Materials",
                      "description": "Inputs purchased"},
                     {"id": "biz_expenses", "title": "💸 Production Costs",
                      "description": "Labour, overhead, utilities"},
-                    {"id": "biz_production_history", "title": "🏭 Production History",
-                     "description": "Past production runs"},
-                    {"id": "biz_material_usage", "title": "📊 Material Usage",
-                     "description": "What materials were consumed"},
                     {"id": "biz_reports", "title": "📊 Reports",
                      "description": "P&L, margins, costs breakdown"},
                     {"id": "biz_debts", "title": "💳 Debts & Credits",
                      "description": "Who owes, supplier credits"},
-                    {"id": "menu_catalog", "title": "📋 Products & Materials",
-                     "description": "Product catalog & recipes"},
                     {"id": "biz_docs", "title": "🧾 Documents",
                      "description": "Invoice, receipt, statement"},
                     {"id": "biz_export", "title": "📁 Export Data",

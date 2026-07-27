@@ -58,7 +58,8 @@ class TradingIndustry(BaseIndustry):
                     "title": "📂 Sections",
                     "rows": [
                         {"id": "sec_personal", "title": "👤 Personal Info", "description": "Profile, bank, address"},
-                        {"id": "sec_business", "title": "💼 Business", "description": "Reports, catalog, debts, docs"},
+                        {"id": "sec_business", "title": "💼 Business", "description": "Reports, debts, docs, export"},
+                        {"id": "sec_inventory", "title": "📊 Inventory", "description": "Stock levels, products, costs"},
                         {"id": "sec_crm", "title": "👥 CRM", "description": "Contacts, customers, suppliers"},
                         {"id": "sec_settings", "title": "⚙️ Help & Settings", "description": "Tutorial, upgrade, PIN"},
                     ]
@@ -77,6 +78,9 @@ class TradingIndustry(BaseIndustry):
 
         if button_id == "sec_business":
             return self._show_business_menu(phone_number)
+
+        if button_id == "sec_inventory":
+            return None  # Router handles → catalog.show_menu()
 
         if button_id == "sec_crm":
             return self._show_crm_menu(phone_number)
@@ -163,7 +167,6 @@ class TradingIndustry(BaseIndustry):
                     {"id": "biz_expenses", "title": "💸 Expenses", "description": "View all expenses"},
                     {"id": "biz_reports", "title": "📊 Reports", "description": "Today, week, month, custom"},
                     {"id": "biz_debts", "title": "💳 Debts & Credits", "description": "Who owes, payments"},
-                    {"id": "menu_catalog", "title": "📋 Catalog", "description": "Product catalog & inventory"},
                     {"id": "biz_docs", "title": "🧾 Documents", "description": "Invoice, receipt, statement"},
                     {"id": "biz_export", "title": "📁 Export Data", "description": "Excel, CSV download"},
                 ]
