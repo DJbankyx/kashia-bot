@@ -142,9 +142,13 @@ class PersonalInfoHandler:
         step    = context.get("pi_step", "")
         text_s  = text.strip()
 
-        if text_s.lower() in ("cancel", "exit", "back"):
+        if text_s.lower() in ("cancel", "exit"):
             self.session.reset(phone_number)
             return [text_response("👍 Cancelled. No changes made.")]
+
+        # ── Back handling — go to previous step or exit ──
+        if text_s.lower() == "back":
+            return self._handle_back(phone_number, step, context)
 
         # ── Business name ──
         if step == "edit_business_name":
@@ -162,10 +166,13 @@ class PersonalInfoHandler:
 
         # ── Email ──
         if step == "edit_email":
+            if text_s.lower() == "skip":
+                self.session.reset(phone_number)
+                return [text_response("👍 Skipped. Email not set.")]
             if not _valid_email(text_s):
                 return [text_response(
                     "❌ That doesn't look like a valid email.\n\n"
-                    "Try again or type *cancel*:"
+                    "Try again, type *skip*, or type *back*:"
                 )]
             return self._save_field(
                 phone_number, "email", text_s.lower(),
@@ -174,6 +181,9 @@ class PersonalInfoHandler:
 
         # ── Terms & Conditions ──
         if step == "edit_terms_conditions":
+            if text_s.lower() == "skip":
+                self.session.reset(phone_number)
+                return [text_response("👍 Skipped.")]
             if text_s.lower() == "clear":
                 return self._save_field(
                     phone_number, "terms_conditions", "",
@@ -186,11 +196,14 @@ class PersonalInfoHandler:
 
         # ── Invoice Prefix ──
         if step == "edit_invoice_prefix":
+            if text_s.lower() == "skip":
+                self.session.reset(phone_number)
+                return [text_response("👍 Skipped. Auto-generated prefix will be used.")]
             prefix = re.sub(r'[^A-Za-z]', '', text_s).upper()[:4]
             if len(prefix) < 2:
                 return [text_response(
                     "❌ Prefix must be 2-4 letters (e.g. SHP, AUTO).\n\n"
-                    "Try again or type *cancel*:"
+                    "Try again, type *skip*, or type *back*:"
                 )]
             return self._save_field(
                 phone_number, "invoice_prefix", prefix,
@@ -208,7 +221,7 @@ class PersonalInfoHandler:
             if not re.match(r'^\d{10}$', text_s.replace(" ", "")):
                 return [text_response(
                     "❌ Account number must be exactly 10 digits.\n\n"
-                    "Try again or type *cancel*:"
+                    "Try again or type *back*:"
                 )]
             clean = text_s.replace(" ", "")
             return self._bank_next(phone_number, context, "account_number", clean,
@@ -229,6 +242,40 @@ class PersonalInfoHandler:
         # Unknown step — reset
         self.session.reset(phone_number)
         return [text_response("Something went wrong. Please try again from the menu.")]
+
+    def _handle_back(self, phone_number: str, step: str, context: dict) -> list:
+        """Handle 'back' input — go to previous step or exit flow."""
+
+        # Bank flow: go to previous step
+        if step == "bank_step_account":
+            # Go back to bank name step
+            return self._bank_step_1(phone_number)
+
+        if step == "bank_step_acct_name":
+            # Go back to account number step
+            context["pi_step"] = "bank_step_account"
+            self.session.save(phone_number, PERSONAL_INFO_STATE, context)
+            return [text_response(
+                "🏦 *Bank Details Setup*\n\n"
+                "Step 2 of 3\n\n"
+                "🔢 What is your *account number*?\n\n"
+                "_Type *back* to go to previous step_"
+            )]
+
+        # PIN confirm: go back to set step
+        if step == "pin_step_confirm":
+            self.session.save(phone_number, PERSONAL_INFO_STATE, {
+                "pi_step": "pin_step_set",
+            })
+            return [text_response(
+                "🔒 *Set a PIN*\n\n"
+                "Enter a 4-digit PIN:\n\n"
+                "_Type *back* to cancel_"
+            )]
+
+        # All single-field edits or anything else: exit to profile
+        self.session.reset(phone_number)
+        return self.show_profile(phone_number)
 
     # ─────────────────────────────────────────────────────────
     # SHOW — read-only views
@@ -394,7 +441,7 @@ class PersonalInfoHandler:
             "Step 1 of 3\n\n"
             "What is your *bank name*?\n\n"
             "_e.g. Access Bank, GTB, First Bank, Zenith Bank, Opay, Palmpay_\n\n"
-            "_Type *cancel* at any time to stop._"
+            "_Type *back* to cancel_"
         )]
 
     def _bank_next(self, phone_number: str, context: dict,
@@ -409,7 +456,8 @@ class PersonalInfoHandler:
         return [text_response(
             f"🏦 *Bank Details Setup*\n\n"
             f"Step {step_num} of 3\n\n"
-            f"{next_prompt}"
+            f"{next_prompt}\n\n"
+            f"_Type *back* to go to previous step_"
         )]
 
     def _finish_bank_details(self, phone_number: str,
@@ -431,13 +479,23 @@ class PersonalInfoHandler:
         })
         self.session.reset(phone_number)
 
-        return [text_response(
-            f"✅ *Bank Details Saved!*\n\n"
-            f"🏦 Bank: {bank_name}\n"
-            f"🔢 Account: {account_number}\n"
-            f"👤 Name: {acct_name.strip()}\n\n"
-            f"_These details will appear on your invoices and receipts._"
-        )]
+        return [
+            text_response(
+                f"✅ *Bank Details Saved!*\n\n"
+                f"🏦 Bank: {bank_name}\n"
+                f"🔢 Account: {account_number}\n"
+                f"👤 Name: {acct_name.strip()}\n\n"
+                f"_These details will appear on your invoices and receipts._"
+            ),
+            button_response(
+                "What's next?",
+                [
+                    {"id": "pi_bank", "title": "✏️ Edit Bank"},
+                    {"id": "sec_personal", "title": "👤 Personal Info"},
+                    {"id": "menu_home", "title": "☰ Menu"},
+                ]
+            )
+        ]
 
     # ─────────────────────────────────────────────────────────
     # SINGLE-FIELD EDIT — address, email, business name
@@ -449,8 +507,11 @@ class PersonalInfoHandler:
         self.session.save(phone_number, PERSONAL_INFO_STATE, {
             "pi_step": f"edit_{field}",
         })
+        # Optional fields allow skip
+        optional_fields = {"email", "business_address", "terms_conditions", "invoice_prefix"}
+        skip_hint = " or *skip*" if field in optional_fields else ""
         return [text_response(
-            f"{title}\n\n{prompt}\n\n_Type *cancel* to go back._"
+            f"{title}\n\n{prompt}\n\n_Type *back* to go back{skip_hint}_"
         )]
 
     def _save_field(self, phone_number: str, field: str,
@@ -458,7 +519,16 @@ class PersonalInfoHandler:
         """Save a single field to the user profile."""
         self.db.update_user(phone_number, {field: value})
         self.session.reset(phone_number)
-        return [text_response(success_msg)]
+        return [
+            text_response(success_msg),
+            button_response(
+                "What's next?",
+                [
+                    {"id": "pi_edit", "title": "✏️ Edit Profile"},
+                    {"id": "menu_home", "title": "☰ Menu"},
+                ]
+            )
+        ]
 
     # ─────────────────────────────────────────────────────────
     # PIN / PASSWORD — 2-step (enter + confirm)
@@ -479,7 +549,7 @@ class PersonalInfoHandler:
         self.session.save(phone_number, PERSONAL_INFO_STATE, {
             "pi_step": "pin_step_set",
         })
-        return [text_response(f"{intro}\n\n_Type *cancel* to go back._")]
+        return [text_response(f"{intro}\n\n_Type *back* to cancel_")]
 
     def _pin_confirm_step(self, phone_number: str,
                            context: dict, text: str) -> list:
@@ -488,7 +558,7 @@ class PersonalInfoHandler:
         if not re.match(r'^\d{4}$', pin):
             return [text_response(
                 "❌ PIN must be exactly 4 digits (e.g. 1234).\n\n"
-                "Try again:"
+                "Try again or type *back*:"
             )]
 
         # Store hashed PIN temporarily in session — never store plain PIN
@@ -498,7 +568,8 @@ class PersonalInfoHandler:
 
         return [text_response(
             "🔒 *Confirm PIN*\n\n"
-            "Type your 4-digit PIN again to confirm:"
+            "Type your 4-digit PIN again to confirm:\n\n"
+            "_Type *back* to re-enter_"
         )]
 
     def _pin_finish(self, phone_number: str,
@@ -521,13 +592,21 @@ class PersonalInfoHandler:
         self.db.update_user(phone_number, {"pin_hash": temp_hash})
         self.session.reset(phone_number)
 
-        return [text_response(
-            "✅ *PIN set successfully!*\n\n"
-            "🔒 Your account is now protected.\n\n"
-            "⚠️ *Security tip:* Please delete the messages where you typed "
-            "your PIN from this chat for safety.\n\n"
-            "_You can change your PIN anytime from Help & Settings._"
-        )]
+        return [
+            text_response(
+                "✅ *PIN set successfully!*\n\n"
+                "🔒 Your account is now protected.\n\n"
+                "⚠️ *Security tip:* Please delete the messages where you typed "
+                "your PIN from this chat for safety."
+            ),
+            button_response(
+                "What's next?",
+                [
+                    {"id": "sec_personal", "title": "👤 Personal Info"},
+                    {"id": "menu_home", "title": "☰ Menu"},
+                ]
+            )
+        ]
 
     # ─────────────────────────────────────────────────────────
     # CONFIRM SAVE helper (for edit flows that use a button confirm)

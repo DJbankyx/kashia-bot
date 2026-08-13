@@ -49,32 +49,45 @@ class CatalogHandler:
             body += f" · {total_stock} total units"
         body += "\n\nWhat would you like to do?"
 
+        # Check user's industry for manufacturing-specific options
+        user = self.db.get_user(phone_number) or {}
+        industry = user.get("industry_class", user.get("business_type", "trading"))
+        is_manufacturing = industry in ("manufacturing", "hybrid")
+
+        rows = [
+            {"id": "cat_stock", "title": "📊 View Stock Levels",
+             "description": "See all products with quantities"},
+            {"id": "cat_add", "title": "➕ Add Product",
+             "description": "Add a new product to inventory"},
+        ]
+
+        # Manufacturing: add recipe option prominently
+        if is_manufacturing:
+            rows.append(
+                {"id": "cat_recipe", "title": "📋 Set Recipe / BOM",
+                 "description": "Define materials per product"}
+            )
+
+        rows.extend([
+            {"id": "cat_cost", "title": "🏷️ Set Landing Cost",
+             "description": "Set/update cost price per product"},
+            {"id": "cat_adjust", "title": "📐 Adjust Stock",
+             "description": "Manually add or set stock quantity"},
+            {"id": "cat_conversion", "title": "📦 Set Conversion",
+             "description": "e.g. 1 carton = 24 pieces"},
+            {"id": "cat_variants", "title": "🏷️ Add Variants",
+             "description": "Add models/types to a product"},
+            {"id": "cat_remove", "title": "🗑️ Remove Product",
+             "description": "Delete a product from inventory"},
+        ])
+
         return [list_response(
             header="📊 Inventory",
             body=body,
             button_text="Select Action",
             sections=[{
                 "title": "Inventory Actions",
-                "rows": [
-                    {"id": "cat_stock", "title": "📊 View Stock Levels",
-                     "description": "See all products with quantities"},
-                    {"id": "cat_add", "title": "➕ Add Product",
-                     "description": "Add a new product to inventory"},
-                    {"id": "cat_cost", "title": "🏷️ Set Landing Cost",
-                     "description": "Set/update cost price per product"},
-                    {"id": "cat_adjust", "title": "📐 Adjust Stock",
-                     "description": "Manually add or set stock quantity"},
-                    {"id": "cat_conversion", "title": "📦 Set Conversion",
-                     "description": "e.g. 1 carton = 24 pieces"},
-                    {"id": "cat_variants", "title": "🏷️ Add Variants",
-                     "description": "Add models/types to a product"},
-                    {"id": "cat_variant_cost", "title": "💲 Set Variant Cost",
-                     "description": "Different cost per model/year"},
-                    {"id": "cat_remove", "title": "🗑️ Remove Product",
-                     "description": "Delete a product from inventory"},
-                    {"id": "cat_clear_all", "title": "🗑️ Clear All Products",
-                     "description": "Delete entire catalog (asks confirmation)"},
-                ]
+                "rows": rows,
             }]
         )]
 
@@ -89,6 +102,11 @@ class CatalogHandler:
 
         if button_id == "cat_add":
             return self._start_add_product(phone_number)
+
+        if button_id == "cat_recipe":
+            # Delegate to production handler's recipe setup
+            # Return a marker that the router will handle
+            return [{"type": "__START_RECIPE_SETUP__"}]
 
         if button_id == "cat_cost":
             return self._start_set_cost(phone_number)
@@ -189,8 +207,8 @@ class CatalogHandler:
     # ─────────────────────────────────────────────────────────
 
     def _show_stock_levels(self, phone_number: str) -> list:
-        """Show all products with stock, cost, and color indicators."""
-        products = self._get_products(phone_number)
+        """Show all products with stock, cost, and color indicators. Grouped by type for manufacturing."""
+        products = self.ensure_item_types(phone_number)
 
         if not products:
             return [text_response(
@@ -199,62 +217,58 @@ class CatalogHandler:
                 "Tap ➕ *Add Product* to get started."
             )]
 
+        # Check if manufacturing — group by type
+        user = self.db.get_user(phone_number) or {}
+        industry = user.get("industry_class", user.get("business_type", "trading"))
+        is_manufacturing = industry in ("manufacturing", "hybrid")
+
         lines = [
             "━━━━━━━━━━━━━━━━━━━━",
             "📊  *Stock Levels*",
             "━━━━━━━━━━━━━━━━━━━━",
-            "",
         ]
 
         total_stock = 0
         total_value = 0
 
-        for key, prod in sorted(products.items(), key=lambda x: x[1].get("name", "")):
-            name    = prod.get("name", key)
-            stock   = int(prod.get("stock", 0))
-            cost    = int(prod.get("landing_cost", 0))
-            category = prod.get("category", "")
-            variant_stock = prod.get("variant_stock", {})
-            variant_costs = prod.get("variant_costs", {})
-            cost_history = prod.get("cost_history", [])
+        if is_manufacturing:
+            # Group products by type
+            finished = {k: v for k, v in products.items() if v.get("item_type") == "finished_product"}
+            raw_mats = {k: v for k, v in products.items() if v.get("item_type") == "raw_material"}
+            other = {k: v for k, v in products.items() if v.get("item_type") not in ("finished_product", "raw_material")}
 
-            total_stock += stock
+            if finished:
+                lines.append("")
+                lines.append("🏭 *FINISHED PRODUCTS:*")
+                for key, prod in sorted(finished.items(), key=lambda x: x[1].get("name", "")):
+                    s, v = self._format_stock_line(prod, lines)
+                    total_stock += s
+                    total_value += v
 
-            # Stock indicator
-            if stock <= 0:
-                indicator = "🔴"
-            elif stock <= 3:
-                indicator = "🟡"
-            else:
-                indicator = "🟢"
+            if raw_mats:
+                lines.append("")
+                lines.append("🧱 *RAW MATERIALS:*")
+                for key, prod in sorted(raw_mats.items(), key=lambda x: x[1].get("name", "")):
+                    s, v = self._format_stock_line(prod, lines)
+                    total_stock += s
+                    total_value += v
 
-            line = f"{indicator} *{name}*"
-            if category:
-                line += f" _{category}_"
-            lines.append(line)
-
-            # If variant_stock exists, show per-variant breakdown
-            if variant_stock:
-                lines.append(f"   Stock: *{stock}* total")
-                for v_name, v_stock in variant_stock.items():
-                    v_cost = int(variant_costs.get(v_name, 0))
-                    v_stock_int = int(v_stock)
-                    total_value += v_stock_int * v_cost
-                    # Variant stock indicator
-                    v_ind = "🔴" if v_stock_int <= 0 else ("🟡" if v_stock_int <= 2 else "•")
-                    cost_str = f" · {format_amount(v_cost)}" if v_cost else ""
-                    lines.append(f"   {v_ind} {v_name}: {v_stock_int}{cost_str}")
-                # Show last cost update if history exists
-                if cost_history:
-                    last = cost_history[-1]
-                    lines.append(f"   _Last cost: {last.get('variant', '')} {format_amount(last.get('cost', 0))} on {last.get('date', '')}_")
-            else:
-                # No variants — simple display
-                total_value += stock * cost
-                lines.append(f"   Stock: *{stock}*" + (f" · Cost: {format_amount(cost)}/unit" if cost else ""))
-
+            if other:
+                lines.append("")
+                lines.append("📦 *OTHER:*")
+                for key, prod in sorted(other.items(), key=lambda x: x[1].get("name", "")):
+                    s, v = self._format_stock_line(prod, lines)
+                    total_stock += s
+                    total_value += v
+        else:
+            # Non-manufacturing: flat list (original behavior)
             lines.append("")
+            for key, prod in sorted(products.items(), key=lambda x: x[1].get("name", "")):
+                s, v = self._format_stock_line(prod, lines)
+                total_stock += s
+                total_value += v
 
+        lines.append("")
         lines.append("━━━━━━━━━━━━━━━━━━━━")
         lines.append(f"📦 Total: {total_stock} units")
         if total_value > 0:
@@ -268,6 +282,41 @@ class CatalogHandler:
                 {"id": "cat_cost", "title": "🏷️ Set Cost"},
             ])
         ]
+
+    def _format_stock_line(self, prod: dict, lines: list) -> tuple:
+        """Format a single product's stock line. Returns (stock, value) for totals."""
+        name = prod.get("name", "?")
+        stock = int(prod.get("stock", 0))
+        cost = int(prod.get("landing_cost", 0))
+        variant_stock = prod.get("variant_stock", {})
+        variant_costs = prod.get("variant_costs", {})
+
+        value = 0
+
+        # Stock indicator
+        if stock <= 0:
+            indicator = "🔴"
+        elif stock <= 3:
+            indicator = "🟡"
+        else:
+            indicator = "🟢"
+
+        lines.append(f"{indicator} *{name}*")
+
+        if variant_stock:
+            lines.append(f"   Stock: *{stock}* total")
+            for v_name, v_stock in variant_stock.items():
+                v_cost = int(variant_costs.get(v_name, 0))
+                v_stock_int = int(v_stock)
+                value += v_stock_int * v_cost
+                v_ind = "🔴" if v_stock_int <= 0 else ("🟡" if v_stock_int <= 2 else "•")
+                cost_str = f" · {format_amount(v_cost)}" if v_cost else ""
+                lines.append(f"   {v_ind} {v_name}: {v_stock_int}{cost_str}")
+        else:
+            value = stock * cost
+            lines.append(f"   Stock: *{stock}*" + (f" · {format_amount(cost)}/unit" if cost else ""))
+
+        return stock, value
 
     # ─────────────────────────────────────────────────────────
     # ADD PRODUCT
@@ -349,7 +398,7 @@ class CatalogHandler:
             name = products[product_key].get("name", product_key)
             self.session.reset(phone_number)
             return [
-                text_response(f"✅ *{name}* cost set to *{format_amount(amount)}* per unit."),
+                text_response(f"✅ *{name}* cost set to *{format_amount(amount)}* per unit.\n\n_This updates your production cost calculations._"),
                 button_response("What's next?", [
                     {"id": "cat_stock", "title": "📊 View Stock"},
                     {"id": "cat_cost", "title": "🏷️ Set Another Cost"},
@@ -758,14 +807,15 @@ class CatalogHandler:
 
         if action == "set_cost":
             current_cost = int(product.get("landing_cost", 0))
-            cost_str = f"\nCurrent: *{format_amount(current_cost)}*" if current_cost else ""
+            cost_str = f"\nCurrent: *{format_amount(current_cost)}* per unit" if current_cost else ""
             self.session.save(phone_number, states.CATALOG_ADD_DATA, {
                 "cat_step": "setting_cost",
                 "cat_product_key": product_key,
             })
             return [button_response(
-                f"🏷️ *{name}* — Landing Cost{cost_str}\n\n"
-                f"Enter cost per unit:\n_e.g. 50000, 150K, 10M_",
+                f"🏷️ *{name}* — Cost Per Unit{cost_str}\n\n"
+                f"Enter the cost to buy/produce *one unit*:\n_e.g. 50000, 150K, 10M_\n\n"
+                f"_This is your cost price, not selling price._",
                 [
                     {"id": "cat_cancel", "title": "← Cancel"},
                 ]
@@ -1133,3 +1183,84 @@ class CatalogHandler:
     def _save_products(self, phone_number: str, products: dict):
         """Save products dict to user profile."""
         self.db.update_user_field(phone_number, "product_catalog", {"products": products})
+
+    def ensure_item_types(self, phone_number: str) -> dict:
+        """
+        Ensure all products have an item_type tag. Auto-detects:
+        - 'finished_product': has a recipe defined
+        - 'raw_material': appears in another product's recipe
+        - 'product': default (not yet classified)
+        
+        Returns the updated products dict (also saves to DB if changes were made).
+        """
+        products = self._get_products(phone_number)
+        if not products:
+            return products
+
+        # Identify raw materials (appear in any recipe)
+        raw_material_keys = set()
+        for key, data in products.items():
+            recipe = data.get("recipe", [])
+            for mat in recipe:
+                mat_key = mat.get("material", "").lower().replace(" ", "_")
+                raw_material_keys.add(mat_key)
+
+        changed = False
+        for key, data in products.items():
+            has_recipe = bool(data.get("recipe", []))
+            is_raw_material = key in raw_material_keys
+            current_type = data.get("item_type", "")
+
+            if has_recipe and current_type != "finished_product":
+                data["item_type"] = "finished_product"
+                changed = True
+            elif is_raw_material and not has_recipe and current_type != "raw_material":
+                data["item_type"] = "raw_material"
+                changed = True
+            elif not current_type:
+                # Unclassified — leave as "product" (user hasn't set recipe yet)
+                data["item_type"] = "product"
+                changed = True
+
+        if changed:
+            self._save_products(phone_number, products)
+
+        return products
+
+    def get_raw_materials(self, phone_number: str) -> dict:
+        """Get only raw materials from catalog."""
+        products = self.ensure_item_types(phone_number)
+        return {k: v for k, v in products.items() if v.get("item_type") == "raw_material"}
+
+    def get_finished_products(self, phone_number: str) -> dict:
+        """Get only finished products from catalog."""
+        products = self.ensure_item_types(phone_number)
+        return {k: v for k, v in products.items() if v.get("item_type") == "finished_product"}
+
+    def get_materials_list_for_purchase(self, phone_number: str) -> list:
+        """Get raw materials as rows for the Buy Raw Materials picker."""
+        products = self.ensure_item_types(phone_number)
+        raw_materials = {k: v for k, v in products.items()
+                         if v.get("item_type") == "raw_material"}
+
+        if not raw_materials:
+            return []
+
+        rows = []
+        for key, prod in list(raw_materials.items())[:9]:
+            name = prod.get("name", key)
+            stock = int(prod.get("stock", 0))
+            cost = int(prod.get("landing_cost", 0))
+
+            indicator = "🟢" if stock > 5 else ("🟡" if stock > 0 else "🔴")
+            desc = f"{indicator} {stock} in stock"
+            if cost:
+                desc += f" · ₦{cost:,}/unit"
+
+            rows.append({
+                "id": f"catrec_{key}",
+                "title": f"🧱 {name}"[:24],
+                "description": desc[:72],
+            })
+
+        return rows

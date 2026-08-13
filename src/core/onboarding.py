@@ -12,6 +12,7 @@ STEP_WELCOME = "welcome"
 STEP_BUSINESS_NAME = "business_name"
 STEP_INDUSTRY = "industry"
 STEP_WHAT_YOU_DO = "what_you_do"
+STEP_LIST_PRODUCTS = "list_products"
 STEP_COMPLETE = "complete"
 
 
@@ -39,6 +40,9 @@ class OnboardingHandler:
 
         if step == STEP_WHAT_YOU_DO:
             return self._save_what_you_do(phone_number, text)
+
+        if step == STEP_LIST_PRODUCTS:
+            return self._save_product_list(phone_number, text)
 
         # Fallback — restart onboarding
         return self._welcome(phone_number)
@@ -101,7 +105,7 @@ class OnboardingHandler:
 
         return [list_response(
             header="🏢 " + business_name,
-            body="What type of business do you run?",
+            body="What type of industry are you in?",
             button_text="Select Industry",
             sections=[{
                 "title": "Choose your industry",
@@ -201,7 +205,7 @@ class OnboardingHandler:
         return [text_response(prompts.get(industry, prompts["trading"]))]
 
     def _save_what_you_do(self, phone_number: str, text: str) -> list:
-        """Parse natural description, extract products, seed catalog, complete onboarding."""
+        """Parse natural description. For manufacturing: ask for product list next. Others: seed catalog and complete."""
         import re
 
         context = self.session.get_context(phone_number)
@@ -212,8 +216,64 @@ class OnboardingHandler:
         if len(description) < 3:
             return [text_response("Please describe what your business does (even one sentence is fine):")]
 
-        # Extract product/service names from the natural description
+        # For manufacturing: save description but DON'T seed catalog yet
+        # Ask them to list their actual products in the next step
+        if industry == "manufacturing":
+            self.session.save(phone_number, ONBOARDING, {
+                "onboarding_step": STEP_LIST_PRODUCTS,
+                "business_name": business_name,
+                "industry": industry,
+                "business_description": description,
+            })
+
+            return [text_response(
+                f"🏭 Got it! You make *{description}*.\n\n"
+                f"Now, *list the specific products* you manufacture.\n\n"
+                f"_Separate each product with a comma:_\n\n"
+                f"Example: _Liquid Soap 1L, Bar Soap, Dish Wash 500ml, Detergent 1L, Detergent 5L_\n\n"
+                f"_These will become your product catalog._"
+            )]
+
+        # For trading/services/hybrid: extract products from description and complete
         items = self._extract_products_from_description(description, industry)
+        return self._complete_onboarding(phone_number, business_name, industry, description, items)
+
+    def _save_product_list(self, phone_number: str, text: str) -> list:
+        """Manufacturing-specific: save the explicit product list to catalog."""
+        context = self.session.get_context(phone_number)
+        business_name = context.get("business_name", "My Business")
+        industry = context.get("industry", "manufacturing")
+        description = context.get("business_description", "")
+
+        product_text = text.strip()
+
+        if len(product_text) < 2:
+            return [text_response(
+                "Please list at least one product you manufacture.\n\n"
+                "_Separate with commas: e.g. Liquid Soap, Bar Soap, Detergent_"
+            )]
+
+        # Parse comma-separated product names
+        items = [item.strip().title() for item in product_text.split(",") if item.strip() and len(item.strip()) >= 2]
+
+        if not items:
+            return [text_response(
+                "I couldn't find product names. Please list them separated by commas:\n\n"
+                "_e.g. Liquid Soap 1L, Bar Soap, Dish Wash, Detergent 5L_"
+            )]
+
+        # Deduplicate
+        seen = set()
+        unique_items = []
+        for item in items:
+            if item.lower() not in seen:
+                seen.add(item.lower())
+                unique_items.append(item)
+
+        return self._complete_onboarding(phone_number, business_name, industry, description, unique_items)
+
+    def _complete_onboarding(self, phone_number: str, business_name: str, industry: str, description: str, items: list) -> list:
+        """Finalize onboarding: create user, seed catalog, show completion."""
 
         # Create user record
         self.db.create_user(phone_number, industry, business_name)
@@ -223,13 +283,15 @@ class OnboardingHandler:
         # Seed catalog if products were extracted
         if items:
             catalog = {"products": {}}
-            for item in items[:10]:
+            for item in items[:15]:
                 key = item.lower().replace(" ", "_")
                 catalog["products"][key] = {
                     "name": item,
-                    "pattern": [],
-                    "tree": {},
-                    "attributes": {},
+                    "stock": 0,
+                    "landing_cost": 0,
+                    "category": "",
+                    "variants": [],
+                    "recipe": [],
                     "conversions": {},
                 }
             self.db.update_user_field(phone_number, "product_catalog", catalog)
@@ -248,14 +310,37 @@ class OnboardingHandler:
         lines = [
             f"✅ *All set!*\n",
             f"*{business_name}*",
-            f"{industry_labels[industry]}",
+            f"{industry_labels.get(industry, industry)}",
         ]
         if items:
             lines.append(f"📦 Catalog: {', '.join(items[:5])}")
             if len(items) > 5:
                 lines.append(f"   _+{len(items) - 5} more_")
         lines.append("")
-        lines.append("You're ready to go! Here's how I work:\n")
+
+        # Manufacturing-specific: guide user to set up their first recipe
+        if industry == "manufacturing" and items:
+            lines.append("🏭 *Next step:* Set a recipe for your products!")
+            lines.append("")
+            lines.append("A recipe tells me what raw materials you use to make each product.")
+            lines.append("When you record production, I'll auto-calculate costs and deduct materials.")
+            lines.append("")
+            lines.append("_Tap below to set up your first recipe, or skip for now._")
+
+            from utils.whatsapp_ui import button_response
+            return [
+                text_response("\n".join(lines)),
+                button_response(
+                    "Set up production?",
+                    [
+                        {"id": "cat_recipe", "title": "📋 Set Recipe Now"},
+                        {"id": "menu_home", "title": "⏭️ Skip for Now"},
+                    ]
+                )
+            ]
+
+        # Non-manufacturing: standard completion
+        lines.append("Here's how I work:\n")
         lines.append(f"💬 *Type what you bought or sold* and I'll record it.")
         lines.append(f"Example: \"{self._get_example(industry)}\"")
         lines.append("\nOr tap the menu below to explore features. 👇")

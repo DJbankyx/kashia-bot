@@ -357,6 +357,10 @@ class Router:
         if bid == "gen_skip":
             return [text_response("👍 _Send your next transaction or tap ☰ Menu._")]
 
+        # ── Expense classification buttons (manufacturing) ──
+        if bid.startswith("expclass_"):
+            return self._handle_expense_class(phone_number, bid)
+
         # ── Production buttons (prod_*) ──
         if bid.startswith("prod_"):
             return self.production.handle_button(phone_number, bid, session)
@@ -620,14 +624,29 @@ class Router:
 
         label = "sell" if tx_type == "sale" else "buy"
 
-        # Get product rows from catalog handler
-        rows = self.catalog.get_product_list_for_recording(phone_number)
+        # For manufacturing purchases: show only raw materials
+        user = self.db.get_user(phone_number) or {}
+        industry = user.get("industry_class", user.get("business_type", "trading"))
+        is_manufacturing = industry in ("manufacturing", "hybrid")
+
+        if tx_type == "purchase" and is_manufacturing:
+            # Show raw materials only
+            rows = self.catalog.get_materials_list_for_purchase(phone_number)
+            section_title = "Raw Materials"
+            header = "🧱 What material did you buy?"
+            other_desc = "Add a new raw material"
+        else:
+            # Show all products (for sales) or full catalog (non-manufacturing)
+            rows = self.catalog.get_product_list_for_recording(phone_number)
+            section_title = "Your Products"
+            header = f"📦 What did you {label}?"
+            other_desc = "Type the item name manually"
 
         # Add "Other" option
         rows.append({
             "id": "catrec___other__",
             "title": "📝 Other / Not Listed",
-            "description": "Type the item name manually",
+            "description": other_desc,
         })
 
         self.session.save(phone_number, states.CATALOG_RECORDING, {
@@ -638,10 +657,10 @@ class Router:
         })
 
         return [list_response(
-            header=f"📦 What did you {label}?",
+            header=header,
             body="Pick from your catalog:",
-            button_text="Select Product",
-            sections=[{"title": "Your Products", "rows": rows}]
+            button_text="Select",
+            sections=[{"title": section_title, "rows": rows}]
         )]
 
     # ─────────────────────────────────────────────────────────
@@ -783,6 +802,40 @@ class Router:
         # Check both field names (industry_class is v2, business_type is legacy)
         industry_key = user.get("industry_class", user.get("business_type", "trading"))
         return self.industries.get(industry_key, self.industries.get("trading"))
+
+    def _handle_expense_class(self, phone_number: str, button_id: str) -> list:
+        """Handle expense classification buttons for manufacturing users."""
+        # Parse: expclass_direct_{tx_id} or expclass_indirect_{tx_id}
+        parts = button_id.split("_", 2)  # ['expclass', 'direct/indirect', 'tx_id']
+        if len(parts) < 3:
+            return [text_response("👍 Expense recorded.")]
+
+        expense_class = parts[1]  # 'direct' or 'indirect'
+        tx_id = parts[2]
+
+        # Update the transaction with expense_class
+        self.db.update_transaction(phone_number, tx_id, {
+            "expense_class": expense_class,
+            "sub_category": "Direct Production Cost" if expense_class == "direct" else "Operating Expense",
+        })
+
+        if expense_class == "direct":
+            msg = "🏭 Classified as *Production Cost*.\n\n_This will be included in your manufacturing cost calculations._"
+        else:
+            msg = "🏢 Classified as *Business Expense*.\n\n_This will show as an operating expense in your P&L._"
+
+        from utils.whatsapp_ui import button_response
+        return [
+            text_response(msg),
+            button_response(
+                "What's next?",
+                [
+                    {"id": "record_production", "title": "🏭 Produce"},
+                    {"id": "record_expense", "title": "💸 Record Expense"},
+                    {"id": "menu_home", "title": "☰ Menu"},
+                ]
+            )
+        ]
 
     def _fmt_amount(self, amount) -> str:
         """Quick amount formatter."""

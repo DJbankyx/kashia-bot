@@ -414,9 +414,52 @@ class TransactionHandler:
                 qty_str = tx_data.get("quantity", "")
                 stock_result = cat.update_stock(phone_number, search_name, qty, unit_cost, qty_str, variant=variant)
 
+                # Manufacturing: auto-add unmatched purchases as raw materials
+                if not stock_result.get("matched"):
+                    user = self.db.get_user(phone_number) or {}
+                    industry = user.get("industry_class", user.get("business_type", "trading"))
+                    if industry in ("manufacturing", "hybrid"):
+                        # Auto-create as raw material in catalog
+                        products = cat._get_products(phone_number)
+                        mat_key = search_name.lower().replace(" ", "_")
+                        if mat_key not in products:
+                            products[mat_key] = {
+                                "name": search_name.strip().title(),
+                                "stock": qty,
+                                "landing_cost": unit_cost if unit_cost else 0,
+                                "item_type": "raw_material",
+                                "category": "",
+                                "variants": [],
+                                "recipe": [],
+                                "conversions": {},
+                            }
+                            cat._save_products(phone_number, products)
+                            logger.info(f"Auto-created raw material: {search_name} for {phone_number}")
+
                 # For manufacturing: also update recipe costs where this material is used
                 if unit_cost > 0:
                     self._update_recipe_costs(phone_number, search_name, unit_cost)
+
+            # ── For EXPENSES (manufacturing): ask if direct or indirect ──
+            if tx_data["type"] == "expense":
+                user = self.db.get_user(phone_number) or {}
+                industry = user.get("industry_class", user.get("business_type", "trading"))
+                if industry in ("manufacturing", "hybrid"):
+                    # Don't reset session yet — ask expense classification
+                    self.session.reset(phone_number)
+                    return [
+                        text_response(
+                            f"✅ *{format_amount(tx_data['amount'])} expense recorded.*\n\n"
+                            f"Is this a *production cost* or a *business expense*?"
+                        ),
+                        button_response(
+                            "Classify this expense:",
+                            [
+                                {"id": f"expclass_direct_{tx_id}", "title": "🏭 Production Cost"},
+                                {"id": f"expclass_indirect_{tx_id}", "title": "🏢 Business Expense"},
+                            ]
+                        )
+                    ]
 
             self.session.reset(phone_number)
 

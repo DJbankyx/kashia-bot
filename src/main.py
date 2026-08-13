@@ -121,7 +121,10 @@ class KashiaBot:
             responses = self._resolve_markers(phone_number, responses)
 
             # Add navigation footer (Menu/Back) if missing from last response
-            responses = self._ensure_navigation(responses)
+            # Re-fetch session after routing (state may have changed)
+            current_session = self.router.session.get(phone_number)
+            current_state = current_session.get("state", "")
+            responses = self._ensure_navigation(responses, current_state)
 
             # Send all responses
             for response in responses:
@@ -208,6 +211,12 @@ class KashiaBot:
                     resolved.extend(rcpt_responses)
                 continue
 
+            if resp.get("type") == "__START_RECIPE_SETUP__":
+                # Delegate recipe setup to production handler
+                recipe_responses = self.router.production._start_recipe_setup(phone_number)
+                resolved.extend(recipe_responses)
+                continue
+
             if resp.get("type") == "__PIN_VERIFIED__":
                 # PIN was verified — re-execute the original protected action
                 content = resp.get("content", {})
@@ -231,17 +240,25 @@ class KashiaBot:
 
         return resolved
 
-    def _ensure_navigation(self, responses: list) -> list:
+    def _ensure_navigation(self, responses: list, current_state: str = "") -> list:
         """
         Ensure the last response in a chain has a navigation option (Menu/Back).
         
         Rules:
+        - If user is mid-flow (active state), do NOT append Menu — the flow
+          handlers manage their own navigation (Back/Skip/Cancel).
         - If last response is already buttons/list → check if it has a menu/back option, add if not
         - If last response is plain text → append a small menu button after it
         - Skip for confirmation flows (those already have Yes/Edit/Cancel)
         - Skip for document responses or forward prompts
         """
         if not responses:
+            return responses
+
+        # States where user is mid-flow — do NOT auto-append Menu
+        from core.states import EXEMPT_STATES, IDLE
+        MID_FLOW_STATES = EXEMPT_STATES - {IDLE}
+        if current_state and current_state in MID_FLOW_STATES:
             return responses
 
         # Find the last "real" response (not document/forward_prompt)

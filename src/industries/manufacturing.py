@@ -37,7 +37,7 @@ class ManufacturingIndustry(BaseIndustry):
     GUIDED_PROMPTS = {
         "ask_item_sale": "📦 What finished product did you sell?\n\n_(e.g. detergent, bread, furniture, bags)_",
         "ask_item_purchase": "🧱 What raw material/input did you buy?\n\n_(e.g. sulphonic acid, flour, wood, fabric)_",
-        "ask_amount": "💰 How much?\n\n_(e.g. 50000, 150K, 1.2M)_",
+        "ask_amount": "💰 *Total amount* you paid/received?\n\n_(e.g. 50000, 150K, 1.2M)_\n\n_If you bought multiple units, type the TOTAL — I'll calculate per-unit cost automatically._",
         "ask_vendor_sale": "👤 Who did you sell to?\n\n_(buyer/retailer name or type *skip*)_",
         "ask_vendor_purchase": "👤 Who did you buy from?\n\n_(supplier name or type *skip*)_",
         "ask_vendor_expense": "👤 Who did you pay?\n\n_(name or type *skip*)_",
@@ -273,13 +273,18 @@ class ManufacturingIndustry(BaseIndustry):
         purchases = [t for t in transactions if t.get("type") == "purchase"]
         expenses = [t for t in transactions if t.get("type") == "expense"]
 
+        # Split expenses by class (direct = production cost, indirect = operating)
+        direct_expenses = [t for t in expenses if t.get("expense_class") == "direct"]
+        indirect_expenses = [t for t in expenses if t.get("expense_class") != "direct"]
+
         revenue = sum(int(t.get("amount", 0)) for t in sales)
         material_cost = sum(int(t.get("amount", 0)) for t in purchases)
         production_cost = sum(int(t.get("amount", 0)) for t in productions)
-        opex = sum(int(t.get("amount", 0)) for t in expenses)
-        total_cogs = material_cost + production_cost
+        direct_exp = sum(int(t.get("amount", 0)) for t in direct_expenses)
+        indirect_exp = sum(int(t.get("amount", 0)) for t in indirect_expenses)
+        total_cogs = material_cost + production_cost + direct_exp
         gross_profit = revenue - total_cogs
-        net_profit = gross_profit - opex
+        net_profit = gross_profit - indirect_exp
 
         # Production stats
         total_produced = 0
@@ -299,11 +304,18 @@ class ManufacturingIndustry(BaseIndustry):
             f"━━━━━━━━━━━━━━━━━━━━",
             f"",
             f"💰 *Revenue:*        {format_amount(revenue)}",
-            f"🧱 *Materials:*      {format_amount(material_cost)}",
-            f"🏭 *Production:*     {format_amount(production_cost)}",
+            f"",
+            f"*Cost of Production:*",
+            f"  🧱 Materials:      {format_amount(material_cost)}",
+            f"  🏭 Production:     {format_amount(production_cost)}",
+        ]
+        if direct_exp > 0:
+            lines.append(f"  ⚙️ Direct costs:   {format_amount(direct_exp)}")
+        lines.extend([
+            f"  *Total COGS:*      {format_amount(total_cogs)}",
             f"━━━━━━━━━━━━━━━━━━━━",
             f"📈 *Gross Profit:*   {format_amount(gross_profit)}",
-            f"💸 *Expenses:*       {format_amount(opex)}",
+            f"💸 *Operating Exp:*  {format_amount(indirect_exp)}",
             f"{'📈' if net_profit >= 0 else '📉'} *Net Profit:*     {format_amount(net_profit)}",
             f"",
             f"━━━━━━━━━━━━━━━━━━━━",
@@ -313,6 +325,7 @@ class ManufacturingIndustry(BaseIndustry):
             f"  ✅ Yield: {yield_rate}%",
             f"  🔄 Batches: {len(productions)}",
             f"━━━━━━━━━━━━━━━━━━━━",
+        ])
         ]
 
         # Low stock materials warning

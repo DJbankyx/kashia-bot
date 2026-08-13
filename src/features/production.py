@@ -42,30 +42,57 @@ class ProductionHandler:
             return [text_response(
                 "🏭 *Record Production*\n\n"
                 "You need products in your catalog first.\n\n"
-                "Go to: *Business → Products & Materials → ➕ Add Product*\n"
-                "Add your finished products and raw materials."
+                "Go to: *Products & Materials → ➕ Add Product*\n"
+                "Add your finished products and raw materials,\n"
+                "then set a recipe for what you produce."
             )]
 
-        # Show finished products (those with recipes or that aren't raw materials)
+        # Identify raw materials (products that appear in other products' recipes)
+        raw_material_keys = set()
+        for key, data in products.items():
+            recipe = data.get("recipe", [])
+            for mat in recipe:
+                mat_key = mat.get("material", "").lower().replace(" ", "_")
+                raw_material_keys.add(mat_key)
+
+        # Filter: show only finished products (have a recipe OR not a raw material)
+        # Priority: products WITH recipes first (they're ready to produce)
+        finished_products = {}
+        for key, data in products.items():
+            has_recipe = bool(data.get("recipe", []))
+            is_raw_material = key in raw_material_keys
+
+            # Show if: has a recipe (definitely a finished product)
+            # OR: not identified as a raw material (could be a finished product without recipe yet)
+            if has_recipe:
+                finished_products[key] = data
+            elif not is_raw_material:
+                finished_products[key] = data
+
+        if not finished_products:
+            return [text_response(
+                "🏭 *Record Production*\n\n"
+                "No finished products found.\n\n"
+                "You have raw materials but no products with recipes set.\n\n"
+                "Set a recipe first:\n"
+                "→ *Products & Materials → 📋 Set Recipe*\n\n"
+                "_A recipe tells the bot what materials are needed to make each product._"
+            )]
+
+        # Build product list — show recipe-ready products first
         rows = []
-        for key, data in list(products.items())[:9]:
+        with_recipe = [(k, d) for k, d in finished_products.items() if d.get("recipe")]
+        without_recipe = [(k, d) for k, d in finished_products.items() if not d.get("recipe")]
+
+        for key, data in (with_recipe + without_recipe)[:9]:
             name = data.get("name", key)
             recipe = data.get("recipe", [])
-            stock = data.get("stock", data.get("stock_count", 0))
-            tree = data.get("tree", {})
-            if tree:
-                from features.catalog import CatalogHandler
-                stock = 0
-                # Simple inline count
-                def _sum(node):
-                    if isinstance(node, (int, float)):
-                        return max(0, int(node))
-                    if isinstance(node, dict):
-                        return sum(_sum(v) for v in node.values() if not str(v).startswith("__"))
-                    return 0
-                stock = _sum(tree)
+            stock = int(data.get("stock", data.get("stock_count", 0)))
 
-            recipe_str = f"Recipe: {len(recipe)} materials" if recipe else "No recipe set"
+            if recipe:
+                recipe_str = f"✅ Recipe: {len(recipe)} materials"
+            else:
+                recipe_str = "⚠️ No recipe — set one first"
             desc = f"Stock: {stock} · {recipe_str}"
 
             rows.append({
@@ -88,7 +115,7 @@ class ProductionHandler:
             header="🏭 Record Production",
             body="What did you produce?",
             button_text="Select Product",
-            sections=[{"title": "Your Products", "rows": rows}]
+            sections=[{"title": "Finished Products", "rows": rows}]
         )]
 
     # ─────────────────────────────────────────────────────────
@@ -102,9 +129,13 @@ class ProductionHandler:
         text_s   = text.strip()
         text_low = text_s.lower()
 
-        if text_low in ("cancel", "exit", "back"):
+        if text_low in ("cancel", "exit"):
             self.session.reset(phone_number)
             return [text_response("👍 Cancelled.")]
+
+        # ── Back handling — go to previous step ──
+        if text_low == "back":
+            return self._handle_back(phone_number, step, context)
 
         if step == "pick_product":
             return self._handle_pick_product(phone_number, text_s, context)
@@ -131,6 +162,58 @@ class ProductionHandler:
         self.session.reset(phone_number)
         return [text_response("Something went wrong. Try again from the menu.")]
 
+    def _handle_back(self, phone_number: str, step: str, context: dict) -> list:
+        """Handle 'back' — go to previous production step or exit."""
+
+        if step == "enter_quantity":
+            # Back to product list
+            return self.start_production(phone_number)
+
+        if step == "yield_check":
+            # Back to quantity input (yield is optional, came from Report Waste button)
+            product_name = context.get("prod_product_name", "Product")
+            context["prod_step"] = "enter_quantity"
+            self.session.save(phone_number, states.PRODUCTION_RECORDING, context)
+            return [text_response(
+                f"🏭 *Producing: {product_name}*\n\n"
+                f"📐 How many units did you produce?\n\n"
+                f"_Type a number (e.g. 200, 50, 0.5, 2.5)_\n\n"
+                f"_Type *back* to pick a different product_"
+            )]
+
+        if step == "confirm_production":
+            # Back to quantity input
+            product_name = context.get("prod_product_name", "Product")
+            context["prod_step"] = "enter_quantity"
+            self.session.save(phone_number, states.PRODUCTION_RECORDING, context)
+            return [text_response(
+                f"🏭 *Producing: {product_name}*\n\n"
+                f"📐 How many units did you produce?\n\n"
+                f"_Type a number (e.g. 200, 50, 0.5, 2.5)_\n\n"
+                f"_Type *back* to pick a different product_"
+            )]
+
+        # Recipe steps
+        if step == "recipe_add_material":
+            # Back to recipe product selection
+            return self._start_recipe_setup(phone_number)
+
+        if step == "recipe_material_qty":
+            # Back to material name input
+            context["prod_step"] = "recipe_add_material"
+            if "current_material" in context:
+                del context["current_material"]
+            self.session.save(phone_number, states.PRODUCTION_RECORDING, context)
+            return [text_response(
+                "🧱 *Add material to recipe*\n\n"
+                "What raw material is needed?\n\n"
+                "_Type the material name or *back* to go back_"
+            )]
+
+        # Default: exit to menu
+        self.session.reset(phone_number)
+        return [text_response("👍 Cancelled.")]
+
     def handle_button(self, phone_number: str, button_id: str, session: dict) -> list:
         """Handle production-related buttons."""
         if button_id.startswith("prod_item_"):
@@ -140,6 +223,13 @@ class ProductionHandler:
         if button_id == "prod_set_recipe":
             return self._start_recipe_setup(phone_number)
 
+        if button_id.startswith("prod_recipe_") and button_id not in ("prod_recipe_done", "prod_recipe_add"):
+            # User selected a product for recipe setup (e.g. prod_recipe_detergent)
+            product_key = button_id[12:]
+            session = self.session.get(phone_number)
+            context = session.get("context", {})
+            return self._recipe_pick_product(phone_number, button_id, context)
+
         if button_id == "prod_confirm_yes":
             session = self.session.get(phone_number)
             return self._execute_production(phone_number, session.get("context", {}))
@@ -147,6 +237,21 @@ class ProductionHandler:
         if button_id == "prod_confirm_no":
             self.session.reset(phone_number)
             return [text_response("👍 Production not recorded.")]
+
+        if button_id == "prod_report_waste":
+            # Switch to yield_check step so user can type waste amount
+            session = self.session.get(phone_number)
+            context = session.get("context", {})
+            context["prod_step"] = "yield_check"
+            quantity = context.get("prod_quantity", 0)
+            self.session.save(phone_number, states.PRODUCTION_RECORDING, context)
+            return [text_response(
+                f"🗑️ *Report Waste*\n\n"
+                f"Total produced: {quantity}\n\n"
+                f"How many units were *wasted/damaged*?\n\n"
+                f"_Type a number (e.g. 5, 10, 0.5)_\n"
+                f"_Type *0* if no waste_"
+            )]
 
         if button_id == "prod_recipe_done":
             self.session.reset(phone_number)
@@ -206,61 +311,65 @@ class ProductionHandler:
         return [text_response(
             f"🏭 *Producing: {product_name}*{recipe_str}\n\n"
             f"📐 How many units did you produce?\n\n"
-            f"_Type a number (e.g. 200, 50, 1000)_"
+            f"_Type a number (e.g. 200, 50, 0.5, 2.5)_\n\n"
+            f"_Type *back* to pick a different product_"
         )]
 
     def _handle_quantity(self, phone_number: str, text: str, context: dict) -> list:
-        """Handle quantity input — ask about yield/waste."""
-        qty_match = re.match(r'^(\d+)', text)
+        """Handle quantity input — go straight to confirmation (no waste by default)."""
+        qty_match = re.match(r'^([\d.]+)', text)
         if not qty_match:
-            return [text_response("Please enter a number (e.g. 200):")]
+            return [text_response("Please enter a number (e.g. 200, 0.5, 2.5) or type *back*:")]
 
-        quantity = int(qty_match.group(1))
+        quantity = float(qty_match.group(1))
         if quantity <= 0:
             return [text_response("Please enter a quantity greater than 0:")]
 
         context["prod_quantity"] = quantity
-        context["prod_step"] = "yield_check"
-        self.session.save(phone_number, states.PRODUCTION_RECORDING, context)
+        context["prod_good_qty"] = quantity  # Default: all good, no waste
+        context["prod_waste"] = 0
 
-        product_name = context.get("prod_product_name", "Product")
-
-        return [text_response(
-            f"🏭 Produced *{quantity}* {product_name}\n\n"
-            f"📊 How many were *good/usable*?\n\n"
-            f"_Type a number, or *all* if there was no waste._"
-        )]
+        # Skip yield step — go straight to confirmation
+        return self._show_production_confirmation(phone_number, context)
 
     def _handle_yield(self, phone_number: str, text: str, context: dict) -> list:
-        """Handle yield/waste input — then show confirmation."""
+        """Handle yield/waste input (optional — only reached via 'Report Waste' button)."""
         quantity = context.get("prod_quantity", 0)
         text_low = text.lower().strip()
 
-        if text_low in ("all", "same", "no waste", "none"):
-            good_qty = quantity
-        else:
-            qty_match = re.match(r'^(\d+)', text)
-            if not qty_match:
-                return [text_response(f"Enter a number (max {quantity}), or type *all*:")]
-            good_qty = int(qty_match.group(1))
-            if good_qty > quantity:
-                good_qty = quantity
-            if good_qty <= 0:
-                return [text_response("Please enter at least 1:")]
+        if text_low in ("all", "same", "no waste", "none", "0"):
+            context["prod_good_qty"] = quantity
+            context["prod_waste"] = 0
+            return self._show_production_confirmation(phone_number, context)
 
-        waste = quantity - good_qty
-        waste_pct = int(waste / quantity * 100) if quantity > 0 else 0
+        qty_match = re.match(r'^([\d.]+)', text)
+        if not qty_match:
+            return [text_response(f"How many units were wasted/damaged? (max {quantity})\n\n_Type a number or *0* for no waste:_")]
+
+        waste_qty = float(qty_match.group(1))
+        if waste_qty >= quantity:
+            return [text_response(f"Waste can't be more than total produced ({quantity}).\n\nType waste amount:")]
+        if waste_qty < 0:
+            waste_qty = 0
+
+        good_qty = quantity - waste_qty
         context["prod_good_qty"] = good_qty
-        context["prod_waste"] = waste
+        context["prod_waste"] = waste_qty
+
+        return self._show_production_confirmation(phone_number, context)
+
+    def _show_production_confirmation(self, phone_number: str, context: dict) -> list:
+        """Show production confirmation card with all details."""
+        quantity = context.get("prod_quantity", 0)
+        good_qty = context.get("prod_good_qty", quantity)
+        waste = context.get("prod_waste", 0)
+        product_key = context.get("prod_product_key", "")
+        product_name = context.get("prod_product_name", "Product")
 
         # Generate batch number
         import time
         batch_num = f"B{int(time.time()) % 100000:05d}"
         context["prod_batch"] = batch_num
-
-        # Now calculate materials and show confirmation
-        product_key = context.get("prod_product_key", "")
-        product_name = context.get("prod_product_name", "Product")
 
         # Get recipe to show material usage
         user = self.db.get_user(phone_number)
@@ -271,69 +380,102 @@ class ProductionHandler:
         # Calculate materials needed and production cost
         materials_needed = []
         total_cost = 0
+        conversion_warnings = []
         for mat in recipe:
-            mat_qty = float(mat.get("quantity", 0)) * quantity
-            mat_cost = float(mat.get("cost_per_unit", 0)) * mat_qty
+            recipe_qty_per_unit = float(mat.get("quantity", 0))
+            recipe_qty_total = recipe_qty_per_unit * quantity
+            recipe_unit = mat.get("unit", "units")
+            mat_key = mat["material"].lower().replace(" ", "_")
+
+            # Look up the material in catalog for unit conversion
+            all_products = catalog.get("products", {})
+            mat_product = all_products.get(mat_key, {})
+
+            # Convert recipe units to stock units
+            conversion = self._convert_to_stock_unit(recipe_qty_total, recipe_unit, mat_product)
+            stock_qty = conversion["stock_qty"]
+            display_str = conversion["display"]
+
+            if conversion.get("warning"):
+                conversion_warnings.append(conversion["warning"])
+
+            # Cost calculation uses the stock qty (converted)
+            mat_cost = float(mat.get("cost_per_unit", 0)) * recipe_qty_total
             total_cost += mat_cost
+
             materials_needed.append({
                 "material": mat["material"],
-                "quantity_needed": mat_qty,
-                "unit": mat.get("unit", ""),
+                "quantity_needed": stock_qty,  # converted to stock units
+                "recipe_qty": recipe_qty_total,  # original recipe quantity
+                "unit": conversion["stock_unit"] if conversion["converted"] else recipe_unit,
+                "recipe_unit": recipe_unit,
+                "converted": conversion["converted"],
+                "display": display_str,
                 "cost": mat_cost,
             })
 
-        cost_per_unit = total_cost / quantity if quantity > 0 else 0
+        cost_per_unit = total_cost / good_qty if good_qty > 0 else 0
+        waste_pct = int(waste / quantity * 100) if quantity > 0 and waste > 0 else 0
 
         # Build confirmation
+        # Format quantity display (show as int if whole number)
+        qty_display = int(quantity) if quantity == int(quantity) else quantity
+
         lines = [
             f"━━━━━━━━━━━━━━━━━━━━",
             f"🏭  *PRODUCTION*  _{batch_num}_",
             f"━━━━━━━━━━━━━━━━━━━━",
             f"",
-            f"📦 *{product_name}* × {quantity} produced",
+            f"📦 *{product_name}* × {qty_display} produced",
         ]
 
         # Yield/waste info
         if waste > 0:
             lines.append(f"✅ Good: {good_qty}  |  🗑️ Waste: {waste} ({waste_pct}%)")
         else:
-            lines.append(f"✅ All {quantity} good — no waste")
+            lines.append(f"✅ All {qty_display} good")
 
         if materials_needed:
             lines.append(f"")
             lines.append(f"🧱 *Materials to use:*")
             for mat in materials_needed:
-                qty_str = f"{mat['quantity_needed']:.0f}" if mat['quantity_needed'] == int(mat['quantity_needed']) else f"{mat['quantity_needed']:.1f}"
+                display = mat["display"]
                 cost_str = f" (₦{int(mat['cost']):,})" if mat['cost'] > 0 else ""
-                lines.append(f"  • {qty_str} {mat['unit']} {mat['material']}{cost_str}")
+                converted_note = " ↔" if mat.get("converted") else ""
+                lines.append(f"  • {display} {mat['material']}{cost_str}{converted_note}")
             lines.append(f"")
             if total_cost > 0:
-                lines.append(f"💰 Total production cost: {format_amount(total_cost)}")
-                lines.append(f"💰 Cost per unit: {format_amount(cost_per_unit)}")
+                lines.append(f"💰 Total cost: {format_amount(total_cost)} _(auto-calculated from recipe)_")
+                lines.append(f"💰 Cost/unit: {format_amount(cost_per_unit)}")
+            else:
+                lines.append(f"💰 Cost: ₦0 _(set material costs via Buy Raw Materials or Set Landing Cost)_")
+            # Show conversion warnings
+            if conversion_warnings:
+                lines.append(f"")
+                for warn in conversion_warnings:
+                    lines.append(warn)
         else:
             lines.append(f"\n⚠️ _No recipe set — materials won't be deducted._")
-            lines.append(f"_Set a recipe from the menu to enable auto-deduction._")
+            lines.append(f"_Set a recipe to enable auto-deduction._")
 
         lines.append(f"")
         lines.append(f"━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"_Record this production?_")
 
         context["prod_step"] = "confirm_production"
-        context["prod_quantity"] = quantity
         context["prod_materials_needed"] = materials_needed
         context["prod_total_cost"] = total_cost
         context["prod_cost_per_unit"] = cost_per_unit
         self.session.save(phone_number, states.PRODUCTION_RECORDING, context)
 
+        # Buttons: Confirm, Report Waste (if no waste reported yet), Cancel
+        buttons = [{"id": "prod_confirm_yes", "title": "✅ Confirm"}]
+        if waste == 0:
+            buttons.append({"id": "prod_report_waste", "title": "🗑️ Report Waste"})
+        buttons.append({"id": "prod_confirm_no", "title": "❌ Cancel"})
+
         return [
             text_response("\n".join(lines)),
-            button_response(
-                "Confirm production?",
-                [
-                    {"id": "prod_confirm_yes", "title": "✅ Yes, Record"},
-                    {"id": "prod_confirm_no", "title": "❌ Cancel"},
-                ]
-            )
+            button_response("Record this production?", buttons)
         ]
 
     def _handle_confirm(self, phone_number: str, text: str, context: dict) -> list:
@@ -365,12 +507,16 @@ class ProductionHandler:
         for mat in materials_needed:
             mat_name = mat["material"]
             mat_qty = mat["quantity_needed"]
+            mat_unit = mat.get("unit", "")
             mat_key = mat_name.lower().replace(" ", "_")
             if mat_key in products:
                 current_stock = products[mat_key].get("stock", products[mat_key].get("stock_count", 0))
-                new_stock = max(0, current_stock - mat_qty)
+                new_stock = max(0, float(current_stock) - mat_qty)
                 products[mat_key]["stock"] = new_stock
-                deduction_results.append(f"  • {mat_name}: -{mat_qty:.0f} (remaining: {new_stock:.0f})")
+                qty_display = f"{mat_qty:.0f}" if mat_qty == int(mat_qty) else f"{mat_qty:.2f}"
+                stock_display = f"{new_stock:.0f}" if new_stock == int(new_stock) else f"{new_stock:.1f}"
+                unit_str = f" {mat_unit}" if mat_unit else ""
+                deduction_results.append(f"  • {mat_name}: -{qty_display}{unit_str} (remaining: {stock_display})")
                 # Check for low material
                 if new_stock <= 5:
                     low_material_warnings.append(f"⚠️ *{mat_name}* is LOW — only {int(new_stock)} left!")
@@ -436,17 +582,141 @@ class ProductionHandler:
             lines.append(f"💰 Cost per unit: {format_amount(cost_per_unit)}")
             lines.append(f"💰 Total batch cost: {format_amount(total_cost)}")
 
-        lines.append(f"\n_Send next transaction or tap ☰ Menu._")
+        lines.append("")
 
         # Add low material warnings
         if low_material_warnings:
-            lines.append("")
             lines.append("━━━━━━━━━━━━━━━━━━━━")
             lines.append("🚨 *Low Material Alert:*")
             lines.extend(low_material_warnings)
             lines.append("_Restock soon!_")
 
-        return [text_response("\n".join(lines))]
+        return [
+            text_response("\n".join(lines)),
+            button_response(
+                "What's next?",
+                [
+                    {"id": "record_production", "title": "🏭 Produce More"},
+                    {"id": "record_purchase", "title": "🧱 Buy Materials"},
+                    {"id": "menu_home", "title": "☰ Menu"},
+                ]
+            )
+        ]
+
+    # ─────────────────────────────────────────────────────────
+    # UNIT CONVERSION HELPERS
+    # ─────────────────────────────────────────────────────────
+
+    # Standard metric conversions (bidirectional)
+    STANDARD_CONVERSIONS = {
+        # Volume
+        ("ml", "l"): 0.001, ("ml", "litre"): 0.001, ("ml", "litres"): 0.001, ("ml", "liter"): 0.001,
+        ("l", "ml"): 1000, ("litre", "ml"): 1000, ("litres", "ml"): 1000, ("liter", "ml"): 1000,
+        ("cl", "ml"): 10, ("ml", "cl"): 0.1,
+        ("cl", "l"): 0.01, ("l", "cl"): 100,
+        # Weight
+        ("g", "kg"): 0.001, ("kg", "g"): 1000,
+        ("mg", "g"): 0.001, ("g", "mg"): 1000,
+        # Quantity synonyms (treat as same)
+        ("piece", "pieces"): 1, ("pieces", "piece"): 1,
+        ("unit", "units"): 1, ("units", "unit"): 1,
+        ("piece", "units"): 1, ("units", "piece"): 1,
+        ("pieces", "units"): 1, ("units", "pieces"): 1,
+    }
+
+    def _convert_to_stock_unit(self, recipe_qty: float, recipe_unit: str,
+                                material_product: dict) -> dict:
+        """
+        Convert a recipe quantity to the material's stock unit.
+        
+        Args:
+            recipe_qty: quantity needed in recipe units (e.g. 500)
+            recipe_unit: unit from recipe (e.g. "ml")
+            material_product: the material's catalog product dict
+            
+        Returns:
+            {
+                "stock_qty": float,      # quantity to deduct from stock
+                "stock_unit": str,       # unit of stock
+                "converted": bool,       # whether conversion was applied
+                "display": str,          # human-readable (e.g. "0.5 litres")
+                "warning": str or None,  # warning if units don't match and no conversion
+            }
+        """
+        stock_unit = material_product.get("primary_unit", "").lower().strip()
+        recipe_unit_lower = recipe_unit.lower().strip().rstrip("s")  # normalize plural
+        stock_unit_normalized = stock_unit.rstrip("s")
+
+        # If no primary_unit set on material, or units match — no conversion needed
+        if not stock_unit or recipe_unit_lower == stock_unit_normalized:
+            return {
+                "stock_qty": recipe_qty,
+                "stock_unit": recipe_unit,
+                "converted": False,
+                "display": f"{recipe_qty:.1f} {recipe_unit}" if recipe_qty != int(recipe_qty) else f"{int(recipe_qty)} {recipe_unit}",
+                "warning": None,
+            }
+
+        # Try standard metric conversion
+        for (from_u, to_u), factor in self.STANDARD_CONVERSIONS.items():
+            if recipe_unit_lower == from_u.rstrip("s") and stock_unit_normalized == to_u.rstrip("s"):
+                converted_qty = recipe_qty * factor
+                display = f"{converted_qty:.2f} {stock_unit}" if converted_qty != int(converted_qty) else f"{int(converted_qty)} {stock_unit}"
+                return {
+                    "stock_qty": converted_qty,
+                    "stock_unit": stock_unit,
+                    "converted": True,
+                    "display": display,
+                    "warning": None,
+                }
+
+        # Try user-defined conversions on the material
+        conversions = material_product.get("conversions", {})
+        for conv_key, conv_val in conversions.items():
+            # conv_key = "1 carton", conv_val = {"qty": 24, "unit": "pieces"}
+            import re as _re
+            key_match = _re.match(r'^(\d+)\s+(.+)', conv_key)
+            if not key_match:
+                continue
+            conv_from_qty = int(key_match.group(1))
+            conv_from_unit = key_match.group(2).strip().rstrip("s").lower()
+            conv_to_qty = conv_val.get("qty", 1)
+            conv_to_unit = conv_val.get("unit", "").rstrip("s").lower()
+
+            # Check if recipe unit matches the "from" side
+            if recipe_unit_lower == conv_from_unit:
+                # Convert: recipe_qty [from_unit] → stock [to_unit]
+                converted_qty = recipe_qty * (conv_to_qty / conv_from_qty)
+                display = f"{converted_qty:.1f} {conv_val.get('unit', stock_unit)}" if converted_qty != int(converted_qty) else f"{int(converted_qty)} {conv_val.get('unit', stock_unit)}"
+                return {
+                    "stock_qty": converted_qty,
+                    "stock_unit": conv_val.get("unit", stock_unit),
+                    "converted": True,
+                    "display": display,
+                    "warning": None,
+                }
+
+            # Check reverse: recipe unit matches the "to" side
+            if recipe_unit_lower == conv_to_unit:
+                # Convert: recipe_qty [to_unit] → stock [from_unit]
+                converted_qty = recipe_qty * (conv_from_qty / conv_to_qty)
+                display = f"{converted_qty:.2f} {conv_key.split(' ', 1)[1]}" if converted_qty != int(converted_qty) else f"{int(converted_qty)} {conv_key.split(' ', 1)[1]}"
+                return {
+                    "stock_qty": converted_qty,
+                    "stock_unit": conv_key.split(' ', 1)[1] if ' ' in conv_key else stock_unit,
+                    "converted": True,
+                    "display": display,
+                    "warning": None,
+                }
+
+        # No conversion found — units don't match
+        return {
+            "stock_qty": recipe_qty,  # deduct as-is (best effort)
+            "stock_unit": recipe_unit,
+            "converted": False,
+            "display": f"{recipe_qty:.1f} {recipe_unit}" if recipe_qty != int(recipe_qty) else f"{int(recipe_qty)} {recipe_unit}",
+            "warning": f"⚠️ Unit mismatch: recipe uses *{recipe_unit}* but stock is in *{stock_unit}*. Set a conversion in Catalog → Set Conversion.",
+        }
 
     # ─────────────────────────────────────────────────────────
     # RECIPE / BOM MANAGEMENT
@@ -549,7 +819,8 @@ class ProductionHandler:
         return [text_response(
             f"🧱 *{material_name}*\n\n"
             f"How much is needed to produce *1 unit* of {context.get('recipe_product_name', 'product')}?\n\n"
-            f"_Type: quantity unit (e.g. 500ml, 2kg, 1 bottle, 0.5 litres)_"
+            f"_Type: quantity unit (e.g. 500ml, 2kg, 1 bottle, 0.5 litres)_\n\n"
+            f"_Type *back* to change the material name_"
         )]
 
     def _recipe_material_qty(self, phone_number: str, text: str, context: dict) -> list:
@@ -557,7 +828,7 @@ class ProductionHandler:
         # Parse quantity and unit
         match = re.match(r'^([\d.]+)\s*(.*)', text.strip())
         if not match:
-            return [text_response("Please enter quantity + unit (e.g. 500ml, 2kg, 1 bottle):")]
+            return [text_response("Please enter quantity + unit (e.g. 500ml, 2kg, 1 bottle) or type *back*:")]
 
         qty = float(match.group(1))
         unit = match.group(2).strip() or "units"
@@ -599,6 +870,21 @@ class ProductionHandler:
                     for mat in recipe:
                         if mat["material"].lower() == material_name.lower():
                             mat["cost_per_unit"] = float(mat_cost)
+            else:
+                # Auto-create this material as a raw_material in catalog
+                products[mat_key] = {
+                    "name": material_name,
+                    "stock": 0,
+                    "landing_cost": 0,
+                    "item_type": "raw_material",
+                    "category": "",
+                    "variants": [],
+                    "recipe": [],
+                    "conversions": {},
+                }
+
+            # Also ensure the finished product is tagged
+            products[product_key]["item_type"] = "finished_product"
 
             catalog["products"] = products
             self.db.update_user_field(phone_number, "product_catalog", catalog)
