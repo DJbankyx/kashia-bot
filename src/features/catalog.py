@@ -40,11 +40,15 @@ class CatalogHandler:
 
     def show_menu(self, phone_number: str) -> list:
         """Show inventory/catalog action menu."""
-        products = self._get_products(phone_number)
+        products = self.ensure_item_types(phone_number)
         count = len(products)
-        total_stock = sum(p.get("stock", 0) for p in products.values())
+        total_stock = sum(int(p.get("stock", 0)) for p in products.values())
 
-        body = f"📊 *Inventory* — {count} product{'s' if count != 1 else ''}"
+        # Count by type
+        finished_count = sum(1 for p in products.values() if p.get("item_type") == "finished_product")
+        material_count = sum(1 for p in products.values() if p.get("item_type") == "raw_material")
+
+        body = f"📊 *Inventory* — {count} item{'s' if count != 1 else ''}"
         if total_stock > 0:
             body += f" · {total_stock} total units"
         body += "\n\nWhat would you like to do?"
@@ -54,14 +58,34 @@ class CatalogHandler:
         industry = user.get("industry_class", user.get("business_type", "trading"))
         is_manufacturing = industry in ("manufacturing", "hybrid")
 
-        rows = [
-            {"id": "cat_stock", "title": "📊 View Stock Levels",
-             "description": "See all products with quantities"},
-            {"id": "cat_add", "title": "➕ Add Product",
-             "description": "Add a new product to inventory"},
-        ]
+        rows = []
 
-        # Manufacturing: add recipe option prominently
+        if is_manufacturing:
+            # Manufacturing: separate view options
+            rows.extend([
+                {"id": "cat_view_products", "title": f"🏭 View Products ({finished_count})",
+                 "description": "Finished goods you manufacture"},
+                {"id": "cat_view_materials", "title": f"🧱 View Materials ({material_count})",
+                 "description": "Raw materials & inputs"},
+            ])
+        else:
+            # Trading/Services: single stock view
+            rows.append(
+                {"id": "cat_stock", "title": "📊 View Stock Levels",
+                 "description": "See all products with quantities"}
+            )
+
+        rows.append(
+            {"id": "cat_edit", "title": "✏️ Edit Product",
+             "description": "Change name, stock, cost, or delete"}
+        )
+
+        rows.append(
+            {"id": "cat_add", "title": "➕ Add Product",
+             "description": "Add a new product to inventory"}
+        )
+
+        # Manufacturing: add recipe option
         if is_manufacturing:
             rows.append(
                 {"id": "cat_recipe", "title": "📋 Set Recipe / BOM",
@@ -70,13 +94,11 @@ class CatalogHandler:
 
         rows.extend([
             {"id": "cat_cost", "title": "🏷️ Set Landing Cost",
-             "description": "Set/update cost price per product"},
+             "description": "Set/update cost per unit"},
             {"id": "cat_adjust", "title": "📐 Adjust Stock",
              "description": "Manually add or set stock quantity"},
             {"id": "cat_conversion", "title": "📦 Set Conversion",
              "description": "e.g. 1 carton = 24 pieces"},
-            {"id": "cat_variants", "title": "🏷️ Add Variants",
-             "description": "Add models/types to a product"},
             {"id": "cat_remove", "title": "🗑️ Remove Product",
              "description": "Delete a product from inventory"},
         ])
@@ -87,7 +109,7 @@ class CatalogHandler:
             button_text="Select Action",
             sections=[{
                 "title": "Inventory Actions",
-                "rows": rows,
+                "rows": rows[:10],  # WhatsApp max 10 rows
             }]
         )]
 
@@ -129,7 +151,79 @@ class CatalogHandler:
         if button_id == "cat_clear_all":
             return self._start_clear_catalog(phone_number)
 
-        # Product-specific buttons
+        # ── New: View & Edit buttons ──
+        if button_id == "cat_view_products":
+            return self._view_products_list(phone_number)
+
+        if button_id == "cat_view_materials":
+            return self._view_materials_list(phone_number)
+
+        if button_id == "cat_edit":
+            return self._start_edit_product(phone_number)
+
+        if button_id.startswith("cat_detail_"):
+            product_key = button_id[11:]
+            return self._view_product_detail(phone_number, product_key)
+
+        if button_id.startswith("cat_editpick_"):
+            product_key = button_id[13:]
+            return self._show_edit_options(phone_number, product_key)
+
+        if button_id.startswith("cat_editfield_"):
+            # Format: cat_editfield_{product_key}_{field}
+            parts = button_id[14:].rsplit("_", 1)
+            if len(parts) == 2:
+                product_key, field = parts
+                return self._handle_edit_field(phone_number, product_key, field)
+
+        if button_id.startswith("cat_settype_"):
+            # Format: cat_settype_{product_key}_{type}
+            rest = button_id[12:]
+            # Type could be "finished_product" or "raw_material" (contains underscore)
+            if "_finished_product" in rest:
+                product_key = rest.replace("_finished_product", "")
+                new_type = "finished_product"
+            elif "_raw_material" in rest:
+                product_key = rest.replace("_raw_material", "")
+                new_type = "raw_material"
+            else:
+                return [text_response("❓ Unknown type.")]
+
+            products = self._get_products(phone_number)
+            if product_key in products:
+                products[product_key]["item_type"] = new_type
+                self._save_products(phone_number, products)
+                name = products[product_key].get("name", product_key)
+                type_label = "🏭 Finished Product" if new_type == "finished_product" else "🧱 Raw Material"
+                return [
+                    text_response(f"✅ *{name}* is now: {type_label}"),
+                    button_response("What's next?", [
+                        {"id": f"cat_editpick_{product_key}", "title": "✏️ Edit More"},
+                        {"id": "menu_catalog", "title": "← Catalog"},
+                    ])
+                ]
+            return [text_response("❓ Product not found.")]
+
+        if button_id.startswith("cat_removepick_"):
+            product_key = button_id[15:]
+            products = self._get_products(phone_number)
+            if product_key in products:
+                name = products[product_key].get("name", product_key)
+                stock = int(products[product_key].get("stock", 0))
+                self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+                    "cat_step": "confirm_remove",
+                    "cat_product_key": product_key,
+                })
+                return [button_response(
+                    f"⚠️ Delete *{name}*?\n\nStock: {stock} units\n_This cannot be undone._",
+                    [
+                        {"id": "cat_confirm_remove", "title": "🗑️ Yes, Delete"},
+                        {"id": f"cat_editpick_{product_key}", "title": "← Go Back"},
+                    ]
+                )]
+            return [text_response("❓ Product not found.")]
+
+        # Product-specific buttons (from product picker flows)
         if button_id.startswith("cat_pick_"):
             product_key = button_id[9:]
             session = self.session.get(phone_number)
@@ -198,6 +292,10 @@ class CatalogHandler:
 
         if step == "setting_conversion":
             return self._handle_set_conversion(phone_number, text_s, context)
+
+        # Edit product steps
+        if step in ("editing_name", "editing_stock", "editing_cost"):
+            return self._handle_edit_input(phone_number, text_s, context)
 
         self.session.reset(phone_number)
         return self.show_menu(phone_number)
@@ -317,6 +415,419 @@ class CatalogHandler:
             lines.append(f"   Stock: *{stock}*" + (f" · {format_amount(cost)}/unit" if cost else ""))
 
         return stock, value
+
+    # ─────────────────────────────────────────────────────────
+    # VIEW PRODUCTS / MATERIALS — Separated lists
+    # ─────────────────────────────────────────────────────────
+
+    def _view_products_list(self, phone_number: str) -> list:
+        """View finished products only (manufacturing)."""
+        products = self.ensure_item_types(phone_number)
+        finished = {k: v for k, v in products.items() if v.get("item_type") == "finished_product"}
+
+        if not finished:
+            return [text_response(
+                "🏭 *Finished Products*\n\n"
+                "No finished products yet.\n\n"
+                "_Add products and set recipes to see them here._"
+            )]
+
+        lines = [
+            "━━━━━━━━━━━━━━━━━━━━",
+            "🏭  *Finished Products*",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "",
+        ]
+
+        for key, prod in sorted(finished.items(), key=lambda x: x[1].get("name", "")):
+            name = prod.get("name", key)
+            stock = int(prod.get("stock", 0))
+            cost = int(prod.get("landing_cost", 0))
+            recipe = prod.get("recipe", [])
+
+            indicator = "🔴" if stock <= 0 else ("🟡" if stock <= 3 else "🟢")
+            lines.append(f"{indicator} *{name}*")
+            lines.append(f"   Stock: *{stock}*" + (f" · Cost: {format_amount(cost)}/unit" if cost else ""))
+            if recipe:
+                lines.append(f"   📋 Recipe: {len(recipe)} materials")
+            lines.append("")
+
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"📦 {len(finished)} product{'s' if len(finished) != 1 else ''}")
+
+        # Build tappable list of products for detail view
+        rows = []
+        for key, prod in list(finished.items())[:10]:
+            name = prod.get("name", key)
+            stock = int(prod.get("stock", 0))
+            rows.append({
+                "id": f"cat_detail_{key}",
+                "title": f"📦 {name}"[:24],
+                "description": f"Stock: {stock} · Tap for full details"[:72],
+            })
+
+        if rows:
+            return [
+                text_response("\n".join(lines)),
+                list_response(
+                    header="🔍 View Details",
+                    body="Tap a product for full info:",
+                    button_text="Select",
+                    sections=[{"title": "Products", "rows": rows}]
+                )
+            ]
+        return [text_response("\n".join(lines))]
+
+    def _view_materials_list(self, phone_number: str) -> list:
+        """View raw materials only (manufacturing)."""
+        products = self.ensure_item_types(phone_number)
+        materials = {k: v for k, v in products.items() if v.get("item_type") == "raw_material"}
+
+        if not materials:
+            return [text_response(
+                "🧱 *Raw Materials*\n\n"
+                "No raw materials yet.\n\n"
+                "_Buy raw materials or set recipes to see them here._"
+            )]
+
+        lines = [
+            "━━━━━━━━━━━━━━━━━━━━",
+            "🧱  *Raw Materials*",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "",
+        ]
+
+        for key, prod in sorted(materials.items(), key=lambda x: x[1].get("name", "")):
+            name = prod.get("name", key)
+            stock = int(prod.get("stock", 0))
+            cost = int(prod.get("landing_cost", 0))
+            primary_unit = prod.get("primary_unit", "")
+
+            indicator = "🔴" if stock <= 0 else ("🟡" if stock <= 5 else "🟢")
+            unit_str = f" {primary_unit}" if primary_unit else ""
+            lines.append(f"{indicator} *{name}*")
+            lines.append(f"   Stock: *{stock}{unit_str}*" + (f" · {format_amount(cost)}/{primary_unit or 'unit'}" if cost else ""))
+            lines.append("")
+
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"🧱 {len(materials)} material{'s' if len(materials) != 1 else ''}")
+
+        # Build tappable list for detail view
+        rows = []
+        for key, prod in list(materials.items())[:10]:
+            name = prod.get("name", key)
+            stock = int(prod.get("stock", 0))
+            rows.append({
+                "id": f"cat_detail_{key}",
+                "title": f"🧱 {name}"[:24],
+                "description": f"Stock: {stock} · Tap for full details"[:72],
+            })
+
+        if rows:
+            return [
+                text_response("\n".join(lines)),
+                list_response(
+                    header="🔍 View Details",
+                    body="Tap a material for full info:",
+                    button_text="Select",
+                    sections=[{"title": "Materials", "rows": rows}]
+                )
+            ]
+        return [text_response("\n".join(lines))]
+
+    def _view_product_detail(self, phone_number: str, product_key: str) -> list:
+        """Show full detail for a single product/material."""
+        products = self._get_products(phone_number)
+        if product_key not in products:
+            return [text_response("❓ Product not found.")]
+
+        prod = products[product_key]
+        name = prod.get("name", product_key)
+        stock = int(prod.get("stock", 0))
+        cost = int(prod.get("landing_cost", 0))
+        item_type = prod.get("item_type", "product")
+        recipe = prod.get("recipe", [])
+        conversions = prod.get("conversions", {})
+        primary_unit = prod.get("primary_unit", "")
+        variants = prod.get("variants", [])
+        variant_costs = prod.get("variant_costs", {})
+
+        # Type label
+        type_label = {"finished_product": "🏭 Finished Product", "raw_material": "🧱 Raw Material"}.get(item_type, "📦 Product")
+
+        lines = [
+            "━━━━━━━━━━━━━━━━━━━━",
+            f"*{name}*",
+            f"{type_label}",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "",
+        ]
+
+        # Stock
+        unit_str = f" {primary_unit}" if primary_unit else ""
+        indicator = "🔴" if stock <= 0 else ("🟡" if stock <= 5 else "🟢")
+        lines.append(f"{indicator} Stock: *{stock}{unit_str}*")
+
+        # Cost
+        if cost > 0:
+            lines.append(f"💰 Cost: *{format_amount(cost)}* per {primary_unit or 'unit'}")
+        else:
+            lines.append(f"💰 Cost: _not set_")
+
+        # Recipe (for finished products)
+        if recipe:
+            lines.append("")
+            lines.append("📋 *Recipe (per 1 unit):*")
+            for mat in recipe:
+                mat_cost = mat.get("cost_per_unit", 0)
+                cost_str = f" @ {format_amount(mat_cost)}" if mat_cost else ""
+                lines.append(f"  • {mat['quantity']} {mat.get('unit', '')} {mat['material']}{cost_str}")
+
+        # Conversions
+        if conversions:
+            lines.append("")
+            lines.append("📦 *Conversions:*")
+            for ck, cv in conversions.items():
+                lines.append(f"  • {ck} = {cv['qty']} {cv['unit']}")
+
+        # Variants
+        if variants:
+            lines.append("")
+            lines.append(f"🏷️ *Variants:* {', '.join(variants)}")
+            if variant_costs:
+                for v, c in variant_costs.items():
+                    lines.append(f"  • {v}: {format_amount(c)}")
+
+        lines.append("")
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+
+        return [
+            text_response("\n".join(lines)),
+            button_response(
+                f"Actions for *{name}*:",
+                [
+                    {"id": f"cat_editpick_{product_key}", "title": "✏️ Edit"},
+                    {"id": f"cat_removepick_{product_key}", "title": "🗑️ Delete"},
+                    {"id": "menu_catalog", "title": "← Catalog"},
+                ]
+            )
+        ]
+
+    # ─────────────────────────────────────────────────────────
+    # EDIT PRODUCT — Multi-field editor
+    # ─────────────────────────────────────────────────────────
+
+    def _start_edit_product(self, phone_number: str) -> list:
+        """Pick a product to edit."""
+        products = self._get_products(phone_number)
+        if not products:
+            return [text_response("📊 No products to edit. Add products first.")]
+
+        rows = []
+        for key, prod in list(products.items())[:10]:
+            name = prod.get("name", key)
+            item_type = prod.get("item_type", "product")
+            icon = "🏭" if item_type == "finished_product" else ("🧱" if item_type == "raw_material" else "📦")
+            stock = int(prod.get("stock", 0))
+            rows.append({
+                "id": f"cat_editpick_{key}",
+                "title": f"{icon} {name}"[:24],
+                "description": f"Stock: {stock} · Tap to edit"[:72],
+            })
+
+        return [list_response(
+            header="✏️ Edit Product",
+            body="Which product do you want to edit?",
+            button_text="Select",
+            sections=[{"title": "Products", "rows": rows}]
+        )]
+
+    def _show_edit_options(self, phone_number: str, product_key: str) -> list:
+        """Show edit options for a specific product."""
+        products = self._get_products(phone_number)
+        if product_key not in products:
+            return [text_response("❓ Product not found.")]
+
+        prod = products[product_key]
+        name = prod.get("name", product_key)
+        stock = int(prod.get("stock", 0))
+        cost = int(prod.get("landing_cost", 0))
+        item_type = prod.get("item_type", "product")
+
+        type_label = {"finished_product": "Finished Product", "raw_material": "Raw Material"}.get(item_type, "Product")
+
+        return [list_response(
+            header=f"✏️ Edit: {name}",
+            body=f"Stock: {stock} · Cost: {format_amount(cost)}\nType: {type_label}\n\nWhat do you want to change?",
+            button_text="Select",
+            sections=[{
+                "title": "Edit Options",
+                "rows": [
+                    {"id": f"cat_editfield_{product_key}_name", "title": "📝 Rename Product",
+                     "description": f"Current: {name}"},
+                    {"id": f"cat_editfield_{product_key}_stock", "title": "📐 Set Stock",
+                     "description": f"Current: {stock}"},
+                    {"id": f"cat_editfield_{product_key}_cost", "title": "💰 Set Cost/Unit",
+                     "description": f"Current: {format_amount(cost)}" if cost else "Not set"},
+                    {"id": f"cat_editfield_{product_key}_type", "title": "🏷️ Change Type",
+                     "description": f"Current: {type_label}"},
+                    {"id": f"cat_removepick_{product_key}", "title": "🗑️ Delete Product",
+                     "description": "Remove from inventory"},
+                ]
+            }]
+        )]
+
+    def _handle_edit_field(self, phone_number: str, product_key: str, field: str) -> list:
+        """Start editing a specific field."""
+        products = self._get_products(phone_number)
+        if product_key not in products:
+            return [text_response("❓ Product not found.")]
+
+        prod = products[product_key]
+        name = prod.get("name", product_key)
+
+        if field == "name":
+            self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+                "cat_step": "editing_name",
+                "cat_product_key": product_key,
+            })
+            return [text_response(
+                f"📝 *Rename: {name}*\n\n"
+                f"Type the new name:\n\n"
+                f"_Type *back* to cancel_"
+            )]
+
+        if field == "stock":
+            current = int(prod.get("stock", 0))
+            self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+                "cat_step": "editing_stock",
+                "cat_product_key": product_key,
+            })
+            return [text_response(
+                f"📐 *Set Stock: {name}*\n\n"
+                f"Current stock: *{current}*\n\n"
+                f"Enter new stock level:\n"
+                f"• _+10_ (add 10)\n"
+                f"• _-5_ (remove 5)\n"
+                f"• _50_ (set to 50)\n\n"
+                f"_Type *back* to cancel_"
+            )]
+
+        if field == "cost":
+            current = int(prod.get("landing_cost", 0))
+            self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+                "cat_step": "editing_cost",
+                "cat_product_key": product_key,
+            })
+            return [text_response(
+                f"💰 *Set Cost: {name}*\n\n"
+                f"Current cost: *{format_amount(current)}* per unit\n\n"
+                f"Enter new cost per unit:\n"
+                f"_e.g. 5000, 25K, 1.2M_\n\n"
+                f"_Type *back* to cancel_"
+            )]
+
+        if field == "type":
+            current_type = prod.get("item_type", "product")
+            return [button_response(
+                f"🏷️ *Change Type: {name}*\n\n"
+                f"Current: {current_type}\n\n"
+                f"What is this item?",
+                [
+                    {"id": f"cat_settype_{product_key}_finished_product", "title": "🏭 Finished Product"},
+                    {"id": f"cat_settype_{product_key}_raw_material", "title": "🧱 Raw Material"},
+                ]
+            )]
+
+        return [text_response("❓ Unknown field.")]
+
+    def _handle_edit_input(self, phone_number: str, text: str, context: dict) -> list:
+        """Handle text input for product editing."""
+        import re
+        step = context.get("cat_step", "")
+        product_key = context.get("cat_product_key", "")
+        text_s = text.strip()
+
+        if text_s.lower() in ("back", "cancel"):
+            self.session.reset(phone_number)
+            return self._show_edit_options(phone_number, product_key)
+
+        products = self._get_products(phone_number)
+        if product_key not in products:
+            self.session.reset(phone_number)
+            return [text_response("❓ Product not found.")]
+
+        prod = products[product_key]
+        name = prod.get("name", product_key)
+
+        if step == "editing_name":
+            new_name = text_s.title()
+            if len(new_name) < 2:
+                return [text_response("Name must be at least 2 characters:")]
+
+            # Update name (keep same key)
+            prod["name"] = new_name
+            self._save_products(phone_number, products)
+            self.session.reset(phone_number)
+            return [
+                text_response(f"✅ Renamed to *{new_name}*"),
+                button_response("What's next?", [
+                    {"id": f"cat_editpick_{product_key}", "title": "✏️ Edit More"},
+                    {"id": "menu_catalog", "title": "← Catalog"},
+                ])
+            ]
+
+        if step == "editing_stock":
+            add_match = re.match(r'^\+\s*([\d.]+)', text_s)
+            sub_match = re.match(r'^-\s*([\d.]+)', text_s)
+            set_match = re.match(r'^([\d.]+)$', text_s)
+
+            current = float(prod.get("stock", 0))
+            if add_match:
+                qty = float(add_match.group(1))
+                prod["stock"] = current + qty
+                action = f"+{qty}"
+            elif sub_match:
+                qty = float(sub_match.group(1))
+                prod["stock"] = max(0, current - qty)
+                action = f"-{qty}"
+            elif set_match:
+                qty = float(set_match.group(1))
+                prod["stock"] = qty
+                action = f"set to {qty}"
+            else:
+                return [text_response("Enter: _+10_, _-5_, or _50_ (set to 50):")]
+
+            self._save_products(phone_number, products)
+            new_stock = prod["stock"]
+            new_display = int(new_stock) if new_stock == int(new_stock) else new_stock
+            self.session.reset(phone_number)
+            return [
+                text_response(f"✅ *{name}* stock {action}\n📊 New stock: *{new_display}*"),
+                button_response("What's next?", [
+                    {"id": f"cat_editpick_{product_key}", "title": "✏️ Edit More"},
+                    {"id": "menu_catalog", "title": "← Catalog"},
+                ])
+            ]
+
+        if step == "editing_cost":
+            amount = parse_amount(text_s)
+            if not amount:
+                return [text_response("Enter cost per unit (e.g. 5000, 25K, 1.2M):")]
+
+            prod["landing_cost"] = int(amount)
+            self._save_products(phone_number, products)
+            self.session.reset(phone_number)
+            return [
+                text_response(f"✅ *{name}* cost set to *{format_amount(amount)}* per unit"),
+                button_response("What's next?", [
+                    {"id": f"cat_editpick_{product_key}", "title": "✏️ Edit More"},
+                    {"id": "menu_catalog", "title": "← Catalog"},
+                ])
+            ]
+
+        self.session.reset(phone_number)
+        return self.show_menu(phone_number)
 
     # ─────────────────────────────────────────────────────────
     # ADD PRODUCT

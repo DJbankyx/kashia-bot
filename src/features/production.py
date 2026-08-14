@@ -613,15 +613,34 @@ class ProductionHandler:
         ("ml", "l"): 0.001, ("ml", "litre"): 0.001, ("ml", "litres"): 0.001, ("ml", "liter"): 0.001,
         ("l", "ml"): 1000, ("litre", "ml"): 1000, ("litres", "ml"): 1000, ("liter", "ml"): 1000,
         ("cl", "ml"): 10, ("ml", "cl"): 0.1,
-        ("cl", "l"): 0.01, ("l", "cl"): 100,
+        ("cl", "l"): 0.01, ("l", "cl"): 100, ("cl", "litre"): 0.01, ("litre", "cl"): 100,
+        ("cl", "litres"): 0.01, ("litres", "cl"): 100,
         # Weight
         ("g", "kg"): 0.001, ("kg", "g"): 1000,
         ("mg", "g"): 0.001, ("g", "mg"): 1000,
+        ("gram", "kg"): 0.001, ("kg", "gram"): 1000,
+        ("grams", "kg"): 0.001, ("kg", "grams"): 1000,
+        ("tonne", "kg"): 1000, ("kg", "tonne"): 0.001,
+        ("tonnes", "kg"): 1000, ("kg", "tonnes"): 0.001,
+        # Time
+        ("min", "hour"): 1/60, ("hour", "min"): 60,
+        ("minute", "hour"): 1/60, ("hour", "minute"): 60,
+        ("minutes", "hours"): 1/60, ("hours", "minutes"): 60,
+        ("hr", "min"): 60, ("min", "hr"): 1/60,
+        ("hour", "day"): 1/24, ("day", "hour"): 24,
         # Quantity synonyms (treat as same)
         ("piece", "pieces"): 1, ("pieces", "piece"): 1,
         ("unit", "units"): 1, ("units", "unit"): 1,
         ("piece", "units"): 1, ("units", "piece"): 1,
         ("pieces", "units"): 1, ("units", "pieces"): 1,
+        ("pc", "pieces"): 1, ("pieces", "pc"): 1,
+        ("pcs", "pieces"): 1, ("pieces", "pcs"): 1,
+        # Volume larger
+        ("gallon", "litre"): 3.785, ("litre", "gallon"): 0.264,
+        ("gallon", "litres"): 3.785, ("litres", "gallon"): 0.264,
+        ("drum", "litre"): 200, ("litre", "drum"): 0.005,
+        ("drum", "litres"): 200, ("litres", "drum"): 0.005,
+        ("drum", "l"): 200, ("l", "drum"): 0.005,
     }
 
     def _convert_to_stock_unit(self, recipe_qty: float, recipe_unit: str,
@@ -797,9 +816,15 @@ class ProductionHandler:
         else:
             return [text_response(
                 f"📋 *Set recipe for: {product_name}*\n\n"
-                f"What's the first raw material needed?\n\n"
-                f"_Type the material name (e.g. Sulphonic Acid, Flour, Bottles)_\n\n"
-                f"_Type *done* when finished._"
+                f"What raw material is needed to make this?\n\n"
+                f"Type *only the material name* (one at a time):\n\n"
+                f"Examples:\n"
+                f"  _Sulphonic Acid_\n"
+                f"  _Flour_\n"
+                f"  _Bottles_\n"
+                f"  _HCL_\n\n"
+                f"_I'll ask for the quantity next._\n"
+                f"_Type *done* when you've added all materials._"
             )]
 
     def _recipe_add_material(self, phone_number: str, text: str, context: dict) -> list:
@@ -818,8 +843,14 @@ class ProductionHandler:
 
         return [text_response(
             f"🧱 *{material_name}*\n\n"
-            f"How much is needed to produce *1 unit* of {context.get('recipe_product_name', 'product')}?\n\n"
-            f"_Type: quantity unit (e.g. 500ml, 2kg, 1 bottle, 0.5 litres)_\n\n"
+            f"How much *{material_name}* is needed to make *1 unit* of {context.get('recipe_product_name', 'product')}?\n\n"
+            f"Type: *quantity* then *unit*\n\n"
+            f"Examples:\n"
+            f"  _500 ml_\n"
+            f"  _2 kg_\n"
+            f"  _1 piece_\n"
+            f"  _0.5 litres_\n"
+            f"  _300 grams_\n\n"
             f"_Type *back* to change the material name_"
         )]
 

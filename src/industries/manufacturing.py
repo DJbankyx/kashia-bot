@@ -326,7 +326,6 @@ class ManufacturingIndustry(BaseIndustry):
             f"  🔄 Batches: {len(productions)}",
             f"━━━━━━━━━━━━━━━━━━━━",
         ])
-        ]
 
         # Low stock materials warning
         catalog = user.get("product_catalog", {})

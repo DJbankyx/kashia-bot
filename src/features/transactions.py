@@ -394,8 +394,46 @@ class TransactionHandler:
                 if industry == "services" or (industry == "hybrid" and is_service_job):
                     # Services / hybrid service job: ask about supplies used (optional)
                     return self._ask_supplies_used(phone_number, tx_id, tx_data)
+                elif industry == "manufacturing" or (industry == "hybrid" and not is_service_job):
+                    # Manufacturing: use recipe cost (don't ask landing cost)
+                    # The product's landing_cost is auto-set during production
+                    from features.catalog import CatalogHandler
+                    cat = CatalogHandler(self.session, self.db)
+                    desc = tx_data.get("description", "")
+                    product_cost = cat.get_landing_cost(phone_number, desc)
+                    qty = self._parse_qty(tx_data.get("quantity", "1"))
+
+                    if product_cost > 0:
+                        # Auto-use recipe cost — no need to ask
+                        profit = int(tx_data["amount"]) - (product_cost * qty)
+                        profit_str = f"📈 Profit: {format_amount(profit)}" if profit > 0 else f"📉 Loss: {format_amount(profit)}"
+
+                        # Deduct from stock
+                        cat.update_stock(phone_number, desc, -qty)
+
+                        self.session.reset(phone_number)
+                        return [
+                            text_response(
+                                f"✅ *Sale saved!* {format_amount(tx_data['amount'])}\n\n"
+                                f"📦 {qty} × {desc}\n"
+                                f"💰 Production cost: {format_amount(product_cost)}/unit\n"
+                                f"{profit_str}\n\n"
+                                f"_Cost auto-calculated from production recipe._"
+                            ),
+                            button_response(
+                                "What's next?",
+                                [
+                                    {"id": "record_sale", "title": "💰 Sell More"},
+                                    {"id": "record_production", "title": "🏭 Produce"},
+                                    {"id": "menu_home", "title": "☰ Menu"},
+                                ]
+                            )
+                        ]
+                    else:
+                        # No recipe cost set — fall through to ask landing cost
+                        return self._check_variants_then_landing_cost(phone_number, tx_id, tx_data)
                 else:
-                    # Trading/Manufacturing/Hybrid product: check variants → ask landing cost
+                    # Trading: check variants → ask landing cost
                     return self._check_variants_then_landing_cost(phone_number, tx_id, tx_data)
 
             # ── For PURCHASES: update inventory (add stock + save cost) ──
@@ -1408,6 +1446,122 @@ class TransactionHandler:
             guided_data["amount"] = float(amount)
             return self._advance_guided(phone_number, "amount", guided_type, guided_data)
 
+        if step == "quantity":
+            # Parse quantity + optional unit for manufacturing purchases
+            import re
+            text_s = text.strip()
+
+            # Try to match "number unit" pattern (e.g. "1 drum", "5 bags", "220 litres")
+            qty_unit_match = re.match(r'^([\d.]+)\s+(.+)', text_s)
+            if qty_unit_match:
+                qty_num = qty_unit_match.group(1)
+                qty_unit = qty_unit_match.group(2).strip().lower()
+                guided_data["quantity"] = qty_num
+                guided_data["quantity_unit"] = qty_unit
+
+                # Check if this is a non-standard unit that needs a conversion
+                STANDARD_UNITS = {
+                    "ml", "l", "litre", "litres", "liter", "cl",
+                    "g", "kg", "gram", "grams", "mg", "tonne", "tonnes",
+                    "piece", "pieces", "unit", "units", "pc", "pcs",
+                    "min", "minute", "minutes", "hour", "hours", "hr", "day", "days",
+                }
+                unit_normalized = qty_unit.rstrip("s")
+
+                if unit_normalized not in STANDARD_UNITS and qty_unit not in STANDARD_UNITS:
+                    # Non-standard unit — check if we already have a conversion for this material
+                    item_name = guided_data.get("item", "")
+                    from features.catalog import CatalogHandler
+                    cat = CatalogHandler(self.session, self.db)
+                    products = cat._get_products(phone_number)
+                    mat_key = item_name.lower().replace(" ", "_")
+                    mat_product = products.get(mat_key, {})
+                    conversions = mat_product.get("conversions", {})
+
+                    # Check if we already know this unit
+                    already_knows = any(
+                        qty_unit.rstrip("s") in k.lower() or qty_unit in k.lower()
+                        for k in conversions.keys()
+                    )
+
+                    if not already_knows:
+                        # Ask user to teach the conversion
+                        guided_data["teach_unit"] = qty_unit
+                        self.session.save(phone_number, states.GUIDED_RECORDING, {
+                            "guided_type": guided_type,
+                            "guided_step": "conversion_teach",
+                            "guided_data": guided_data,
+                        })
+                        return [text_response(
+                            f"📦 You said *{qty_num} {qty_unit}*.\n\n"
+                            f"How many *standard units* (litres, kg, pieces, etc.) is *1 {qty_unit}*?\n\n"
+                            f"_e.g. 220 litres, 50 kg, 24 pieces_\n\n"
+                            f"_Type *skip* to just record as {qty_num} {qty_unit}_"
+                        )]
+
+                return self._advance_guided(phone_number, "quantity", guided_type, guided_data)
+            else:
+                # Just a number (e.g. "50", "220")
+                qty_match = re.match(r'^([\d.]+)', text_s)
+                if not qty_match:
+                    guided_data["quantity"] = "1"
+                else:
+                    guided_data["quantity"] = qty_match.group(1)
+                return self._advance_guided(phone_number, "quantity", guided_type, guided_data)
+
+        if step == "conversion_teach":
+            # User is teaching us a conversion (e.g. "220 litres")
+            import re
+            text_s = text.strip()
+
+            if text_s.lower() in ("skip", "no"):
+                # Skip — just use the raw number
+                return self._advance_guided(phone_number, "quantity", guided_type, guided_data)
+
+            conv_match = re.match(r'^([\d.]+)\s*(.*)', text_s)
+            if not conv_match:
+                return [text_response(
+                    f"Please enter: *number* + *unit*\n\n"
+                    f"_e.g. 220 litres, 50 kg, 24 pieces_"
+                )]
+
+            conv_qty = float(conv_match.group(1))
+            conv_unit = conv_match.group(2).strip().lower() or "units"
+            teach_unit = guided_data.get("teach_unit", "unit")
+            item_name = guided_data.get("item", "")
+
+            # Save conversion to the material's catalog entry
+            from features.catalog import CatalogHandler
+            cat = CatalogHandler(self.session, self.db)
+            products = cat._get_products(phone_number)
+            mat_key = item_name.lower().replace(" ", "_")
+
+            if mat_key in products:
+                product = products[mat_key]
+                conversions = product.setdefault("conversions", {})
+                conv_key = f"1 {teach_unit}"
+                conversions[conv_key] = {"qty": int(conv_qty), "unit": conv_unit}
+                product["primary_unit"] = conv_unit
+                cat._save_products(phone_number, products)
+
+            # Update the quantity to the converted amount
+            raw_qty = float(guided_data.get("quantity", "1"))
+            converted_qty = raw_qty * conv_qty
+            guided_data["quantity"] = str(int(converted_qty) if converted_qty == int(converted_qty) else converted_qty)
+            guided_data["quantity_unit"] = conv_unit
+
+            # Clean up
+            if "teach_unit" in guided_data:
+                del guided_data["teach_unit"]
+
+            return [
+                text_response(
+                    f"✅ Got it! *1 {teach_unit} = {int(conv_qty)} {conv_unit}*\n\n"
+                    f"_Saved! I'll remember this for next time._"
+                ),
+                *self._advance_guided(phone_number, "quantity", guided_type, guided_data)
+            ]
+
         if step == "vendor":
             guided_data["vendor"] = text.strip()
             return self._advance_guided(phone_number, "vendor", guided_type, guided_data)
@@ -1421,11 +1575,21 @@ class TransactionHandler:
 
     def _advance_guided(self, phone_number: str, completed_step: str, guided_type: str, data: dict, skip: bool = False) -> list:
         """Move to next guided step."""
-        # Step order depends on type:
-        # sale/purchase: item → amount → vendor → details → confirm
+        # Step order depends on type and industry:
+        # Manufacturing purchases: item → quantity → amount → vendor → confirm
+        # Regular sale/purchase: item → amount → vendor → details → confirm
         # expense: item → amount → vendor → confirm (no details needed)
+
+        # Check if manufacturing purchase — add quantity step
+        industry = self._get_industry(phone_number)
+        user = self.db.get_user(phone_number) or {}
+        industry_class = user.get("industry_class", user.get("business_type", "trading"))
+        is_mfg_purchase = guided_type == "purchase" and industry_class in ("manufacturing", "hybrid")
+
         if guided_type == "expense":
             steps = ["item", "amount", "vendor"]
+        elif is_mfg_purchase:
+            steps = ["item", "quantity", "amount", "vendor"]
         else:
             steps = ["item", "amount", "vendor", "details"]
 
@@ -1436,16 +1600,18 @@ class TransactionHandler:
             return self._finalize_guided(phone_number, guided_type, data)
 
         next_step = steps[next_idx]
-        industry = self._get_industry(phone_number)
 
         # Get prompt for next step
-        prompt_keys = {
-            "amount": "ask_amount",
-            "vendor": f"ask_vendor_{guided_type}" if guided_type in ("sale", "purchase") else "ask_vendor_expense",
-            "details": "ask_details",
-        }
-        prompt_key = prompt_keys.get(next_step, "ask_amount")
-        prompt = industry.get_guided_prompt(prompt_key) if industry else f"Enter {next_step}:"
+        if next_step == "quantity":
+            prompt = "📐 *How many* did you buy?\n\n_Just a number: 20, 50, 100_\n_Or number + unit: 1 drum, 5 bags, 220 litres_\n\n_Type *skip* if unsure (defaults to 1)_"
+        else:
+            prompt_keys = {
+                "amount": "ask_amount",
+                "vendor": f"ask_vendor_{guided_type}" if guided_type in ("sale", "purchase") else "ask_vendor_expense",
+                "details": "ask_details",
+            }
+            prompt_key = prompt_keys.get(next_step, "ask_amount")
+            prompt = industry.get_guided_prompt(prompt_key) if industry else f"Enter {next_step}:"
 
         self.session.save(phone_number, states.GUIDED_RECORDING, {
             "guided_type": guided_type,
@@ -1457,7 +1623,28 @@ class TransactionHandler:
 
     def _go_back_guided(self, phone_number: str, current_step: str, guided_type: str, data: dict) -> list:
         """Go back one step in guided flow."""
-        steps = ["item", "amount", "vendor", "details"]
+        # Determine step order based on industry and type
+        user = self.db.get_user(phone_number) or {}
+        industry_class = user.get("industry_class", user.get("business_type", "trading"))
+        is_mfg_purchase = guided_type == "purchase" and industry_class in ("manufacturing", "hybrid")
+
+        # conversion_teach is a sub-step of quantity — go back to quantity
+        if current_step == "conversion_teach":
+            data.pop("teach_unit", None)
+            self.session.save(phone_number, states.GUIDED_RECORDING, {
+                "guided_type": guided_type,
+                "guided_step": "quantity",
+                "guided_data": data,
+            })
+            return [text_response("📐 *How many units* did you buy?\n\n_e.g. 20, 50, 1 drum, 5 bags_\n\n_Type *skip* if unsure_")]
+
+        if guided_type == "expense":
+            steps = ["item", "amount", "vendor"]
+        elif is_mfg_purchase:
+            steps = ["item", "quantity", "amount", "vendor"]
+        else:
+            steps = ["item", "amount", "vendor", "details"]
+
         current_idx = steps.index(current_step) if current_step in steps else 0
 
         if current_idx <= 0:
@@ -1470,8 +1657,11 @@ class TransactionHandler:
         data.pop(current_step, None)
 
         industry = self._get_industry(phone_number)
-        prompt_key = f"ask_item_{guided_type}" if prev_step == "item" else f"ask_{prev_step}"
-        prompt = industry.get_guided_prompt(prompt_key) if industry else f"Enter {prev_step}:"
+        if prev_step == "quantity":
+            prompt = "📐 *How many* did you buy?\n\n_Just a number: 20, 50, 100_\n_Or number + unit: 1 drum, 5 bags_\n\n_Type *skip* if unsure_"
+        else:
+            prompt_key = f"ask_item_{guided_type}" if prev_step == "item" else f"ask_{prev_step}"
+            prompt = industry.get_guided_prompt(prompt_key) if industry else f"Enter {prev_step}:"
 
         self.session.save(phone_number, states.GUIDED_RECORDING, {
             "guided_type": guided_type,
@@ -1514,15 +1704,16 @@ class TransactionHandler:
             category = "Utilities & Services"
 
         # Extract quantity from item text if present (e.g. "10 hand bags")
-        quantity = ""
+        quantity = data.get("quantity", "")  # From dedicated quantity step (manufacturing)
         import re
-        qty_match = re.match(r'^(\d+)\s*(pairs?|pieces?|pcs|bags?|cartons?|dozen|units?|boxes?)?\s*(.+)',
-                             item, re.IGNORECASE)
-        if qty_match:
-            qty_num  = qty_match.group(1)
-            qty_unit = qty_match.group(2) or "pieces"
-            item     = qty_match.group(3).strip()
-            quantity = f"{qty_num} {qty_unit}"
+        if not quantity:
+            qty_match = re.match(r'^(\d+)\s*(pairs?|pieces?|pcs|bags?|cartons?|dozen|units?|boxes?)?\s*(.+)',
+                                 item, re.IGNORECASE)
+            if qty_match:
+                qty_num  = qty_match.group(1)
+                qty_unit = qty_match.group(2) or "pieces"
+                item     = qty_match.group(3).strip()
+                quantity = f"{qty_num} {qty_unit}"
 
         # Build tx_data directly — structured, no AI needed
         tx_data = {
