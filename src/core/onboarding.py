@@ -283,12 +283,21 @@ class OnboardingHandler:
         # Seed catalog if products were extracted
         if items:
             catalog = {"products": {}}
+            # Set item_type based on industry
+            if industry == "services":
+                default_type = "service"
+            elif industry == "manufacturing":
+                default_type = "finished_product"
+            else:
+                default_type = "product"
+
             for item in items[:15]:
                 key = item.lower().replace(" ", "_")
                 catalog["products"][key] = {
                     "name": item,
                     "stock": 0,
                     "landing_cost": 0,
+                    "item_type": default_type,
                     "category": "",
                     "variants": [],
                     "recipe": [],
@@ -339,7 +348,46 @@ class OnboardingHandler:
                 )
             ]
 
-        # Non-manufacturing: standard completion
+        # Services-specific: guide user to set prices and add recurring clients
+        if industry == "services":
+            lines.append("💼 *Next steps:*")
+            lines.append("")
+            if items:
+                lines.append("1️⃣ *Set your prices* — tap below to set what you charge for each service")
+                lines.append("2️⃣ *Add recurring clients* — regular jobs that repeat weekly/monthly")
+            else:
+                lines.append("1️⃣ *Add your services* — what you offer and your rates")
+                lines.append("2️⃣ *Add recurring clients* — regular jobs that repeat weekly/monthly")
+            lines.append("")
+            lines.append("_Set up now or skip and start recording jobs._")
+
+            from utils.whatsapp_ui import button_response
+            if items:
+                return [
+                    text_response("\n".join(lines)),
+                    button_response(
+                        "What first?",
+                        [
+                            {"id": "cat_set_price", "title": "💰 Set Prices"},
+                            {"id": "rec_add", "title": "🔁 Add Recurring"},
+                            {"id": "menu_home", "title": "⏭️ Skip for Now"},
+                        ]
+                    )
+                ]
+            else:
+                return [
+                    text_response("\n".join(lines)),
+                    button_response(
+                        "What first?",
+                        [
+                            {"id": "cat_add_service", "title": "➕ Add Service"},
+                            {"id": "rec_add", "title": "🔁 Add Recurring"},
+                            {"id": "menu_home", "title": "⏭️ Skip for Now"},
+                        ]
+                    )
+                ]
+
+        # Non-manufacturing/services: standard completion
         lines.append("Here's how I work:\n")
         lines.append(f"💬 *Type what you bought or sold* and I'll record it.")
         lines.append(f"Example: \"{self._get_example(industry)}\"")
