@@ -628,6 +628,7 @@ class Router:
         user = self.db.get_user(phone_number) or {}
         industry = user.get("industry_class", user.get("business_type", "trading"))
         is_manufacturing = industry in ("manufacturing", "hybrid")
+        is_services = industry == "services"
 
         if tx_type == "purchase" and is_manufacturing:
             # Show raw materials only
@@ -635,6 +636,12 @@ class Router:
             section_title = "Raw Materials"
             header = "🧱 What material did you buy?"
             other_desc = "Add a new raw material"
+        elif tx_type == "sale" and is_services:
+            # Services: show service catalog with pricing
+            rows = self.catalog.get_services_list_for_recording(phone_number)
+            section_title = "Your Services"
+            header = "💼 What service did you provide?"
+            other_desc = "Type service manually"
         else:
             # Show all products (for sales) or full catalog (non-manufacturing)
             rows = self.catalog.get_product_list_for_recording(phone_number)

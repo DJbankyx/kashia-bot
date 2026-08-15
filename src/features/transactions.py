@@ -1465,18 +1465,31 @@ class TransactionHandler:
                     "g", "kg", "gram", "grams", "mg", "tonne", "tonnes",
                     "piece", "pieces", "unit", "units", "pc", "pcs",
                     "min", "minute", "minutes", "hour", "hours", "hr", "day", "days",
+                    "kwh", "kw", "whr", "watt",
                 }
                 unit_normalized = qty_unit.rstrip("s")
 
-                if unit_normalized not in STANDARD_UNITS and qty_unit not in STANDARD_UNITS:
-                    # Non-standard unit — check if we already have a conversion for this material
+                if unit_normalized in STANDARD_UNITS or qty_unit in STANDARD_UNITS:
+                    # Standard unit — set primary_unit on the material for conversion support
                     item_name = guided_data.get("item", "")
-                    from features.catalog import CatalogHandler
-                    cat = CatalogHandler(self.session, self.db)
-                    products = cat._get_products(phone_number)
-                    mat_key = item_name.lower().replace(" ", "_")
-                    mat_product = products.get(mat_key, {})
-                    conversions = mat_product.get("conversions", {})
+                    if item_name:
+                        from features.catalog import CatalogHandler
+                        cat = CatalogHandler(self.session, self.db)
+                        products = cat._get_products(phone_number)
+                        mat_key = item_name.lower().replace(" ", "_")
+                        if mat_key in products and not products[mat_key].get("primary_unit"):
+                            products[mat_key]["primary_unit"] = qty_unit
+                            cat._save_products(phone_number, products)
+                    return self._advance_guided(phone_number, "quantity", guided_type, guided_data)
+
+                # Non-standard unit — check if we already have a conversion for this material
+                item_name = guided_data.get("item", "")
+                from features.catalog import CatalogHandler
+                cat = CatalogHandler(self.session, self.db)
+                products = cat._get_products(phone_number)
+                mat_key = item_name.lower().replace(" ", "_")
+                mat_product = products.get(mat_key, {})
+                conversions = mat_product.get("conversions", {})
 
                     # Check if we already know this unit
                     already_knows = any(
@@ -2133,8 +2146,12 @@ class TransactionHandler:
             return self._catrec_quantity(phone_number, text_s, context)
 
         # ── Step: ask_amount ──
-        if step == "ask_amount":
-            # Handle auto-suggest button: catrec_amt_37000000
+        if step in ("ask_amount", "ask_amount_confirm"):
+            # Handle auto-suggest button: catrec_amt_37000000 or catrec_amt_custom
+            if text_s == "catrec_amt_custom":
+                context["cat_rec_step"] = "ask_amount"
+                self.session.save(phone_number, states.CATALOG_RECORDING, context)
+                return [text_response("💰 How much did you charge?\n\n_e.g. 15000, 25K, 50K_")]
             if text_s.startswith("catrec_amt_"):
                 try:
                     amount = float(text_s[11:])  # After "catrec_amt_"
@@ -2148,6 +2165,11 @@ class TransactionHandler:
             context["cat_rec_step"] = "ask_vendor"
             self.session.save(phone_number, states.CATALOG_RECORDING, context)
             label = "sell to" if tx_type == "sale" else "buy from"
+            # Services: ask "who was the client?" instead of "who did you sell to?"
+            user = self.db.get_user(phone_number) or {}
+            ind = user.get("industry_class", user.get("business_type", "trading"))
+            if ind == "services" and tx_type == "sale":
+                return [text_response("👤 Who was the client?\n\n_Type their name, or *skip*_")]
             return [text_response(f"👤 Who did you {label}?\n\n_Type their name, or *skip*_")]
 
         # ── Step: ask_vendor ──
@@ -2206,7 +2228,38 @@ class TransactionHandler:
         context["cat_rec_product_key"] = product_key
         context["cat_rec_product_name"] = product_name
 
-        # Go straight to quantity (no tree walk)
+        # Services industry: skip quantity (default 1), pre-fill price, go to vendor
+        user_industry = user.get("industry_class", user.get("business_type", "trading")) if user else "trading"
+        if user_industry == "services" and context.get("cat_rec_type") == "sale":
+            service_price = int(product.get("landing_cost", 0))
+            context["cat_rec_quantity"] = 1
+
+            if service_price > 0:
+                # Pre-fill amount, go straight to vendor
+                context["cat_rec_amount"] = float(service_price)
+                context["cat_rec_step"] = "ask_amount_confirm"
+                self.session.save(phone_number, states.CATALOG_RECORDING, context)
+
+                from utils.whatsapp_ui import button_response
+                return [button_response(
+                    f"💼 *{product_name}*\n\n"
+                    f"💰 Standard price: *{format_amount(service_price)}*\n\n"
+                    f"_Use this price or type a different amount:_",
+                    [
+                        {"id": f"catrec_amt_{service_price}", "title": f"✅ {format_amount(service_price)}"},
+                        {"id": "catrec_amt_custom", "title": "💰 Different Amount"},
+                    ]
+                )]
+            else:
+                # No price set — ask for amount
+                context["cat_rec_step"] = "ask_amount"
+                self.session.save(phone_number, states.CATALOG_RECORDING, context)
+                return [text_response(
+                    f"💼 *{product_name}*\n\n"
+                    f"💰 How much did you charge?\n\n_e.g. 15000, 25K, 50K_"
+                )]
+
+        # Non-services: go to quantity step
         context["cat_rec_step"] = "ask_quantity"
         self.session.save(phone_number, states.CATALOG_RECORDING, context)
 

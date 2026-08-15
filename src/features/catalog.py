@@ -44,6 +44,51 @@ class CatalogHandler:
         count = len(products)
         total_stock = sum(int(p.get("stock", 0)) for p in products.values())
 
+        # Check user's industry
+        user = self.db.get_user(phone_number) or {}
+        industry = user.get("industry_class", user.get("business_type", "trading"))
+        is_manufacturing = industry in ("manufacturing", "hybrid")
+        is_services = industry == "services"
+
+        # ── Services industry: "My Services" focused menu ──
+        if is_services:
+            service_count = sum(1 for p in products.values() if p.get("item_type") == "service")
+            supply_count = sum(1 for p in products.values() if p.get("item_type") in ("raw_material", "consumable", "supply"))
+            # Count items without a type as services (from onboarding)
+            untyped = sum(1 for p in products.values() if p.get("item_type") not in ("service", "raw_material", "consumable", "supply"))
+            service_count += untyped
+
+            body = f"💼 *My Services & Supplies* — {count} item{'s' if count != 1 else ''}"
+            body += "\n\nWhat would you like to do?"
+
+            rows = [
+                {"id": "cat_view_services", "title": f"💼 View My Services ({service_count})",
+                 "description": "Services you offer with pricing"},
+                {"id": "cat_view_supplies", "title": f"📦 View Supplies ({supply_count})",
+                 "description": "Consumables & equipment"},
+                {"id": "cat_edit", "title": "✏️ Edit Service/Supply",
+                 "description": "Change name, price, or delete"},
+                {"id": "cat_add_service", "title": "➕ Add Service",
+                 "description": "Add a new service with pricing"},
+                {"id": "cat_add", "title": "📦 Add Supply",
+                 "description": "Add consumable or equipment"},
+                {"id": "cat_set_price", "title": "💰 Set Service Price",
+                 "description": "Update your standard rates"},
+                {"id": "cat_adjust", "title": "📐 Adjust Supply Stock",
+                 "description": "Update supply quantities"},
+            ]
+
+            return [list_response(
+                header="💼 Services & Supplies",
+                body=body,
+                button_text="Select Action",
+                sections=[{
+                    "title": "Actions",
+                    "rows": rows,
+                }]
+            )]
+
+        # ── Manufacturing: products + materials ──
         # Count by type
         finished_count = sum(1 for p in products.values() if p.get("item_type") == "finished_product")
         material_count = sum(1 for p in products.values() if p.get("item_type") == "raw_material")
@@ -53,15 +98,9 @@ class CatalogHandler:
             body += f" · {total_stock} total units"
         body += "\n\nWhat would you like to do?"
 
-        # Check user's industry for manufacturing-specific options
-        user = self.db.get_user(phone_number) or {}
-        industry = user.get("industry_class", user.get("business_type", "trading"))
-        is_manufacturing = industry in ("manufacturing", "hybrid")
-
         rows = []
 
         if is_manufacturing:
-            # Manufacturing: separate view options
             rows.extend([
                 {"id": "cat_view_products", "title": f"🏭 View Products ({finished_count})",
                  "description": "Finished goods you manufacture"},
@@ -69,7 +108,7 @@ class CatalogHandler:
                  "description": "Raw materials & inputs"},
             ])
         else:
-            # Trading/Services: single stock view
+            # Trading: single stock view
             rows.append(
                 {"id": "cat_stock", "title": "📊 View Stock Levels",
                  "description": "See all products with quantities"}
@@ -85,7 +124,6 @@ class CatalogHandler:
              "description": "Add a new product to inventory"}
         )
 
-        # Manufacturing: add recipe option
         if is_manufacturing:
             rows.append(
                 {"id": "cat_recipe", "title": "📋 Set Recipe / BOM",
@@ -157,6 +195,18 @@ class CatalogHandler:
 
         if button_id == "cat_view_materials":
             return self._view_materials_list(phone_number)
+
+        if button_id == "cat_view_services":
+            return self._view_services_list(phone_number)
+
+        if button_id == "cat_view_supplies":
+            return self._view_supplies_list(phone_number)
+
+        if button_id == "cat_add_service":
+            return self._start_add_service(phone_number)
+
+        if button_id == "cat_set_price":
+            return self._start_set_price(phone_number)
 
         if button_id == "cat_edit":
             return self._start_edit_product(phone_number)
@@ -296,6 +346,10 @@ class CatalogHandler:
         # Edit product steps
         if step in ("editing_name", "editing_stock", "editing_cost"):
             return self._handle_edit_input(phone_number, text_s, context)
+
+        # Add service steps (services industry)
+        if step in ("adding_service_name", "adding_service_price"):
+            return self._handle_add_service(phone_number, text_s, context)
 
         self.session.reset(phone_number)
         return self.show_menu(phone_number)
@@ -535,7 +589,213 @@ class CatalogHandler:
             ]
         return [text_response("\n".join(lines))]
 
-    def _view_product_detail(self, phone_number: str, product_key: str) -> list:
+    # ─────────────────────────────────────────────────────────
+    # VIEW SERVICES / SUPPLIES — Services industry
+    # ─────────────────────────────────────────────────────────
+
+    def _view_services_list(self, phone_number: str) -> list:
+        """View services offered with pricing (services industry)."""
+        products = self._get_products(phone_number)
+        # Services = items that are type "service" or untyped (from onboarding)
+        services = {k: v for k, v in products.items()
+                    if v.get("item_type") in ("service", "product", "") or not v.get("item_type")}
+
+        if not services:
+            return [text_response(
+                "💼 *My Services*\n\n"
+                "No services added yet.\n\n"
+                "_Tap ➕ Add Service to list what you offer._"
+            )]
+
+        lines = [
+            "━━━━━━━━━━━━━━━━━━━━",
+            "💼  *My Services*",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "",
+        ]
+
+        total_revenue_potential = 0
+        for key, prod in sorted(services.items(), key=lambda x: x[1].get("name", "")):
+            name = prod.get("name", key)
+            price = int(prod.get("landing_cost", 0))  # For services, landing_cost = standard price
+            total_revenue_potential += price
+
+            price_str = format_amount(price) if price else "_no price set_"
+            lines.append(f"💼 *{name}*")
+            lines.append(f"   💰 {price_str}")
+            lines.append("")
+
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"💼 {len(services)} service{'s' if len(services) != 1 else ''}")
+
+        # Tappable list for detail/edit
+        rows = []
+        for key, prod in list(services.items())[:10]:
+            name = prod.get("name", key)
+            price = int(prod.get("landing_cost", 0))
+            price_str = format_amount(price) if price else "No price set"
+            rows.append({
+                "id": f"cat_detail_{key}",
+                "title": f"💼 {name}"[:24],
+                "description": price_str[:72],
+            })
+
+        if rows:
+            return [
+                text_response("\n".join(lines)),
+                list_response(
+                    header="🔍 Edit Service",
+                    body="Tap a service to edit or set price:",
+                    button_text="Select",
+                    sections=[{"title": "Services", "rows": rows}]
+                )
+            ]
+        return [text_response("\n".join(lines))]
+
+    def _view_supplies_list(self, phone_number: str) -> list:
+        """View supplies/consumables (services industry)."""
+        products = self._get_products(phone_number)
+        supplies = {k: v for k, v in products.items()
+                    if v.get("item_type") in ("raw_material", "consumable", "supply")}
+
+        if not supplies:
+            return [text_response(
+                "📦 *Supplies*\n\n"
+                "No supplies tracked yet.\n\n"
+                "_When you buy supplies (chemicals, tools, consumables),_\n"
+                "_they'll appear here automatically._"
+            )]
+
+        lines = [
+            "━━━━━━━━━━━━━━━━━━━━",
+            "📦  *Supplies & Consumables*",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "",
+        ]
+
+        for key, prod in sorted(supplies.items(), key=lambda x: x[1].get("name", "")):
+            name = prod.get("name", key)
+            stock = int(prod.get("stock", 0))
+            cost = int(prod.get("landing_cost", 0))
+
+            indicator = "🔴" if stock <= 0 else ("🟡" if stock <= 5 else "🟢")
+            lines.append(f"{indicator} *{name}*")
+            lines.append(f"   Stock: *{stock}*" + (f" · {format_amount(cost)}/unit" if cost else ""))
+            lines.append("")
+
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"📦 {len(supplies)} supply item{'s' if len(supplies) != 1 else ''}")
+
+        return [
+            text_response("\n".join(lines)),
+            button_response("Actions:", [
+                {"id": "cat_add", "title": "📦 Add Supply"},
+                {"id": "cat_adjust", "title": "📐 Adjust Stock"},
+                {"id": "menu_home", "title": "☰ Menu"},
+            ])
+        ]
+
+    def _start_add_service(self, phone_number: str) -> list:
+        """Add a new service with pricing."""
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+            "cat_step": "adding_service_name",
+        })
+        return [text_response(
+            "➕ *Add Service*\n\n"
+            "What service do you offer?\n\n"
+            "_e.g. Hair Braiding, Office Cleaning, Car Repair, Makeup_\n\n"
+            "_Type *back* to cancel_"
+        )]
+
+    def _start_set_price(self, phone_number: str) -> list:
+        """Pick a service to set/update price."""
+        products = self._get_products(phone_number)
+        services = {k: v for k, v in products.items()
+                    if v.get("item_type") in ("service", "product", "") or not v.get("item_type")}
+
+        if not services:
+            return [text_response("No services to price. Add services first.")]
+
+        rows = []
+        for key, prod in list(services.items())[:10]:
+            name = prod.get("name", key)
+            price = int(prod.get("landing_cost", 0))
+            desc = format_amount(price) if price else "No price set"
+            rows.append({
+                "id": f"cat_pick_{key}",
+                "title": f"💼 {name}"[:24],
+                "description": desc[:72],
+            })
+
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+            "cat_step": "picking_product",
+            "cat_action": "set_service_price",
+        })
+
+        return [list_response(
+            header="💰 Set Price",
+            body="Which service do you want to price?",
+            button_text="Select",
+            sections=[{"title": "Services", "rows": rows}]
+        )]
+
+    def _handle_add_service(self, phone_number: str, text: str, context: dict) -> list:
+        """Handle service name input, then ask for price."""
+        step = context.get("cat_step", "")
+
+        if step == "adding_service_name":
+            service_name = text.strip().title()
+            if len(service_name) < 2:
+                return [text_response("Please enter the service name (at least 2 characters):")]
+
+            context["cat_step"] = "adding_service_price"
+            context["service_name"] = service_name
+            self.session.save(phone_number, states.CATALOG_ADD_DATA, context)
+
+            return [text_response(
+                f"💼 *{service_name}*\n\n"
+                f"💰 How much do you charge for this service?\n\n"
+                f"_e.g. 15000, 25K, 50K_\n\n"
+                f"_Type *skip* if price varies per client_"
+            )]
+
+        if step == "adding_service_price":
+            service_name = context.get("service_name", "Service")
+            price = 0
+
+            if text.lower() not in ("skip", "varies", "0"):
+                price = parse_amount(text)
+                if not price:
+                    return [text_response("💰 Enter a price (e.g. 15000, 25K) or type *skip*:")]
+                price = int(price)
+
+            # Save to catalog
+            products = self._get_products(phone_number)
+            key = service_name.lower().replace(" ", "_")
+            products[key] = {
+                "name": service_name,
+                "stock": 0,
+                "landing_cost": price,  # For services, this = standard price
+                "item_type": "service",
+                "category": "",
+                "variants": [],
+                "recipe": [],
+                "conversions": {},
+            }
+            self._save_products(phone_number, products)
+            self.session.reset(phone_number)
+
+            price_str = format_amount(price) if price else "Price varies"
+            return [
+                text_response(f"✅ Service added: *{service_name}* — {price_str}"),
+                button_response("What's next?", [
+                    {"id": "cat_add_service", "title": "➕ Add Another"},
+                    {"id": "rec_add", "title": "🔁 Add Recurring"},
+                    {"id": "menu_home", "title": "☰ Menu"},
+                ])
+            ]
+
+        return self.show_menu(phone_number)
         """Show full detail for a single product/material."""
         products = self._get_products(phone_number)
         if product_key not in products:
@@ -1428,6 +1688,20 @@ class CatalogHandler:
             )]
 
         self.session.reset(phone_number)
+        if action == "set_service_price":
+            current_price = int(product.get("landing_cost", 0))
+            price_str = f"\nCurrent: *{format_amount(current_price)}*" if current_price else ""
+            self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+                "cat_step": "setting_cost",
+                "cat_product_key": product_key,
+            })
+            return [text_response(
+                f"💰 *{name}* — Standard Price{price_str}\n\n"
+                f"How much do you charge for this service?\n\n"
+                f"_e.g. 15000, 25K, 50K_\n\n"
+                f"_Type *back* to cancel_"
+            )]
+
         return self.show_menu(phone_number)
 
     # ─────────────────────────────────────────────────────────
@@ -1599,6 +1873,30 @@ class CatalogHandler:
                 "id": f"catrec_{key}",
                 "title": f"📦 {name}"[:24],
                 "description": desc[:72],
+            })
+
+        return rows
+
+    def get_services_list_for_recording(self, phone_number: str) -> list:
+        """Get services as rows for the Record Job picker (services industry)."""
+        products = self._get_products(phone_number)
+        if not products:
+            return []
+
+        # Show only services (not supplies)
+        services = {k: v for k, v in products.items()
+                    if v.get("item_type") in ("service", "product", "") or not v.get("item_type")}
+
+        rows = []
+        for key, prod in list(services.items())[:9]:
+            name = prod.get("name", key)
+            price = int(prod.get("landing_cost", 0))
+            price_str = f"₦{price:,}" if price else "No price set"
+
+            rows.append({
+                "id": f"catrec_{key}",
+                "title": f"💼 {name}"[:24],
+                "description": price_str[:72],
             })
 
         return rows
