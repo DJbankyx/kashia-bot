@@ -148,6 +148,8 @@ class ServicesIndustry(BaseIndustry):
                      "description": "Who owes, payments"},
                     {"id": "biz_recurring", "title": "🔁 Recurring Services",
                      "description": "Regular clients & reminders"},
+                    {"id": "biz_quotes", "title": "📝 Quotes & Estimates",
+                     "description": "Send quotes, convert to invoice"},
                     {"id": "biz_docs", "title": "🧾 Documents",
                      "description": "Invoice, receipt, statement"},
                     {"id": "biz_export", "title": "📁 Export Data",
@@ -234,10 +236,18 @@ class ServicesIndustry(BaseIndustry):
         purchases = [t for t in transactions if t.get("type") == "purchase"]
         expenses = [t for t in transactions if t.get("type") == "expense"]
 
+        # Split expenses by classification
+        direct_expenses = [t for t in expenses if t.get("expense_class") == "direct"]
+        indirect_expenses = [t for t in expenses if t.get("expense_class") != "direct"]
+
         revenue = sum(int(t.get("amount", 0)) for t in jobs)
         supply_cost = sum(int(t.get("amount", 0)) for t in purchases)
-        opex = sum(int(t.get("amount", 0)) for t in expenses)
-        net_profit = revenue - supply_cost - opex
+        direct_exp = sum(int(t.get("amount", 0)) for t in direct_expenses)
+        indirect_exp = sum(int(t.get("amount", 0)) for t in indirect_expenses)
+        # Service COGS = supplies used + direct job costs
+        total_direct = supply_cost + direct_exp
+        gross_profit = revenue - total_direct
+        net_profit = gross_profit - indirect_exp
         job_count = len(jobs)
         avg_job = revenue // job_count if job_count > 0 else 0
 
@@ -261,12 +271,18 @@ class ServicesIndustry(BaseIndustry):
             f"💼 *Jobs Done:*     {job_count}",
             f"📊 *Avg per Job:*   {format_amount(avg_job)}",
             f"",
-            f"📦 *Supplies:*      {format_amount(supply_cost)}",
-            f"💸 *Expenses:*      {format_amount(opex)}",
+            f"*Direct Costs:*",
+            f"  📦 Supplies:      {format_amount(supply_cost)}",
+        ]
+        if direct_exp > 0:
+            lines.append(f"  💼 Job costs:     {format_amount(direct_exp)}")
+        lines.extend([
             f"━━━━━━━━━━━━━━━━━━━━",
+            f"📈 *Gross Profit:*  {format_amount(gross_profit)}",
+            f"💸 *Overhead:*      {format_amount(indirect_exp)}",
             f"{'📈' if net_profit >= 0 else '📉'} *Net Profit:*    {format_amount(net_profit)}",
             f"━━━━━━━━━━━━━━━━━━━━",
-        ]
+        ])
 
         if top_clients:
             lines.append("")

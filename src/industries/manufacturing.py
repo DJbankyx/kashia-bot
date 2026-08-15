@@ -144,6 +144,8 @@ class ManufacturingIndustry(BaseIndustry):
                      "description": "Past production runs"},
                     {"id": "biz_material_usage", "title": "📊 Material Usage",
                      "description": "What materials were consumed"},
+                    {"id": "prod_recalc_costs", "title": "🔄 Recalculate Costs",
+                     "description": "Sync recipe costs from purchases"},
                     {"id": "biz_dashboard", "title": "📈 Dashboard",
                      "description": "Output, yield, costs this month"},
                     {"id": "menu_catalog", "title": "📋 Products & Materials",
@@ -282,7 +284,9 @@ class ManufacturingIndustry(BaseIndustry):
         production_cost = sum(int(t.get("amount", 0)) for t in productions)
         direct_exp = sum(int(t.get("amount", 0)) for t in direct_expenses)
         indirect_exp = sum(int(t.get("amount", 0)) for t in indirect_expenses)
-        total_cogs = material_cost + production_cost + direct_exp
+        # COGS = production costs (already includes material costs from recipe) + direct expenses
+        # Raw material purchases are inventory investments, not COGS until consumed in production
+        total_cogs = production_cost + direct_exp
         gross_profit = revenue - total_cogs
         net_profit = gross_profit - indirect_exp
 
@@ -305,8 +309,7 @@ class ManufacturingIndustry(BaseIndustry):
             f"",
             f"💰 *Revenue:*        {format_amount(revenue)}",
             f"",
-            f"*Cost of Production:*",
-            f"  🧱 Materials:      {format_amount(material_cost)}",
+            f"*Cost of Goods Sold:*",
             f"  🏭 Production:     {format_amount(production_cost)}",
         ]
         if direct_exp > 0:
@@ -318,6 +321,10 @@ class ManufacturingIndustry(BaseIndustry):
             f"💸 *Operating Exp:*  {format_amount(indirect_exp)}",
             f"{'📈' if net_profit >= 0 else '📉'} *Net Profit:*     {format_amount(net_profit)}",
             f"",
+        ])
+        if material_cost > 0:
+            lines.append(f"🧱 *Materials Bought:* {format_amount(material_cost)} _(inventory)_")
+        lines.extend([
             f"━━━━━━━━━━━━━━━━━━━━",
             f"🏭 *Production Stats:*",
             f"  📦 Output: {total_produced} units",

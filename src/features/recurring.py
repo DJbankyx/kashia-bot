@@ -349,7 +349,7 @@ class RecurringHandler:
         ]
 
     def _mark_done(self, phone_number: str, rec_id: str) -> list:
-        """Mark a recurring service as done — records transaction and advances schedule."""
+        """Mark a recurring service as done — records transaction, deducts supplies, advances schedule."""
         user = self.db.get_user(phone_number) or {}
         recurring = user.get("recurring_services", [])
 
@@ -379,6 +379,18 @@ class RecurringHandler:
             sub_category="Recurring Service",
         )
 
+        # Auto-deduct supplies from service template (if defined)
+        supply_msg = ""
+        service_key = service.lower().replace(" ", "_")
+        try:
+            from features.catalog import CatalogHandler
+            cat = CatalogHandler(None, self.db)  # session not needed for deduction
+            deductions = cat.deduct_service_supplies(phone_number, service_key)
+            if deductions:
+                supply_msg = "\n\n📦 *Supplies deducted:*\n" + "\n".join(deductions)
+        except Exception:
+            pass  # Non-critical
+
         # Advance next_due
         days = FREQ_DAYS.get(frequency, 30)
         target["next_due"] = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
@@ -390,7 +402,7 @@ class RecurringHandler:
             text_response(
                 f"✅ *Job recorded!*\n\n"
                 f"💼 {service} for {client}\n"
-                f"💰 {format_amount(amount)}\n\n"
+                f"💰 {format_amount(amount)}{supply_msg}\n\n"
                 f"📅 Next due: {target['next_due']}\n"
                 f"_Schedule updated automatically._"
             ),

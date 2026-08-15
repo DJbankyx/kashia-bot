@@ -273,7 +273,7 @@ class TransactionHandler:
     # ═══════════════════════════════════════════════════════════
 
     def _ask_payment_method(self, phone_number: str, tx_data: dict) -> list:
-        """Ask how the transaction was paid — Cash, Transfer, or Credit."""
+        """Ask how the transaction was paid — Cash, Transfer, Credit, or Deposit."""
         tx_type = tx_data.get("type", "sale")
         amount  = tx_data.get("amount", 0)
 
@@ -287,6 +287,23 @@ class TransactionHandler:
         self.session.save(phone_number, states.PAYMENT_METHOD, {
             "pending_transaction": tx_data,
         })
+
+        # Services/hybrid sales: show deposit option via list (4+ options)
+        user = self.db.get_user(phone_number) or {}
+        industry = user.get("industry_class", user.get("business_type", "trading"))
+        if tx_type == "sale" and industry in ("services", "hybrid"):
+            from utils.whatsapp_ui import list_response
+            return [list_response(
+                header="💳 Payment",
+                body=prompt,
+                button_text="Select",
+                sections=[{"title": "Payment Method", "rows": [
+                    {"id": "pm_cash", "title": "💵 Cash", "description": "Paid in full — cash"},
+                    {"id": "pm_transfer", "title": "🏦 Transfer/POS", "description": "Paid in full — bank transfer"},
+                    {"id": "pm_deposit", "title": "💳 Deposit/Part Payment", "description": "Client paid partial, owes balance"},
+                    {"id": "pm_credit", "title": "📝 On Credit (Full)", "description": "Not paid yet — full amount owed"},
+                ]}]
+            )]
 
         return [button_response(
             prompt,
@@ -302,6 +319,46 @@ class TransactionHandler:
         context  = session.get("context", {})
         tx_data  = context.get("pending_transaction", {})
         text_low = text.lower().strip()
+
+        # ── Deposit: ask for deposit amount ──
+        if text_low == "pm_deposit":
+            amount = tx_data.get("amount", 0)
+            self.session.save(phone_number, states.PAYMENT_METHOD, {
+                "pending_transaction": tx_data,
+                "pm_step": "ask_deposit_amount",
+            })
+            return [text_response(
+                f"💳 *Deposit / Part Payment*\n\n"
+                f"Total job: *{format_amount(amount)}*\n\n"
+                f"💰 How much did they pay as deposit?\n\n"
+                f"_e.g. 25000, 50K, half_"
+            )]
+
+        # ── Deposit amount entered ──
+        if context.get("pm_step") == "ask_deposit_amount":
+            total_amount = float(tx_data.get("amount", 0))
+            # Handle "half" shortcut
+            if text_low in ("half", "50%"):
+                deposit = total_amount / 2
+            else:
+                deposit = parse_amount(text)
+                if not deposit:
+                    return [text_response(f"💰 Enter the deposit amount (e.g. 25000, 50K):\n\n_Total is {format_amount(total_amount)}_")]
+
+            deposit = float(deposit)
+            if deposit >= total_amount:
+                # Full payment — treat as cash
+                tx_data["payment_method"] = "cash"
+                tx_data["has_credit"] = False
+            else:
+                # Partial — record deposit info
+                tx_data["payment_method"] = "deposit"
+                tx_data["has_credit"] = True
+                tx_data["deposit_amount"] = int(deposit)
+                tx_data["balance_owed"] = int(total_amount - deposit)
+
+            # Continue to save the transaction
+            return self._save_transaction(phone_number, tx_data)
 
         # Map responses
         if text_low in ("pm_cash", "cash", "1"):
@@ -437,6 +494,7 @@ class TransactionHandler:
                     return self._check_variants_then_landing_cost(phone_number, tx_id, tx_data)
 
             # ── For PURCHASES: update inventory (add stock + save cost) ──
+            _purchase_unit_warning = None
             if tx_data["type"] == "purchase":
                 qty = self._parse_qty(tx_data.get("quantity", "1"))
                 unit_cost = int(tx_data.get("unit_cost") or 0)
@@ -478,7 +536,10 @@ class TransactionHandler:
                 if unit_cost > 0:
                     self._update_recipe_costs(phone_number, search_name, unit_cost)
 
-            # ── For EXPENSES (manufacturing): ask if direct or indirect ──
+                # Surface unit mismatch warning to user
+                _purchase_unit_warning = stock_result.get("unit_warning")
+
+            # ── For EXPENSES (manufacturing/services): ask if direct or indirect ──
             if tx_data["type"] == "expense":
                 user = self.db.get_user(phone_number) or {}
                 industry = user.get("industry_class", user.get("business_type", "trading"))
@@ -498,6 +559,23 @@ class TransactionHandler:
                             ]
                         )
                     ]
+                elif industry == "services":
+                    # Services: direct = job cost (transport to client, materials for job)
+                    # indirect = overhead (rent, airtime, general)
+                    self.session.reset(phone_number)
+                    return [
+                        text_response(
+                            f"✅ *{format_amount(tx_data['amount'])} expense recorded.*\n\n"
+                            f"Is this a *direct job cost* or a *general expense*?"
+                        ),
+                        button_response(
+                            "Classify this expense:",
+                            [
+                                {"id": f"expclass_direct_{tx_id}", "title": "💼 Job Cost"},
+                                {"id": f"expclass_indirect_{tx_id}", "title": "🏢 Business Expense"},
+                            ]
+                        )
+                    ]
 
             self.session.reset(phone_number)
 
@@ -505,20 +583,26 @@ class TransactionHandler:
             if not vendor and tx_data["amount"] >= 10000 and tx_data["type"] in ("sale", "purchase"):
                 return self._trigger_crm_hint(phone_number, tx_id, tx_data)
 
-            return [
+            responses = [
                 text_response(
                     f"✅ *Saved!*\n\n"
                     f"{format_amount(tx_data['amount'])} {tx_data['type']} recorded."
                 ),
-                button_response(
+            ]
+
+            # Show unit mismatch warning if applicable
+            if _purchase_unit_warning:
+                responses.append(text_response(_purchase_unit_warning))
+
+            responses.append(button_response(
                     "What's next?",
                     [
                         {"id": "record_sale", "title": "💰 Record Sale"},
                         {"id": "record_purchase", "title": "📦 Record Purchase"},
                         {"id": "record_expense", "title": "💸 Record Expense"},
                     ]
-                )
-            ]
+                ))
+            return responses
 
         except Exception as e:
             logger.error(f"Save transaction error: {e}\n{traceback.format_exc()}")
@@ -567,19 +651,43 @@ class TransactionHandler:
                 ]
             else:
                 # They owe me — this is a credit sale, offer invoice
-                self.db.record_debt(phone_number, vendor, amount, 'owed_to_me', f"Credit sale: {description}")
-                self.session.reset(phone_number)
-                return [
-                    text_response(
-                        f"✅ Saved! {format_amount(amount)} sale on credit.\n"
-                        f"📝 *{vendor}* owes you {format_amount(amount)}."
-                    ),
-                    button_response("Generate a document?", [
-                        {"id": f"gen_invoice_{tx_id}", "title": "🧾 Invoice"},
-                        {"id": f"gen_receipt_{tx_id}", "title": "🧾 Receipt"},
-                        {"id": "menu_home", "title": "☰ Menu"},
-                    ])
-                ]
+                # Check if this is a deposit (partial payment) vs full credit
+                deposit_amount = tx_data.get("deposit_amount", 0)
+                balance_owed = tx_data.get("balance_owed", 0)
+
+                if deposit_amount and balance_owed:
+                    # Deposit: record only the balance as debt
+                    self.db.record_debt(phone_number, vendor, balance_owed, 'owed_to_me',
+                                        f"Balance after deposit: {description}")
+                    self.session.reset(phone_number)
+                    return [
+                        text_response(
+                            f"✅ *Job saved!* {format_amount(amount)}\n\n"
+                            f"💳 Deposit received: *{format_amount(deposit_amount)}*\n"
+                            f"📝 Balance owed by *{vendor}*: *{format_amount(balance_owed)}*\n\n"
+                            f"_Balance tracked in Debts. Settle when they pay the rest._"
+                        ),
+                        button_response("What's next?", [
+                            {"id": f"gen_invoice_{tx_id}", "title": "🧾 Invoice"},
+                            {"id": "menu_debts", "title": "💳 View Debts"},
+                            {"id": "menu_home", "title": "☰ Menu"},
+                        ])
+                    ]
+                else:
+                    # Full credit — no payment received
+                    self.db.record_debt(phone_number, vendor, amount, 'owed_to_me', f"Credit sale: {description}")
+                    self.session.reset(phone_number)
+                    return [
+                        text_response(
+                            f"✅ Saved! {format_amount(amount)} sale on credit.\n"
+                            f"📝 *{vendor}* owes you {format_amount(amount)}."
+                        ),
+                        button_response("Generate a document?", [
+                            {"id": f"gen_invoice_{tx_id}", "title": "🧾 Invoice"},
+                            {"id": f"gen_receipt_{tx_id}", "title": "🧾 Receipt"},
+                            {"id": "menu_home", "title": "☰ Menu"},
+                        ])
+                    ]
 
         except Exception as e:
             logger.error(f"Credit save error: {e}\n{traceback.format_exc()}")
@@ -960,16 +1068,57 @@ class TransactionHandler:
     # ═══════════════════════════════════════════════════════════
 
     def _ask_supplies_used(self, phone_number: str, tx_id: str, tx_data: dict) -> list:
-        """After saving a service job, ask if supplies were used (optional)."""
+        """After saving a service job, auto-deduct supplies from template or ask manually."""
         amount = tx_data.get("amount", 0)
         description = tx_data.get("description", "Job")
 
-        # Check if user has consumables in catalog
+        # Check if this service has a supply template (auto-deduction)
+        from features.catalog import CatalogHandler
+        cat = CatalogHandler(self.session, self.db)
+        products = cat._get_products(phone_number)
+
+        # Try to match the recorded service to a catalog service with a template
+        service_key = None
+        catalog_key = tx_data.get("catalog_product_key", "")
+        if catalog_key and catalog_key in products:
+            service_key = catalog_key
+        else:
+            # Fuzzy match by description
+            desc_lower = description.lower().replace(" ", "_")
+            for key, prod in products.items():
+                if prod.get("item_type") in ("service", "") and prod.get("supplies_used"):
+                    if key == desc_lower or desc_lower in key or key in desc_lower:
+                        service_key = key
+                        break
+                    if prod.get("name", "").lower() in description.lower():
+                        service_key = key
+                        break
+
+        # If template exists, auto-deduct
+        if service_key and products.get(service_key, {}).get("supplies_used"):
+            deductions = cat.deduct_service_supplies(phone_number, service_key)
+            if deductions:
+                deduct_lines = "\n".join(deductions)
+                self.session.reset(phone_number)
+                return [
+                    text_response(
+                        f"✅ *Job saved!* {format_amount(amount)}\n\n"
+                        f"_{description}_\n\n"
+                        f"📦 *Supplies auto-deducted:*\n{deduct_lines}"
+                    ),
+                    button_response("What's next?", [
+                        {"id": f"gen_invoice_{tx_id}", "title": "🧾 Invoice"},
+                        {"id": "record_sale", "title": "💼 Next Job"},
+                        {"id": "menu_home", "title": "☰ Menu"},
+                    ])
+                ]
+
+        # No template — check if user has consumables at all
         user = self.db.get_user(phone_number)
         catalog = user.get("product_catalog", {}) if user else {}
-        products = catalog.get("products", {})
+        all_products = catalog.get("products", {})
 
-        consumables = {k: v for k, v in products.items()
+        consumables = {k: v for k, v in all_products.items()
                        if v.get("item_type") == "consumable" or int(v.get("stock", 0)) > 0}
 
         if not consumables:
@@ -1185,6 +1334,10 @@ class TransactionHandler:
         """
         When a raw material is purchased, update cost_per_unit in all recipes
         that use this material. This keeps production cost calculations accurate.
+        
+        Uses the material's landing_cost (already converted to primary_unit) rather
+        than the raw purchase unit_cost, to handle unit conversion correctly.
+        e.g. buying in "drums" while the recipe uses "kg" — landing_cost is per primary_unit.
         """
         try:
             user = self.db.get_user(phone_number)
@@ -1193,6 +1346,15 @@ class TransactionHandler:
             catalog = user.get("product_catalog", {})
             products = catalog.get("products", {})
             mat_lower = material_name.lower()
+            mat_key = mat_lower.replace(" ", "_")
+
+            # Use the material's landing_cost (already converted to primary_unit by update_stock)
+            # This is more accurate than raw unit_cost when purchase unit != primary_unit
+            effective_cost = unit_cost
+            if mat_key in products:
+                stored_cost = products[mat_key].get("landing_cost", 0)
+                if stored_cost:
+                    effective_cost = int(stored_cost)
 
             updated = False
             for key, product in products.items():
@@ -1200,12 +1362,34 @@ class TransactionHandler:
                 for mat in recipe:
                     mat_name = mat.get("material", "").lower()
                     if mat_name in mat_lower or mat_lower in mat_name:
-                        mat["cost_per_unit"] = float(unit_cost)
+                        # Recipe cost_per_unit = cost per recipe unit
+                        # If recipe unit matches material's primary_unit, use landing_cost directly
+                        # If they differ, convert using standard conversions
+                        recipe_unit = mat.get("unit", "").lower().strip()
+                        primary_unit = products.get(mat_key, {}).get("primary_unit", "").lower().strip()
+
+                        if primary_unit and recipe_unit and recipe_unit.rstrip("s") != primary_unit.rstrip("s"):
+                            # Recipe unit differs from storage unit — need conversion
+                            from features.production import ProductionHandler
+                            factor = None
+                            for (from_u, to_u), f in ProductionHandler.STANDARD_CONVERSIONS.items():
+                                if primary_unit.rstrip("s") == from_u.rstrip("s") and recipe_unit.rstrip("s") == to_u.rstrip("s"):
+                                    factor = f
+                                    break
+                            if factor:
+                                # e.g. landing_cost=₦100/litre, recipe uses CL, factor=100 (1L=100CL)
+                                # cost per CL = ₦100 / 100 = ₦1/CL
+                                mat["cost_per_unit"] = float(effective_cost) / factor if factor > 0 else float(effective_cost)
+                            else:
+                                mat["cost_per_unit"] = float(effective_cost)
+                        else:
+                            # Same unit (or no primary_unit set) — direct assignment
+                            mat["cost_per_unit"] = float(effective_cost)
                         updated = True
 
             if updated:
                 self.db.update_user_field(phone_number, "product_catalog", catalog)
-                logger.info(f"Updated recipe costs for material: {material_name} @ {unit_cost}")
+                logger.info(f"Updated recipe costs for material: {material_name} @ {effective_cost}")
         except Exception as e:
             logger.error(f"Error updating recipe costs: {e}")
 
@@ -1330,6 +1514,8 @@ class TransactionHandler:
             {"id": "edit_description", "title": "📦 Description", "description": f"Currently: {tx_data['description'][:50]}"},
             {"id": "edit_category", "title": "📁 Category", "description": f"Currently: {tx_data['category']}"},
         ]
+        if tx_data.get("quantity"):
+            rows.append({"id": "edit_quantity", "title": "📐 Quantity", "description": f"Currently: {tx_data['quantity']}"})
         if tx_data.get("vendor"):
             rows.append({"id": "edit_vendor", "title": "👤 Name", "description": f"Currently: {tx_data['vendor']}"})
 
@@ -1361,6 +1547,7 @@ class TransactionHandler:
                 "edit_description": "description",
                 "edit_category": "category",
                 "edit_vendor": "vendor",
+                "edit_quantity": "quantity",
             }
             field = field_map.get(text_lower, "")
             if field:
@@ -1375,6 +1562,7 @@ class TransactionHandler:
                     "description": "📦 Enter the correct description:",
                     "category": "📁 Enter the correct category:",
                     "vendor": "👤 Enter the correct name:",
+                    "quantity": "📐 Enter the correct quantity:\n\n_(e.g. 5, 10 pairs, 3 cartons, 2500 kg)_",
                 }
                 return [text_response(prompts.get(field, "Enter new value:"))]
 
@@ -1401,6 +1589,15 @@ class TransactionHandler:
                     tx_data["type"] = text_lower
                 else:
                     return [text_response("Please enter: *sale*, *purchase*, or *expense*")]
+            elif edit_field == "quantity":
+                tx_data["quantity"] = text.strip()
+                # Recalculate unit_cost from current amount + new quantity
+                qty_match = re.match(r'^([\d.]+)', text.strip())
+                if qty_match:
+                    qty_num = float(qty_match.group(1))
+                    current_amount = float(tx_data.get("amount", 0))
+                    if qty_num > 0 and current_amount > 0:
+                        tx_data["unit_cost"] = current_amount / qty_num
             else:
                 tx_data[edit_field] = text.strip()
 
@@ -1616,7 +1813,19 @@ class TransactionHandler:
 
         # Get prompt for next step
         if next_step == "quantity":
-            prompt = "📐 *How many* did you buy?\n\n_Just a number: 20, 50, 100_\n_Or number + unit: 1 drum, 5 bags, 220 litres_\n\n_Type *skip* if unsure (defaults to 1)_"
+            # Try to get primary_unit for this material from catalog
+            item_name = data.get("item", "")
+            _qty_unit_hint = ""
+            if item_name:
+                from features.catalog import CatalogHandler
+                cat = CatalogHandler(self.session, self.db)
+                products = cat._get_products(phone_number)
+                mat_key = item_name.lower().replace(" ", "_")
+                mat_product = products.get(mat_key, {})
+                punit = mat_product.get("primary_unit", "")
+                if punit:
+                    _qty_unit_hint = f" _(stock is in {punit})_"
+            prompt = f"📐 *How many* did you buy?{_qty_unit_hint}\n\n_Just a number: 20, 50, 100_\n_Or number + unit: 1 drum, 5 bags, 220 litres_\n\n_Type *skip* if unsure (defaults to 1)_"
         else:
             prompt_keys = {
                 "amount": "ask_amount",
@@ -1644,12 +1853,23 @@ class TransactionHandler:
         # conversion_teach is a sub-step of quantity — go back to quantity
         if current_step == "conversion_teach":
             data.pop("teach_unit", None)
+            # Get primary_unit hint
+            item_name = data.get("item", "")
+            _back_unit_hint = ""
+            if item_name:
+                from features.catalog import CatalogHandler
+                cat = CatalogHandler(self.session, self.db)
+                products = cat._get_products(phone_number)
+                mat_key = item_name.lower().replace(" ", "_")
+                punit = products.get(mat_key, {}).get("primary_unit", "")
+                if punit:
+                    _back_unit_hint = f" _(stock is in {punit})_"
             self.session.save(phone_number, states.GUIDED_RECORDING, {
                 "guided_type": guided_type,
                 "guided_step": "quantity",
                 "guided_data": data,
             })
-            return [text_response("📐 *How many units* did you buy?\n\n_e.g. 20, 50, 1 drum, 5 bags_\n\n_Type *skip* if unsure_")]
+            return [text_response(f"📐 *How many units* did you buy?{_back_unit_hint}\n\n_e.g. 20, 50, 1 drum, 5 bags_\n\n_Type *skip* if unsure_")]
 
         if guided_type == "expense":
             steps = ["item", "amount", "vendor"]
@@ -2265,10 +2485,13 @@ class TransactionHandler:
 
         stock = int(product.get("stock", 0))
         stock_str = f"\n📊 Current stock: {stock}" if stock > 0 else ""
+        primary_unit = product.get("primary_unit", "")
+        unit_hint = f" _{primary_unit}_" if primary_unit else ""
+        unit_example = f"_e.g. 5, 10, 3 {primary_unit}. Or type *skip*_" if primary_unit else "_e.g. 5, 10, 3. Or type *skip*_"
 
         return [text_response(
             f"📦 *{product_name}*{stock_str}\n\n"
-            f"📐 How many?\n\n_e.g. 5, 10, 3. Or type *skip*_"
+            f"📐 How many?{unit_hint}\n\n{unit_example}"
         )]
 
     def _catrec_walk_tree(self, phone_number: str, text: str, context: dict) -> list:
@@ -2292,9 +2515,13 @@ class TransactionHandler:
             self.session.save(phone_number, states.CATALOG_RECORDING, context)
             product_name = context.get("cat_rec_product_name", "item")
             path_str = " → ".join(path) if path else product_name
+            # Get primary_unit for hint
+            _prod = products.get(context.get("cat_rec_product_key", ""), {})
+            _punit = _prod.get("primary_unit", "")
+            _unit_hint = f" _({_punit})_" if _punit else ""
             return [text_response(
                 f"📦 *{product_name}* → {path_str}\n\n"
-                f"📐 How many?\n\n_e.g. 5, 10 pairs, 3 cartons. Or type *skip*_"
+                f"📐 How many?{_unit_hint}\n\n_e.g. 5, 10, 3. Or type *skip*_"
             )]
         elif text.startswith("catrec_new_"):
             # User wants to add new value — ask them to type it
@@ -2326,9 +2553,12 @@ class TransactionHandler:
             self.session.save(phone_number, states.CATALOG_RECORDING, context)
             product_name = context.get("cat_rec_product_name", "item")
             path_str = " → ".join(path)
+            # Get primary_unit for hint
+            _punit = product.get("primary_unit", "")
+            _unit_hint = f" _({_punit})_" if _punit else ""
             return [text_response(
                 f"📦 *{product_name}* → {path_str}\n\n"
-                f"📐 How many?\n\n_e.g. 5, 10 pairs, 3 cartons. Or type *skip*_"
+                f"📐 How many?{_unit_hint}\n\n_e.g. 5, 10, 3. Or type *skip*_"
             )]
 
         # More levels to show — display next level

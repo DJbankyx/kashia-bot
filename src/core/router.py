@@ -50,6 +50,7 @@ class Router:
         self.settings = None
         self.production = None
         self.recurring = None
+        self.quotes = None
 
         # Industry handlers — set after construction by main.py
         self.industries = {}  # {"trading": TradingIndustry, ...}
@@ -114,6 +115,10 @@ class Router:
             return self.catalog.handle(phone_number, text_stripped, session)
 
         if state == states.INVOICING:
+            # Check if this is a quote flow or invoice flow
+            context = session.get("context", {})
+            if context.get("quote_step"):
+                return self.quotes.handle(phone_number, text_stripped, session)
             return self.invoices.handle(phone_number, text_stripped, session)
 
         if state == states.EXPORTING:
@@ -369,6 +374,10 @@ class Router:
         if bid.startswith("rec_"):
             return self.recurring.handle_button(phone_number, bid)
 
+        # ── Quote buttons (quote_*) ──
+        if bid.startswith("quote_"):
+            return self.quotes.handle_button(phone_number, bid)
+
         # ── Debt buttons ──
         if bid.startswith("debt_"):
             return self.debt.handle_button(phone_number, bid, session)
@@ -424,6 +433,7 @@ class Router:
                 "biz_docs":       lambda: self.export.show_options(phone_number),
                 "biz_export":     lambda: self.export.show_options(phone_number),
                 "biz_recurring":  lambda: self.recurring.show(phone_number),
+                "biz_quotes":     lambda: self._show_quotes(phone_number),
             }
             handler = biz_map.get(bid)
             if handler:
@@ -548,6 +558,12 @@ class Router:
         if self.recurring:
             return self.recurring.show(phone_number)
         return [text_response("🔁 Recurring services not available for your plan.")]
+
+    def _show_quotes(self, phone_number: str) -> list:
+        """Show quotes — delegates to quotes handler."""
+        if self.quotes:
+            return self.quotes.show(phone_number)
+        return [text_response("📝 Quotes not available for your plan.")]
 
     # ─────────────────────────────────────────────────────────
     # Guided Recording
@@ -811,7 +827,7 @@ class Router:
         return self.industries.get(industry_key, self.industries.get("trading"))
 
     def _handle_expense_class(self, phone_number: str, button_id: str) -> list:
-        """Handle expense classification buttons for manufacturing users."""
+        """Handle expense classification buttons for manufacturing/services users."""
         # Parse: expclass_direct_{tx_id} or expclass_indirect_{tx_id}
         parts = button_id.split("_", 2)  # ['expclass', 'direct/indirect', 'tx_id']
         if len(parts) < 3:
@@ -820,28 +836,47 @@ class Router:
         expense_class = parts[1]  # 'direct' or 'indirect'
         tx_id = parts[2]
 
+        # Determine industry for labels
+        user = self.db.get_user(phone_number) or {}
+        industry = user.get("industry_class", user.get("business_type", "trading"))
+
         # Update the transaction with expense_class
+        if industry == "services":
+            sub_cat = "Direct Job Cost" if expense_class == "direct" else "Operating Expense"
+        else:
+            sub_cat = "Direct Production Cost" if expense_class == "direct" else "Operating Expense"
+
         self.db.update_transaction(phone_number, tx_id, {
             "expense_class": expense_class,
-            "sub_category": "Direct Production Cost" if expense_class == "direct" else "Operating Expense",
+            "sub_category": sub_cat,
         })
 
         if expense_class == "direct":
-            msg = "🏭 Classified as *Production Cost*.\n\n_This will be included in your manufacturing cost calculations._"
+            if industry == "services":
+                msg = "💼 Classified as *Job Cost*.\n\n_This will be deducted from service revenue in your P&L._"
+            else:
+                msg = "🏭 Classified as *Production Cost*.\n\n_This will be included in your manufacturing cost calculations._"
         else:
             msg = "🏢 Classified as *Business Expense*.\n\n_This will show as an operating expense in your P&L._"
 
         from utils.whatsapp_ui import button_response
+
+        if industry == "services":
+            buttons = [
+                {"id": "record_sale", "title": "💼 Record Job"},
+                {"id": "record_expense", "title": "💸 Record Expense"},
+                {"id": "menu_home", "title": "☰ Menu"},
+            ]
+        else:
+            buttons = [
+                {"id": "record_production", "title": "🏭 Produce"},
+                {"id": "record_expense", "title": "💸 Record Expense"},
+                {"id": "menu_home", "title": "☰ Menu"},
+            ]
+
         return [
             text_response(msg),
-            button_response(
-                "What's next?",
-                [
-                    {"id": "record_production", "title": "🏭 Produce"},
-                    {"id": "record_expense", "title": "💸 Record Expense"},
-                    {"id": "menu_home", "title": "☰ Menu"},
-                ]
-            )
+            button_response("What's next?", buttons)
         ]
 
     def _fmt_amount(self, amount) -> str:

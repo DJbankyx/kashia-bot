@@ -74,6 +74,8 @@ class CatalogHandler:
                  "description": "Add consumable or equipment"},
                 {"id": "cat_set_price", "title": "💰 Set Service Price",
                  "description": "Update your standard rates"},
+                {"id": "cat_supply_template", "title": "📋 Set Supply Template",
+                 "description": "What supplies each service uses"},
                 {"id": "cat_adjust", "title": "📐 Adjust Supply Stock",
                  "description": "Update supply quantities"},
             ]
@@ -135,6 +137,8 @@ class CatalogHandler:
              "description": "Set/update cost per unit"},
             {"id": "cat_adjust", "title": "📐 Adjust Stock",
              "description": "Manually add or set stock quantity"},
+            {"id": "cat_unit", "title": "📏 Set Stock Unit",
+             "description": "e.g. kg, litres, pieces"},
             {"id": "cat_conversion", "title": "📦 Set Conversion",
              "description": "e.g. 1 carton = 24 pieces"},
             {"id": "cat_remove", "title": "🗑️ Remove Product",
@@ -183,6 +187,9 @@ class CatalogHandler:
         if button_id == "cat_conversion":
             return self._start_set_conversion(phone_number)
 
+        if button_id == "cat_unit":
+            return self._start_set_unit(phone_number)
+
         if button_id == "cat_remove":
             return self._start_remove_product(phone_number)
 
@@ -207,6 +214,12 @@ class CatalogHandler:
 
         if button_id == "cat_set_price":
             return self._start_set_price(phone_number)
+
+        if button_id == "cat_supply_template":
+            return self._start_supply_template(phone_number)
+
+        if button_id.startswith("cat_tmpl_"):
+            return self._handle_template_button(phone_number, button_id)
 
         if button_id == "cat_edit":
             return self._start_edit_product(phone_number)
@@ -342,6 +355,12 @@ class CatalogHandler:
 
         if step == "setting_conversion":
             return self._handle_set_conversion(phone_number, text_s, context)
+
+        if step == "setting_unit":
+            return self._handle_set_unit(phone_number, text_s, context)
+
+        if step in ("template_add_supply", "template_supply_qty"):
+            return self._handle_supply_template(phone_number, text_s, context)
 
         # Edit product steps
         if step in ("editing_name", "editing_stock", "editing_cost"):
@@ -1462,6 +1481,273 @@ class CatalogHandler:
         return [text_response("❓ Product not found.")]
 
     # ─────────────────────────────────────────────────────────
+    # SERVICE SUPPLY TEMPLATES
+    # ─────────────────────────────────────────────────────────
+
+    def _start_supply_template(self, phone_number: str) -> list:
+        """Pick a service to set its supply template (what supplies it uses per job)."""
+        products = self._get_products(phone_number)
+        services = {k: v for k, v in products.items()
+                    if v.get("item_type") in ("service", "") or not v.get("item_type")}
+
+        if not services:
+            return [text_response(
+                "📋 *Set Supply Template*\n\n"
+                "No services found. Add services first via ➕ *Add Service*."
+            )]
+
+        rows = []
+        for key, prod in list(services.items())[:9]:
+            name = prod.get("name", key)
+            template = prod.get("supplies_used", [])
+            desc = f"📋 {len(template)} supplies defined" if template else "No template yet"
+            rows.append({
+                "id": f"cat_tmpl_{key}",
+                "title": f"💼 {name}"[:24],
+                "description": desc[:72],
+            })
+
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+            "cat_step": "template_pick_service",
+        })
+
+        return [list_response(
+            header="📋 Supply Template",
+            body="Which service uses supplies?\n\n_A template defines what to auto-deduct per job._",
+            button_text="Select Service",
+            sections=[{"title": "Your Services", "rows": rows}]
+        )]
+
+    def _handle_template_button(self, phone_number: str, button_id: str) -> list:
+        """Handle cat_tmpl_* buttons — service picked for template setup."""
+        service_key = button_id[9:]  # after "cat_tmpl_"
+
+        products = self._get_products(phone_number)
+        if service_key not in products:
+            return [text_response("❓ Service not found.")]
+
+        service = products[service_key]
+        service_name = service.get("name", service_key)
+        template = service.get("supplies_used", [])
+
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+            "cat_step": "template_add_supply",
+            "cat_template_service_key": service_key,
+            "cat_template_service_name": service_name,
+        })
+
+        if template:
+            lines = [f"📋 *Supply template for {service_name}:*\n"]
+            for i, supply in enumerate(template):
+                lines.append(f"  {i+1}. {supply['quantity']} {supply.get('unit', '')} {supply['supply']}")
+            lines.append(f"\n_Add more or type *done* to finish._")
+            lines.append(f"_Type *clear* to remove all._")
+            return [text_response("\n".join(lines))]
+        else:
+            return [text_response(
+                f"📋 *Set supply template for: {service_name}*\n\n"
+                f"What supply is used per job?\n\n"
+                f"Type the *supply name*:\n\n"
+                f"_e.g. Blade, Chemical, Nylon, Thread_\n\n"
+                f"_Type *done* when finished._"
+            )]
+
+    def _handle_supply_template(self, phone_number: str, text: str, context: dict) -> list:
+        """Handle supply template input — add supplies step by step."""
+        step = context.get("cat_step", "")
+        service_key = context.get("cat_template_service_key", "")
+        service_name = context.get("cat_template_service_name", "Service")
+
+        if text.lower() == "done":
+            self.session.reset(phone_number)
+            products = self._get_products(phone_number)
+            service = products.get(service_key, {})
+            template = service.get("supplies_used", [])
+            if template:
+                return [text_response(
+                    f"✅ *Supply template saved for {service_name}!*\n\n"
+                    f"📋 {len(template)} supplies will be auto-deducted per job.\n\n"
+                    f"_When you complete this service, supplies will be deducted automatically._"
+                )]
+            return [text_response("✅ Done. No supplies set.")]
+
+        if text.lower() == "clear":
+            products = self._get_products(phone_number)
+            if service_key in products:
+                products[service_key]["supplies_used"] = []
+                self._save_products(phone_number, products)
+            self.session.reset(phone_number)
+            return [text_response(f"🗑️ Supply template cleared for *{service_name}*.")]
+
+        if step == "template_add_supply":
+            # User typed a supply name — ask for quantity
+            supply_name = text.strip().title()
+            if len(supply_name) < 2:
+                return [text_response("Please type the supply name (at least 2 characters):")]
+
+            context["cat_step"] = "template_supply_qty"
+            context["cat_template_current_supply"] = supply_name
+            self.session.save(phone_number, states.CATALOG_ADD_DATA, context)
+
+            return [text_response(
+                f"🧱 *{supply_name}*\n\n"
+                f"How much *{supply_name}* is used per job?\n\n"
+                f"Type: *quantity* and *unit*\n\n"
+                f"_e.g. 2 pieces, 1 litre, 500 ml, 3 packs_\n\n"
+                f"_Or just a number (e.g. 2) if no unit needed_"
+            )]
+
+        if step == "template_supply_qty":
+            # User typed quantity — save and ask for next
+            supply_name = context.get("cat_template_current_supply", "Supply")
+
+            # Parse quantity and unit
+            match = re.match(r'^([\d.]+)\s*(.*)', text.strip())
+            if not match:
+                return [text_response(f"Enter quantity for {supply_name} (e.g. 2, 500 ml, 1 litre):")]
+
+            qty = float(match.group(1))
+            unit = match.group(2).strip() or "pieces"
+
+            # Save to catalog
+            products = self._get_products(phone_number)
+            if service_key in products:
+                service = products[service_key]
+                template = service.setdefault("supplies_used", [])
+
+                # Check if supply already exists — update it
+                found = False
+                for existing in template:
+                    if existing["supply"].lower() == supply_name.lower():
+                        existing["quantity"] = qty
+                        existing["unit"] = unit
+                        found = True
+                        break
+                if not found:
+                    template.append({
+                        "supply": supply_name,
+                        "quantity": qty,
+                        "unit": unit,
+                    })
+
+                # Auto-create supply in catalog if it doesn't exist
+                supply_key = supply_name.lower().replace(" ", "_")
+                if supply_key not in products:
+                    products[supply_key] = {
+                        "name": supply_name,
+                        "stock": 0,
+                        "landing_cost": 0,
+                        "item_type": "consumable",
+                        "category": "",
+                        "variants": [],
+                        "recipe": [],
+                        "conversions": {},
+                    }
+
+                self._save_products(phone_number, products)
+
+            # Ask for next supply
+            context["cat_step"] = "template_add_supply"
+            context.pop("cat_template_current_supply", None)
+            self.session.save(phone_number, states.CATALOG_ADD_DATA, context)
+
+            qty_display = int(qty) if qty == int(qty) else qty
+            return [text_response(
+                f"✅ Added: *{qty_display} {unit} {supply_name}* per job\n\n"
+                f"Add another supply or type *done* to finish."
+            )]
+
+        return [text_response("Type a supply name or *done* to finish.")]
+
+    def deduct_service_supplies(self, phone_number: str, service_key: str, qty_jobs: int = 1) -> list:
+        """
+        Auto-deduct supplies based on service template after completing a job.
+        Called by transactions after a service sale is recorded.
+        
+        Returns list of deduction result strings for display.
+        """
+        products = self._get_products(phone_number)
+        if service_key not in products:
+            return []
+
+        service = products[service_key]
+        template = service.get("supplies_used", [])
+        if not template:
+            return []
+
+        deductions = []
+        low_warnings = []
+
+        for supply in template:
+            supply_name = supply.get("supply", "")
+            supply_qty = float(supply.get("quantity", 0)) * qty_jobs
+            supply_unit = supply.get("unit", "")
+            supply_key_cat = supply_name.lower().replace(" ", "_")
+
+            if supply_key_cat in products:
+                current_stock = float(products[supply_key_cat].get("stock", 0))
+                new_stock = max(0, current_stock - supply_qty)
+                products[supply_key_cat]["stock"] = new_stock
+
+                qty_display = int(supply_qty) if supply_qty == int(supply_qty) else f"{supply_qty:.1f}"
+                deductions.append(f"  • -{qty_display} {supply_unit} {supply_name}")
+
+                if new_stock <= 3:
+                    low_warnings.append(f"  ⚠️ *{supply_name}*: only {int(new_stock)} left!")
+
+        if deductions:
+            self._save_products(phone_number, products)
+
+        return deductions + low_warnings
+
+    # ─────────────────────────────────────────────────────────
+    # SET STOCK UNIT
+    # ─────────────────────────────────────────────────────────
+
+    def _start_set_unit(self, phone_number: str) -> list:
+        """Pick product to set stock unit for."""
+        return self._show_product_picker(phone_number, "set_unit",
+                                          "📏 *Set Stock Unit*\n\nPick a product:")
+
+    def _handle_set_unit(self, phone_number: str, text: str, context: dict) -> list:
+        """Handle unit input — a single word like 'kg', 'litres', 'pieces'."""
+        product_key = context.get("cat_product_key", "")
+        unit = text.strip().lower()
+
+        if not unit or len(unit) > 20:
+            return [text_response(
+                "📏 Enter the unit (one word):\n\n"
+                "_e.g. kg, litres, pieces, meters, bags, bottles, hours_"
+            )]
+
+        products = self._get_products(phone_number)
+        if product_key in products:
+            product = products[product_key]
+            old_unit = product.get("primary_unit", "")
+            product["primary_unit"] = unit
+            self._save_products(phone_number, products)
+
+            name = product.get("name", product_key)
+            self.session.reset(phone_number)
+
+            change_note = f"\n_Changed from: {old_unit}_" if old_unit and old_unit != unit else ""
+            return [
+                text_response(
+                    f"✅ Stock unit set for *{name}*:\n\n"
+                    f"📏 Unit: *{unit}*{change_note}\n\n"
+                    f"_All stock, purchases, and production for {name} will be tracked in {unit}._"
+                ),
+                button_response("What's next?", [
+                    {"id": "cat_unit", "title": "📏 Set Another"},
+                    {"id": "cat_stock", "title": "📊 View Stock"},
+                    {"id": "menu_home", "title": "☰ Menu"},
+                ])
+            ]
+
+        self.session.reset(phone_number)
+        return [text_response("❓ Product not found.")]
+
+    # ─────────────────────────────────────────────────────────
     # REMOVE PRODUCT
     # ─────────────────────────────────────────────────────────
 
@@ -1660,6 +1946,20 @@ class CatalogHandler:
                 f"_e.g. 1 crate = 20 bottles_"
             )]
 
+        if action == "set_unit":
+            current_unit = product.get("primary_unit", "")
+            unit_str = f"\nCurrent unit: *{current_unit}*" if current_unit else "\n_No unit set yet._"
+            self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+                "cat_step": "setting_unit",
+                "cat_product_key": product_key,
+            })
+            return [text_response(
+                f"📏 *{name}* — Stock Unit{unit_str}\n\n"
+                f"What unit is this measured in?\n\n"
+                f"_e.g. kg, litres, pieces, meters, bags, bottles, hours_\n\n"
+                f"_This is the base unit for stock tracking and production._"
+            )]
+
         if action == "remove_product":
             self.session.save(phone_number, states.CATALOG_ADD_DATA, {
                 "cat_step": "confirm_remove",
@@ -1760,6 +2060,7 @@ class CatalogHandler:
 
         # ── Standard unit conversion to primary_unit ──
         primary_unit = product.get("primary_unit", "").lower().strip()
+        _unit_warning = None
         if primary_unit and incoming_unit and incoming_unit.rstrip("s") != primary_unit.rstrip("s"):
             # Try to convert incoming unit to primary_unit using standard conversions
             factor = self._get_standard_conversion_factor(incoming_unit, primary_unit)
@@ -1770,6 +2071,15 @@ class CatalogHandler:
                     # Original cost was per incoming_unit, convert to per primary_unit
                     # e.g. ₦5/CL → ₦500/litre (factor=0.01 means 1CL=0.01L, so cost×(1/factor))
                     unit_cost = int(unit_cost / factor) if factor > 0 else unit_cost
+            else:
+                # No conversion found — flag unit mismatch warning
+                _unit_warning = (
+                    f"⚠️ *Unit mismatch:* You entered *{incoming_unit}* but "
+                    f"*{product.get('name', matched_key)}* is stored in *{primary_unit}*.\n\n"
+                    f"No conversion found — stock was added as-is.\n\n"
+                    f"_To fix: go to Catalog → {product.get('name', matched_key)} → Set Conversion_\n"
+                    f"_e.g. \"1 {incoming_unit} = X {primary_unit}\"_"
+                )
 
         # ── Variant-level stock update ──
         variant_stock = product.get("variant_stock", {})
@@ -1860,6 +2170,7 @@ class CatalogHandler:
             "new_stock": int(product.get("stock", 0)),
             "variant": resolved_variant,
             "landing_cost": int(product.get("variant_costs", {}).get(resolved_variant, product.get("landing_cost", 0))) if resolved_variant else int(product.get("landing_cost", 0)),
+            "unit_warning": _unit_warning,
         }
 
     def get_landing_cost(self, phone_number: str, product_name: str) -> int:
@@ -2142,15 +2453,24 @@ class CatalogHandler:
             name = prod.get("name", key)
             stock = int(prod.get("stock", 0))
             cost = int(prod.get("landing_cost", 0))
+            primary_unit = prod.get("primary_unit", "")
+
+            # Show primary unit in title: "Water (Liters)"
+            if primary_unit:
+                title = f"🧱 {name} ({primary_unit})"
+            else:
+                title = f"🧱 {name}"
 
             indicator = "🟢" if stock > 5 else ("🟡" if stock > 0 else "🔴")
             desc = f"{indicator} {stock} in stock"
             if cost:
-                desc += f" · ₦{cost:,}/unit"
+                # Show cost with the primary unit label: "₦100/Liters"
+                unit_label = primary_unit if primary_unit else "unit"
+                desc += f" · ₦{cost:,}/{unit_label}"
 
             rows.append({
                 "id": f"catrec_{key}",
-                "title": f"🧱 {name}"[:24],
+                "title": title[:24],
                 "description": desc[:72],
             })
 

@@ -272,6 +272,21 @@ class ProductionHandler:
             self.session.reset(phone_number)
             return [text_response("✅ Recipe saved! You can now record production.")]
 
+        if button_id == "prod_recalc_costs":
+            return self._recalculate_all_costs(phone_number)
+
+        if button_id == "prod_recipe_remove":
+            session = self.session.get(phone_number)
+            context = session.get("context", {})
+            return self._recipe_show_remove_list(phone_number, context)
+
+        if button_id.startswith("prod_rmmat_"):
+            # Remove a specific material by index
+            session = self.session.get(phone_number)
+            context = session.get("context", {})
+            mat_idx = button_id[11:]  # after "prod_rmmat_"
+            return self._recipe_remove_material(phone_number, mat_idx, context)
+
         if button_id == "prod_recipe_add":
             session = self.session.get(phone_number)
             context = session.get("context", {})
@@ -392,9 +407,11 @@ class ProductionHandler:
         product_key = context.get("prod_product_key", "")
         product_name = context.get("prod_product_name", "Product")
 
-        # Generate batch number
-        import time
-        batch_num = f"B{int(time.time()) % 100000:05d}"
+        # Generate sequential batch number (per user)
+        user = self.db.get_user(phone_number)
+        last_batch = int(user.get("last_batch_number", 0)) if user else 0
+        new_batch = last_batch + 1
+        batch_num = f"B{new_batch:04d}"
         context["prod_batch"] = batch_num
 
         # Get recipe to show material usage
@@ -443,6 +460,20 @@ class ProductionHandler:
         cost_per_unit = total_cost / good_qty if good_qty > 0 else 0
         waste_pct = int(waste / quantity * 100) if quantity > 0 and waste > 0 else 0
 
+        # Check stock sufficiency for each material
+        stock_warnings = []
+        for mat in materials_needed:
+            mat_key = mat["material"].lower().replace(" ", "_")
+            mat_product = all_products.get(mat_key, {})
+            current_stock = float(mat_product.get("stock", 0))
+            needed = float(mat["quantity_needed"])
+            if needed > current_stock:
+                shortfall = needed - current_stock
+                unit = mat.get("unit", "")
+                stock_warnings.append(
+                    f"  ⚠️ *{mat['material']}*: need {needed:.0f} {unit}, only {current_stock:.0f} in stock (short {shortfall:.0f})"
+                )
+
         # Build confirmation
         # Format quantity display (show as int if whole number)
         qty_display = int(quantity) if quantity == int(quantity) else quantity
@@ -466,7 +497,11 @@ class ProductionHandler:
             lines.append(f"🧱 *Materials to use:*")
             for mat in materials_needed:
                 display = mat["display"]
-                cost_str = f" (₦{int(mat['cost']):,})" if mat['cost'] > 0 else ""
+                mat_cost = mat['cost']
+                cost_str = ""
+                if mat_cost > 0:
+                    pct = int(mat_cost / total_cost * 100) if total_cost > 0 else 0
+                    cost_str = f" (₦{int(mat_cost):,} · {pct}%)"
                 converted_note = " ↔" if mat.get("converted") else ""
                 lines.append(f"  • {display} {mat['material']}{cost_str}{converted_note}")
             lines.append(f"")
@@ -483,6 +518,13 @@ class ProductionHandler:
         else:
             lines.append(f"\n⚠️ _No recipe set — materials won't be deducted._")
             lines.append(f"_Set a recipe to enable auto-deduction._")
+
+        # Show stock insufficiency warnings
+        if stock_warnings:
+            lines.append(f"")
+            lines.append(f"🚨 *Insufficient Stock:*")
+            lines.extend(stock_warnings)
+            lines.append(f"_Production will zero out these materials._")
 
         lines.append(f"")
         lines.append(f"━━━━━━━━━━━━━━━━━━━━")
@@ -549,7 +591,7 @@ class ProductionHandler:
 
         # 2. Add GOOD finished goods to stock (waste not added)
         if product_key in products:
-            current_stock = products[product_key].get("stock", products[product_key].get("stock_count", 0))
+            current_stock = float(products[product_key].get("stock", products[product_key].get("stock_count", 0)))
             products[product_key]["stock"] = current_stock + good_qty
 
             # Update landing cost (production cost per unit — based on good units)
@@ -561,6 +603,11 @@ class ProductionHandler:
         # 3. Save catalog
         catalog["products"] = products
         self.db.update_user_field(phone_number, "product_catalog", catalog)
+
+        # 3b. Persist batch number counter
+        # Extract numeric part from batch_num (e.g. "B0005" → 5)
+        batch_number_int = int(batch_num[1:]) if batch_num.startswith("B") else 0
+        self.db.update_user_field(phone_number, "last_batch_number", batch_number_int)
 
         # 4. Save production as a transaction record (type: "production")
         self.db.save_transaction(
@@ -575,13 +622,13 @@ class ProductionHandler:
             unit_cost=int(total_cost / good_qty) if good_qty > 0 and total_cost > 0 else None,
             extra_details={
                 "batch_number": batch_num,
-                "production_quantity": quantity,
-                "good_quantity": good_qty,
-                "waste": waste,
+                "production_quantity": int(quantity),
+                "good_quantity": int(good_qty),
+                "waste": int(waste),
                 "waste_percent": int(waste / quantity * 100) if quantity > 0 else 0,
                 "product_key": product_key,
                 "materials_used": materials_needed,
-                "cost_per_unit": total_cost / good_qty if good_qty > 0 else cost_per_unit,
+                "cost_per_unit": float(total_cost / good_qty) if good_qty > 0 else float(cost_per_unit),
             }
         )
 
@@ -829,16 +876,17 @@ class ProductionHandler:
             lines = [
                 f"📋 *Current recipe for {product_name}:*\n",
             ]
-            for mat in recipe:
+            for i, mat in enumerate(recipe):
                 cost_str = f" @ ₦{int(mat.get('cost_per_unit', 0)):,}" if mat.get('cost_per_unit') else ""
-                lines.append(f"  • {mat['quantity']} {mat.get('unit', '')} {mat['material']}{cost_str}")
-            lines.append(f"\n_Add another material or type *done* to finish._")
+                lines.append(f"  {i+1}. {mat['quantity']} {mat.get('unit', '')} {mat['material']}{cost_str}")
+            lines.append(f"\n_Add, remove, or finish._")
             return [
                 text_response("\n".join(lines)),
                 button_response(
-                    "Add more materials or finish?",
+                    "What next?",
                     [
                         {"id": "prod_recipe_add", "title": "➕ Add Material"},
+                        {"id": "prod_recipe_remove", "title": "🗑️ Remove"},
                         {"id": "prod_recipe_done", "title": "✅ Done"},
                     ]
                 )
@@ -1007,6 +1055,202 @@ class ProductionHandler:
                 [
                     {"id": "prod_recipe_add", "title": "➕ Add More"},
                     {"id": "prod_recipe_done", "title": "✅ Done"},
+                ]
+            )
+        ]
+
+    # ─────────────────────────────────────────────────────────
+    # RECIPE MATERIAL REMOVAL
+    # ─────────────────────────────────────────────────────────
+
+    def _recipe_show_remove_list(self, phone_number: str, context: dict) -> list:
+        """Show list of recipe materials to remove."""
+        product_key = context.get("recipe_product_key", "")
+        product_name = context.get("recipe_product_name", "Product")
+
+        user = self.db.get_user(phone_number)
+        catalog = user.get("product_catalog", {}) if user else {}
+        products = catalog.get("products", {})
+        product = products.get(product_key, {})
+        recipe = product.get("recipe", [])
+
+        if not recipe:
+            return [text_response("📋 Recipe is already empty.")]
+
+        rows = []
+        for i, mat in enumerate(recipe[:9]):
+            name = mat.get("material", "Material")
+            qty = mat.get("quantity", 0)
+            unit = mat.get("unit", "")
+            rows.append({
+                "id": f"prod_rmmat_{i}",
+                "title": f"🗑️ {name}"[:24],
+                "description": f"{qty} {unit} per unit"[:72],
+            })
+
+        return [list_response(
+            header="🗑️ Remove Material",
+            body=f"Which material to remove from *{product_name}*?",
+            button_text="Select",
+            sections=[{"title": "Recipe Materials", "rows": rows}]
+        )]
+
+    def _recipe_remove_material(self, phone_number: str, mat_idx_str: str, context: dict) -> list:
+        """Remove a material from the recipe by index."""
+        product_key = context.get("recipe_product_key", "")
+        product_name = context.get("recipe_product_name", "Product")
+
+        try:
+            mat_idx = int(mat_idx_str)
+        except ValueError:
+            return [text_response("❌ Invalid selection.")]
+
+        user = self.db.get_user(phone_number)
+        catalog = user.get("product_catalog", {}) if user else {}
+        products = catalog.get("products", {})
+
+        if product_key not in products:
+            return [text_response("❓ Product not found.")]
+
+        product = products[product_key]
+        recipe = product.get("recipe", [])
+
+        if mat_idx < 0 or mat_idx >= len(recipe):
+            return [text_response("❌ Invalid material index.")]
+
+        removed = recipe.pop(mat_idx)
+        removed_name = removed.get("material", "Material")
+        product["recipe"] = recipe
+        self.db.update_user_field(phone_number, "product_catalog", catalog)
+
+        # Show updated recipe
+        if recipe:
+            lines = [f"✅ Removed *{removed_name}* from recipe.\n"]
+            lines.append(f"📋 *Updated recipe for {product_name}:*\n")
+            for i, mat in enumerate(recipe):
+                cost_str = f" @ ₦{int(mat.get('cost_per_unit', 0)):,}" if mat.get('cost_per_unit') else ""
+                lines.append(f"  {i+1}. {mat['quantity']} {mat.get('unit', '')} {mat['material']}{cost_str}")
+
+            return [
+                text_response("\n".join(lines)),
+                button_response(
+                    "What next?",
+                    [
+                        {"id": "prod_recipe_add", "title": "➕ Add Material"},
+                        {"id": "prod_recipe_remove", "title": "🗑️ Remove More"},
+                        {"id": "prod_recipe_done", "title": "✅ Done"},
+                    ]
+                )
+            ]
+        else:
+            return [
+                text_response(f"✅ Removed *{removed_name}*. Recipe is now empty."),
+                button_response(
+                    "Add materials?",
+                    [
+                        {"id": "prod_recipe_add", "title": "➕ Add Material"},
+                        {"id": "prod_recipe_done", "title": "✅ Done"},
+                    ]
+                )
+            ]
+
+    # ─────────────────────────────────────────────────────────
+    # RECALCULATE ALL RECIPE COSTS
+    # ─────────────────────────────────────────────────────────
+
+    def _recalculate_all_costs(self, phone_number: str) -> list:
+        """
+        Re-sync all recipe cost_per_unit values from current material landing_costs.
+        Useful after bulk purchases or manual cost edits.
+        """
+        user = self.db.get_user(phone_number)
+        if not user:
+            return [text_response("❌ User not found.")]
+
+        catalog = user.get("product_catalog", {})
+        products = catalog.get("products", {})
+
+        if not products:
+            return [text_response("📋 No products in catalog yet.")]
+
+        updated_count = 0
+        updated_materials = []
+
+        for key, product in products.items():
+            recipe = product.get("recipe", [])
+            if not recipe:
+                continue
+
+            for mat in recipe:
+                mat_name = mat.get("material", "")
+                mat_key = mat_name.lower().replace(" ", "_")
+                recipe_unit = mat.get("unit", "").lower().strip()
+
+                # Look up current landing_cost from the material's catalog entry
+                mat_product = products.get(mat_key, {})
+                landing_cost = float(mat_product.get("landing_cost", 0))
+
+                if landing_cost <= 0:
+                    continue  # No cost data — skip
+
+                primary_unit = mat_product.get("primary_unit", "").lower().strip()
+
+                # Convert landing_cost (per primary_unit) to cost per recipe_unit
+                new_cost = landing_cost
+                if primary_unit and recipe_unit and recipe_unit.rstrip("s") != primary_unit.rstrip("s"):
+                    # Need conversion: landing_cost is per primary_unit, recipe needs per recipe_unit
+                    factor = None
+                    for (from_u, to_u), f in self.STANDARD_CONVERSIONS.items():
+                        if primary_unit.rstrip("s") == from_u.rstrip("s") and recipe_unit.rstrip("s") == to_u.rstrip("s"):
+                            factor = f
+                            break
+                    if factor and factor > 0:
+                        # e.g. landing_cost=₦100/litre, recipe uses CL, factor=100
+                        # cost per CL = ₦100 / 100 = ₦1
+                        new_cost = landing_cost / factor
+
+                old_cost = float(mat.get("cost_per_unit", 0))
+                if new_cost != old_cost and new_cost > 0:
+                    mat["cost_per_unit"] = new_cost
+                    updated_count += 1
+                    if mat_name not in updated_materials:
+                        updated_materials.append(mat_name)
+
+        if updated_count == 0:
+            return [text_response(
+                "✅ *All recipe costs are up to date!*\n\n"
+                "_No changes needed. Costs already match current material prices._"
+            )]
+
+        # Save updated catalog
+        self.db.update_user_field(phone_number, "product_catalog", catalog)
+
+        # Build response
+        lines = [
+            "✅ *Recipe costs recalculated!*",
+            "",
+            f"📊 Updated *{updated_count}* cost entries:",
+        ]
+        for mat_name in updated_materials[:8]:
+            mat_key = mat_name.lower().replace(" ", "_")
+            mat_product = products.get(mat_key, {})
+            cost = int(mat_product.get("landing_cost", 0))
+            unit = mat_product.get("primary_unit", "unit")
+            lines.append(f"  • {mat_name}: ₦{cost:,}/{unit}")
+
+        if len(updated_materials) > 8:
+            lines.append(f"  _+{len(updated_materials) - 8} more..._")
+
+        lines.append("")
+        lines.append("_Production costs will now use these updated prices._")
+
+        return [
+            text_response("\n".join(lines)),
+            button_response(
+                "What's next?",
+                [
+                    {"id": "record_production", "title": "🏭 Produce"},
+                    {"id": "menu_home", "title": "☰ Menu"},
                 ]
             )
         ]
