@@ -314,7 +314,7 @@ class CatalogHandler:
                 button_response("What's next?", [
                     {"id": "cat_stock", "title": "📊 View Stock"},
                     {"id": "cat_add", "title": "➕ Add Product"},
-                    {"id": "record_sale", "title": "💰 Record Sale"},
+                    {"id": "menu_home", "title": "☰ Menu"},
                 ])
             ]
         if text_low in ("menu", "hi", "hello", "help"):
@@ -430,8 +430,8 @@ class CatalogHandler:
             text_response("\n".join(lines)),
             button_response("Actions:", [
                 {"id": "cat_adjust", "title": "📐 Adjust Stock"},
-                {"id": "cat_add", "title": "➕ Add Product"},
-                {"id": "cat_cost", "title": "🏷️ Set Cost"},
+                {"id": "cat_edit", "title": "✏️ Edit"},
+                {"id": "menu_home", "title": "☰ Menu"},
             ])
         ]
 
@@ -440,6 +440,7 @@ class CatalogHandler:
         name = prod.get("name", "?")
         stock = int(prod.get("stock", 0))
         cost = int(prod.get("landing_cost", 0))
+        primary_unit = prod.get("primary_unit", "")
         variant_stock = prod.get("variant_stock", {})
         variant_costs = prod.get("variant_costs", {})
 
@@ -455,6 +456,7 @@ class CatalogHandler:
 
         lines.append(f"{indicator} *{name}*")
 
+        unit_str = f" {primary_unit}" if primary_unit else ""
         if variant_stock:
             lines.append(f"   Stock: *{stock}* total")
             for v_name, v_stock in variant_stock.items():
@@ -466,7 +468,8 @@ class CatalogHandler:
                 lines.append(f"   {v_ind} {v_name}: {v_stock_int}{cost_str}")
         else:
             value = stock * cost
-            lines.append(f"   Stock: *{stock}*" + (f" · {format_amount(cost)}/unit" if cost else ""))
+            cost_label = f"/{primary_unit}" if primary_unit else "/unit"
+            lines.append(f"   Stock: *{stock}{unit_str}*" + (f" · {format_amount(cost)}{cost_label}" if cost else ""))
 
         return stock, value
 
@@ -838,10 +841,22 @@ class CatalogHandler:
         if recipe:
             lines.append("")
             lines.append("📋 *Recipe (per 1 unit):*")
+            all_products = self._get_products(phone_number)
             for mat in recipe:
-                mat_cost = mat.get("cost_per_unit", 0)
+                mat_cost = float(mat.get("cost_per_unit", 0))
+                mat_qty = float(mat.get("quantity", 0))
+                mat_unit = mat.get("unit", "")
+                mat_name = mat["material"]
                 cost_str = f" @ {format_amount(mat_cost)}" if mat_cost else ""
-                lines.append(f"  • {mat['quantity']} {mat.get('unit', '')} {mat['material']}{cost_str}")
+                # Show stock unit hint if different
+                mat_key = mat_name.lower().replace(" ", "_")
+                mat_prod = all_products.get(mat_key, {})
+                stock_unit = mat_prod.get("primary_unit", "")
+                unit_hint = ""
+                if stock_unit and stock_unit.lower() != mat_unit.lower().rstrip("s"):
+                    unit_hint = f" _(stock: {stock_unit})_"
+                qty_display = int(mat_qty) if mat_qty == int(mat_qty) else mat_qty
+                lines.append(f"  • {qty_display} {mat_unit} {mat_name}{cost_str}{unit_hint}")
 
         # Conversions
         if conversions:
@@ -1173,7 +1188,7 @@ class CatalogHandler:
                 button_response("What's next?", [
                     {"id": "cat_stock", "title": "📊 View Stock"},
                     {"id": "cat_cost", "title": "🏷️ Set Another Cost"},
-                    {"id": "record_sale", "title": "💰 Record Sale"},
+                    {"id": "menu_home", "title": "☰ Menu"},
                 ])
             ]
 
@@ -1240,7 +1255,7 @@ class CatalogHandler:
             button_response("What's next?", [
                 {"id": "cat_stock", "title": "📊 View Stock"},
                 {"id": "cat_adjust", "title": "📐 Adjust Another"},
-                {"id": "record_sale", "title": "💰 Record Sale"},
+                {"id": "menu_home", "title": "☰ Menu"},
             ])
         ]
 
@@ -1284,7 +1299,7 @@ class CatalogHandler:
             button_response("What's next?", [
                 {"id": "cat_stock", "title": "📊 View Stock"},
                 {"id": "cat_variant_cost", "title": "💲 Set Variant Cost"},
-                {"id": "record_sale", "title": "💰 Record Sale"},
+                {"id": "menu_home", "title": "☰ Menu"},
             ])
         ]
 
@@ -1470,7 +1485,7 @@ class CatalogHandler:
                 button_response("What's next?", [
                     {"id": "cat_stock", "title": "📊 View Stock"},
                     {"id": "cat_add", "title": "➕ Add Product"},
-                    {"id": "record_sale", "title": "💰 Record Sale"},
+                    {"id": "menu_home", "title": "☰ Menu"},
                 ])
             ]
 
@@ -1732,10 +1747,29 @@ class CatalogHandler:
 
         # Apply conversion if quantity_str has a unit
         actual_qty = qty_change
+        incoming_unit = ""
         if quantity_str:
             converted = self._apply_conversion(product, quantity_str, qty_change)
             if converted is not None:
                 actual_qty = converted
+            # Extract unit from quantity_str for standard conversion check
+            import re
+            unit_match = re.match(r'^[\d.]+\s+(.+)', str(quantity_str).strip())
+            if unit_match:
+                incoming_unit = unit_match.group(1).strip().lower()
+
+        # ── Standard unit conversion to primary_unit ──
+        primary_unit = product.get("primary_unit", "").lower().strip()
+        if primary_unit and incoming_unit and incoming_unit.rstrip("s") != primary_unit.rstrip("s"):
+            # Try to convert incoming unit to primary_unit using standard conversions
+            factor = self._get_standard_conversion_factor(incoming_unit, primary_unit)
+            if factor:
+                actual_qty = abs(qty_change) * factor * (1 if qty_change >= 0 else -1)
+                # Also adjust unit_cost to primary_unit
+                if unit_cost and unit_cost > 0:
+                    # Original cost was per incoming_unit, convert to per primary_unit
+                    # e.g. ₦5/CL → ₦500/litre (factor=0.01 means 1CL=0.01L, so cost×(1/factor))
+                    unit_cost = int(unit_cost / factor) if factor > 0 else unit_cost
 
         # ── Variant-level stock update ──
         variant_stock = product.get("variant_stock", {})
@@ -1988,6 +2022,54 @@ class CatalogHandler:
                 return abs(raw_qty) * multiplier * sign
 
         return None
+
+    def _get_standard_conversion_factor(self, from_unit: str, to_unit: str) -> float:
+        """
+        Get conversion factor between two standard units.
+        Returns the factor to multiply from_unit quantity to get to_unit quantity.
+        e.g. _get_standard_conversion_factor("cl", "litres") → 0.01 (100 CL = 1 litre)
+        Returns 0 if no conversion found.
+        """
+        from_normalized = from_unit.lower().strip().rstrip("s")
+        to_normalized = to_unit.lower().strip().rstrip("s")
+
+        if from_normalized == to_normalized:
+            return 1.0
+
+        # Standard metric conversions (same as production.py STANDARD_CONVERSIONS)
+        CONVERSIONS = {
+            # Volume
+            ("ml", "l"): 0.001, ("ml", "litre"): 0.001, ("ml", "liter"): 0.001,
+            ("l", "ml"): 1000, ("litre", "ml"): 1000, ("liter", "ml"): 1000,
+            ("cl", "ml"): 10, ("ml", "cl"): 0.1,
+            ("cl", "l"): 0.01, ("cl", "litre"): 0.01, ("litre", "cl"): 100, ("l", "cl"): 100,
+            # Weight
+            ("g", "kg"): 0.001, ("kg", "g"): 1000,
+            ("mg", "g"): 0.001, ("g", "mg"): 1000,
+            ("gram", "kg"): 0.001, ("kg", "gram"): 1000,
+            ("tonne", "kg"): 1000, ("kg", "tonne"): 0.001,
+            # Time
+            ("min", "hour"): 1/60, ("hour", "min"): 60,
+            ("minute", "hour"): 1/60, ("hour", "minute"): 60,
+            ("hr", "min"): 60, ("min", "hr"): 1/60,
+            ("hour", "day"): 1/24, ("day", "hour"): 24,
+            # Energy
+            ("kwh", "whr"): 1, ("whr", "kwh"): 1,
+            ("wh", "kwh"): 0.001, ("kwh", "wh"): 1000,
+            # Quantity synonyms
+            ("piece", "unit"): 1, ("unit", "piece"): 1,
+            ("pc", "piece"): 1, ("piece", "pc"): 1,
+            # Volume larger
+            ("gallon", "litre"): 3.785, ("litre", "gallon"): 0.264,
+            ("drum", "litre"): 200, ("litre", "drum"): 0.005,
+        }
+
+        # Try direct match
+        for (f, t), factor in CONVERSIONS.items():
+            if from_normalized == f.rstrip("s") and to_normalized == t.rstrip("s"):
+                return factor
+
+        return 0
 
     def _save_products(self, phone_number: str, products: dict):
         """Save products dict to user profile."""

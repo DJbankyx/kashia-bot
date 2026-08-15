@@ -1491,26 +1491,26 @@ class TransactionHandler:
                 mat_product = products.get(mat_key, {})
                 conversions = mat_product.get("conversions", {})
 
-                    # Check if we already know this unit
-                    already_knows = any(
-                        qty_unit.rstrip("s") in k.lower() or qty_unit in k.lower()
-                        for k in conversions.keys()
-                    )
+                # Check if we already know this unit
+                already_knows = any(
+                    qty_unit.rstrip("s") in k.lower() or qty_unit in k.lower()
+                    for k in conversions.keys()
+                )
 
-                    if not already_knows:
-                        # Ask user to teach the conversion
-                        guided_data["teach_unit"] = qty_unit
-                        self.session.save(phone_number, states.GUIDED_RECORDING, {
-                            "guided_type": guided_type,
-                            "guided_step": "conversion_teach",
-                            "guided_data": guided_data,
-                        })
-                        return [text_response(
-                            f"📦 You said *{qty_num} {qty_unit}*.\n\n"
-                            f"How many *standard units* (litres, kg, pieces, etc.) is *1 {qty_unit}*?\n\n"
-                            f"_e.g. 220 litres, 50 kg, 24 pieces_\n\n"
-                            f"_Type *skip* to just record as {qty_num} {qty_unit}_"
-                        )]
+                if not already_knows:
+                    # Ask user to teach the conversion
+                    guided_data["teach_unit"] = qty_unit
+                    self.session.save(phone_number, states.GUIDED_RECORDING, {
+                        "guided_type": guided_type,
+                        "guided_step": "conversion_teach",
+                        "guided_data": guided_data,
+                    })
+                    return [text_response(
+                        f"📦 You said *{qty_num} {qty_unit}*.\n\n"
+                        f"How many *standard units* (litres, kg, pieces, etc.) is *1 {qty_unit}*?\n\n"
+                        f"_e.g. 220 litres, 50 kg, 24 pieces_\n\n"
+                        f"_Type *skip* to just record as {qty_num} {qty_unit}_"
+                    )]
 
                 return self._advance_guided(phone_number, "quantity", guided_type, guided_data)
             else:

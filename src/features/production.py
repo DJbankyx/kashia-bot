@@ -321,7 +321,18 @@ class ProductionHandler:
         if recipe:
             recipe_str = "\n\n📋 *Recipe per unit:*\n"
             for mat in recipe:
-                recipe_str += f"  • {mat['quantity']} {mat.get('unit', '')} {mat['material']}\n"
+                mat_qty = float(mat.get('quantity', 0))
+                mat_unit = mat.get('unit', '')
+                mat_name = mat['material']
+                # Show stock unit if different
+                mat_key = mat_name.lower().replace(" ", "_")
+                mat_product = products.get(mat_key, {})
+                stock_unit = mat_product.get("primary_unit", "")
+                unit_hint = ""
+                if stock_unit and stock_unit.lower() != mat_unit.lower().rstrip("s"):
+                    unit_hint = f" _(stock: {stock_unit})_"
+                qty_display = int(mat_qty) if mat_qty == int(mat_qty) else mat_qty
+                recipe_str += f"  • {qty_display} {mat_unit} {mat_name}{unit_hint}\n"
 
         return [text_response(
             f"🏭 *Producing: {product_name}*{recipe_str}\n\n"
@@ -716,9 +727,9 @@ class ProductionHandler:
             key_match = _re.match(r'^(\d+)\s+(.+)', conv_key)
             if not key_match:
                 continue
-            conv_from_qty = int(key_match.group(1))
+            conv_from_qty = float(key_match.group(1))
             conv_from_unit = key_match.group(2).strip().rstrip("s").lower()
-            conv_to_qty = conv_val.get("qty", 1)
+            conv_to_qty = float(conv_val.get("qty", 1))
             conv_to_unit = conv_val.get("unit", "").rstrip("s").lower()
 
             # Check if recipe unit matches the "from" side
