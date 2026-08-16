@@ -41,8 +41,8 @@ class CatalogHandler:
     def show_menu(self, phone_number: str) -> list:
         """Show inventory/catalog action menu."""
         products = self.ensure_item_types(phone_number)
-        count = len(products)
-        total_stock = sum(int(p.get("stock", 0)) for p in products.values())
+        count = len([p for p in products.values() if p.get("item_type") != "overhead"])
+        total_stock = sum(int(p.get("stock", 0)) for p in products.values() if p.get("item_type") != "overhead")
 
         # Check user's industry
         user = self.db.get_user(phone_number) or {}
@@ -406,7 +406,8 @@ class CatalogHandler:
             # Group products by type
             finished = {k: v for k, v in products.items() if v.get("item_type") == "finished_product"}
             raw_mats = {k: v for k, v in products.items() if v.get("item_type") == "raw_material"}
-            other = {k: v for k, v in products.items() if v.get("item_type") not in ("finished_product", "raw_material")}
+            overhead = {k: v for k, v in products.items() if v.get("item_type") == "overhead"}
+            other = {k: v for k, v in products.items() if v.get("item_type") not in ("finished_product", "raw_material", "overhead")}
 
             if finished:
                 lines.append("")
@@ -423,6 +424,20 @@ class CatalogHandler:
                     s, v = self._format_stock_line(prod, lines)
                     total_stock += s
                     total_value += v
+
+            if overhead:
+                lines.append("")
+                lines.append("⚡ *OVERHEAD RATES:*")
+                for key, prod in sorted(overhead.items(), key=lambda x: x[1].get("name", "")):
+                    name = prod.get("name", key)
+                    cost = float(prod.get("landing_cost", 0))
+                    punit = prod.get("primary_unit", "unit")
+                    if cost < 1 and cost > 0:
+                        lines.append(f"⚡ {name}\n  Rate: ₦{cost:.4f}/{punit}")
+                    elif cost > 0:
+                        lines.append(f"⚡ {name}\n  Rate: ₦{cost:,.2f}/{punit}")
+                    else:
+                        lines.append(f"⚡ {name}\n  Rate: _not set_")
 
             if other:
                 lines.append("")
@@ -2412,6 +2427,10 @@ class CatalogHandler:
             has_recipe = bool(data.get("recipe", []))
             is_raw_material = key in raw_material_keys
             current_type = data.get("item_type", "")
+
+            # Don't override manually-set types (overhead, consumable, service)
+            if current_type in ("overhead", "consumable", "service"):
+                continue
 
             if has_recipe and current_type != "finished_product":
                 data["item_type"] = "finished_product"

@@ -89,15 +89,23 @@ def done_cancel_buttons():
 # ─── Formatting helpers ───
 
 def format_amount(amount) -> str:
-    """Format number as ₦X,XXX."""
+    """Format number as ₦X,XXX. Shows decimals for amounts < 1 or with significant decimals."""
     try:
         num = float(amount)
-        if num >= 1_000_000:
-            return f"₦{num:,.0f}"
-        elif num >= 1_000:
-            return f"₦{num:,.0f}"
+        if num == 0:
+            return "₦0"
+        elif num < 1:
+            # Sub-naira amounts: show up to 4 decimal places
+            return f"₦{num:.4f}".rstrip('0').rstrip('.')
+        elif num < 100 and num != int(num):
+            # Small amounts with decimals: show 2dp
+            return f"₦{num:,.2f}"
+        elif num == int(num):
+            # Whole number
+            return f"₦{int(num):,}"
         else:
-            return f"₦{num:.0f}"
+            # Large amount with decimals
+            return f"₦{num:,.2f}"
     except (ValueError, TypeError):
         return f"₦{amount}"
 

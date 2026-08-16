@@ -594,12 +594,35 @@ class TransactionHandler:
             if _purchase_unit_warning:
                 responses.append(text_response(_purchase_unit_warning))
 
-            responses.append(button_response(
+            # Industry-specific "What's next?" buttons
+            user = self.db.get_user(phone_number) or {}
+            industry = user.get("industry_class", user.get("business_type", "trading"))
+            tx_type = tx_data.get("type", "sale")
+
+            if industry in ("manufacturing", "hybrid") and tx_type == "purchase":
+                responses.append(button_response(
+                    "What's next?",
+                    [
+                        {"id": "record_purchase", "title": "🧱 Buy More Materials"},
+                        {"id": "record_production", "title": "🏭 Produce"},
+                        {"id": "menu_home", "title": "☰ Menu"},
+                    ]
+                ))
+            elif industry == "services" and tx_type == "sale":
+                responses.append(button_response(
+                    "What's next?",
+                    [
+                        {"id": "record_sale", "title": "💼 Next Job"},
+                        {"id": "menu_home", "title": "☰ Menu"},
+                    ]
+                ))
+            else:
+                responses.append(button_response(
                     "What's next?",
                     [
                         {"id": "record_sale", "title": "💰 Record Sale"},
                         {"id": "record_purchase", "title": "📦 Record Purchase"},
-                        {"id": "record_expense", "title": "💸 Record Expense"},
+                        {"id": "menu_home", "title": "☰ Menu"},
                     ]
                 ))
             return responses

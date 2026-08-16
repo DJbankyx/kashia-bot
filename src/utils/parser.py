@@ -22,9 +22,12 @@ def parse_amount(text):
         "1.5M" or "1.5m"→ 1500000
         "1.5 million"   → 1500000
         "2k"            → 2000
+        "0.5"           → 0.5
+        "1.50"          → 1.5
+        "0.06"          → 0.06
 
     Returns:
-        int or None (if no amount found)
+        float or None (if no amount found)
     """
     if not text:
         return None
@@ -45,49 +48,65 @@ def parse_amount(text):
             rate *= 1000
         elif suffix == 'm':
             rate *= 1000000
-        return int(qty * rate)
+        result = qty * rate
+        return int(result) if result == int(result) else result
 
     # Remove naira symbols and "naira" word
     cleaned = cleaned.replace('₦', '').replace('NGN', '').replace('ngn', '')
     cleaned = re.sub(r'\bnaira\b', '', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'\bN(\d)', r'\1', cleaned)  # "N95,000" → "95,000"
 
+    # Handle "kobo" — e.g. "50 kobo" = 0.50, "1 kobo" = 0.01
+    kobo_match = re.search(r'(\d+\.?\d*)\s*kobo', cleaned, flags=re.IGNORECASE)
+    if kobo_match:
+        return float(kobo_match.group(1)) / 100
+
     # Strip date patterns so they don't get mistaken for amounts
-    # DD/MM/YYYY, MM/DD/YYYY, YYYY-MM-DD, DD-MM-YYYY, DD.MM.YYYY
     cleaned = re.sub(r'\b\d{1,2}[/\-.](\d{1,2})[/\-.]\d{2,4}\b', '', cleaned)
     cleaned = re.sub(r'\b\d{4}[/\-.]\d{1,2}[/\-.]\d{1,2}\b', '', cleaned)
 
     # Pattern 1: "1.5M" or "1.5m" or "1.5 million"
     match = re.search(r'(\d+\.?\d*)\s*[mM](?:illion)?', cleaned)
     if match:
-        return int(float(match.group(1)) * 1_000_000)
+        result = float(match.group(1)) * 1_000_000
+        return int(result) if result == int(result) else result
 
     # Pattern 2: "95K" or "95k" or "95 thousand" (but NOT 50kg, 5km, etc.)
     match = re.search(r'(\d+\.?\d*)\s*[kK](?!g|m|l|w)(?:thousand)?', cleaned)
     if match:
-        return int(float(match.group(1)) * 1_000)
+        result = float(match.group(1)) * 1_000
+        return int(result) if result == int(result) else result
 
     # Pattern 3: "95 thousand"
     match = re.search(r'(\d+\.?\d*)\s*thousand', cleaned, flags=re.IGNORECASE)
     if match:
-        return int(float(match.group(1)) * 1_000)
+        result = float(match.group(1)) * 1_000
+        return int(result) if result == int(result) else result
 
     # Pattern 4: "1 million"
     match = re.search(r'(\d+\.?\d*)\s*million', cleaned, flags=re.IGNORECASE)
     if match:
-        return int(float(match.group(1)) * 1_000_000)
+        result = float(match.group(1)) * 1_000_000
+        return int(result) if result == int(result) else result
 
     # Pattern 5: Number with commas "95,000" or "1,500,000"
-    match = re.search(r'(\d{1,3}(?:,\d{3})+)', cleaned)
+    match = re.search(r'(\d{1,3}(?:,\d{3})+(?:\.\d+)?)', cleaned)
     if match:
-        return int(match.group(1).replace(',', ''))
+        result = float(match.group(1).replace(',', ''))
+        return int(result) if result == int(result) else result
 
-    # Pattern 6: Plain number "95000" (at least 3 digits to avoid matching random numbers)
+    # Pattern 6: Decimal number "0.5", "1.50", "0.06" (must have a dot)
+    match = re.search(r'(\d+\.\d+)', cleaned)
+    if match:
+        result = float(match.group(1))
+        return result
+
+    # Pattern 7: Plain number "95000" (at least 3 digits to avoid matching random numbers)
     match = re.search(r'(\d{3,})', cleaned)
     if match:
         return int(match.group(1))
 
-    # Pattern 7: Small numbers "50" (for things like "50 naira transport")
+    # Pattern 8: Small numbers "50" (for things like "50 naira transport")
     match = re.search(r'(\d+)', cleaned)
     if match:
         value = int(match.group(1))

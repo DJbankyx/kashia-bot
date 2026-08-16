@@ -156,6 +156,30 @@ class ProductionHandler:
         if step == "recipe_add_material":
             return self._recipe_add_material(phone_number, text_s, context)
 
+        if step == "recipe_ask_type":
+            # User typed instead of tapping button — try to interpret
+            if text_low in ("material", "raw material", "raw", "1"):
+                context["current_mat_type"] = "material"
+                context["prod_step"] = "recipe_material_qty"
+                self.session.save(phone_number, states.PRODUCTION_RECORDING, context)
+                mat_name = context.get("current_material", "Material")
+                return [text_response(
+                    f"🧱 *{mat_name}* (raw material)\n\n"
+                    f"How much is needed to make *1 unit*?\n\n"
+                    f"Type: *quantity* then *unit*\n_e.g. 0.5 kg, 50 CL, 2 pieces_"
+                )]
+            elif text_low in ("overhead", "rate", "electricity", "labour", "machine", "2"):
+                context["current_mat_type"] = "overhead"
+                context["prod_step"] = "recipe_material_qty"
+                self.session.save(phone_number, states.PRODUCTION_RECORDING, context)
+                mat_name = context.get("current_material", "Material")
+                return [text_response(
+                    f"⚡ *{mat_name}* (overhead rate)\n\n"
+                    f"How much is used to make *1 unit*?\n\n"
+                    f"Type: *quantity* then *unit*\n_e.g. 5 wh, 30 seconds, 0.5 hours_"
+                )]
+            return [text_response("Please tap *🧱 Raw Material* or *⚡ Overhead Rate*")]
+
         if step == "recipe_material_qty":
             return self._recipe_material_qty(phone_number, text_s, context)
 
@@ -286,6 +310,36 @@ class ProductionHandler:
             context = session.get("context", {})
             mat_idx = button_id[11:]  # after "prod_rmmat_"
             return self._recipe_remove_material(phone_number, mat_idx, context)
+
+        if button_id == "prod_mattype_material":
+            session = self.session.get(phone_number)
+            context = session.get("context", {})
+            context["current_mat_type"] = "material"
+            context["prod_step"] = "recipe_material_qty"
+            self.session.save(phone_number, states.PRODUCTION_RECORDING, context)
+            mat_name = context.get("current_material", "Material")
+            return [text_response(
+                f"🧱 *{mat_name}* (raw material)\n\n"
+                f"How much *{mat_name}* is needed to make *1 unit*?\n\n"
+                f"Type: *quantity* then *unit*\n\n"
+                f"_e.g. 0.5 kg, 50 CL, 2 pieces, 500 ml_\n\n"
+                f"_Type *back* to go back_"
+            )]
+
+        if button_id == "prod_mattype_overhead":
+            session = self.session.get(phone_number)
+            context = session.get("context", {})
+            context["current_mat_type"] = "overhead"
+            context["prod_step"] = "recipe_material_qty"
+            self.session.save(phone_number, states.PRODUCTION_RECORDING, context)
+            mat_name = context.get("current_material", "Material")
+            return [text_response(
+                f"⚡ *{mat_name}* (overhead rate)\n\n"
+                f"How much *{mat_name}* is used per *1 unit* produced?\n\n"
+                f"Type: *quantity* then *unit*\n\n"
+                f"_e.g. 5 wh, 30 seconds, 0.5 hours, 2 minutes_\n\n"
+                f"_Type *back* to go back_"
+            )]
 
         if button_id == "prod_recipe_add":
             session = self.session.get(phone_number)
@@ -421,46 +475,67 @@ class ProductionHandler:
         recipe = product.get("recipe", [])
 
         # Calculate materials needed and production cost
-        materials_needed = []
-        total_cost = 0
+        materials_needed = []  # Physical materials (stock-tracked)
+        overhead_costs = []    # Rate-based costs (no stock)
+        total_material_cost = 0
+        total_overhead_cost = 0
         conversion_warnings = []
+        all_products = catalog.get("products", {})
+
         for mat in recipe:
             recipe_qty_per_unit = float(mat.get("quantity", 0))
             recipe_qty_total = recipe_qty_per_unit * quantity
             recipe_unit = mat.get("unit", "units")
             mat_key = mat["material"].lower().replace(" ", "_")
+            mat_type = mat.get("type", "material")  # default to material for legacy recipes
 
-            # Look up the material in catalog for unit conversion
-            all_products = catalog.get("products", {})
-            mat_product = all_products.get(mat_key, {})
+            if mat_type == "overhead":
+                # Overhead: simple rate × usage, no stock conversion
+                rate = float(mat.get("rate", mat.get("cost_per_unit", 0)))
+                mat_cost = rate * recipe_qty_total
+                total_overhead_cost += mat_cost
 
-            # Convert recipe units to stock units
-            conversion = self._convert_to_stock_unit(recipe_qty_total, recipe_unit, mat_product)
-            stock_qty = conversion["stock_qty"]
-            display_str = conversion["display"]
+                qty_display = f"{recipe_qty_total:.1f}" if recipe_qty_total != int(recipe_qty_total) else f"{int(recipe_qty_total)}"
+                overhead_costs.append({
+                    "material": mat["material"],
+                    "quantity_total": recipe_qty_total,
+                    "unit": recipe_unit,
+                    "rate": rate,
+                    "cost": mat_cost,
+                    "display": f"{qty_display} {recipe_unit}",
+                })
+            else:
+                # Raw material: convert to stock units, track for deduction
+                mat_product = all_products.get(mat_key, {})
+                conversion = self._convert_to_stock_unit(recipe_qty_total, recipe_unit, mat_product)
+                stock_qty = conversion["stock_qty"]
+                display_str = conversion["display"]
 
-            if conversion.get("warning"):
-                conversion_warnings.append(conversion["warning"])
+                if conversion.get("warning"):
+                    conversion_warnings.append(conversion["warning"])
 
-            # Cost calculation uses the stock qty (converted)
-            mat_cost = float(mat.get("cost_per_unit", 0)) * recipe_qty_total
-            total_cost += mat_cost
+                # Cost: use cost_per_unit (per recipe unit) × recipe_qty_total
+                cost_per = float(mat.get("cost_per_unit", 0))
+                mat_cost = cost_per * recipe_qty_total
+                total_material_cost += mat_cost
 
-            materials_needed.append({
-                "material": mat["material"],
-                "quantity_needed": stock_qty,  # converted to stock units
-                "recipe_qty": recipe_qty_total,  # original recipe quantity
-                "unit": conversion["stock_unit"] if conversion["converted"] else recipe_unit,
-                "recipe_unit": recipe_unit,
-                "converted": conversion["converted"],
-                "display": display_str,
-                "cost": mat_cost,
-            })
+                materials_needed.append({
+                    "material": mat["material"],
+                    "quantity_needed": stock_qty,
+                    "recipe_qty": recipe_qty_total,
+                    "unit": conversion["stock_unit"] if conversion["converted"] else recipe_unit,
+                    "recipe_unit": recipe_unit,
+                    "converted": conversion["converted"],
+                    "display": display_str,
+                    "cost": mat_cost,
+                    "cost_per_unit": cost_per,
+                })
 
+        total_cost = total_material_cost + total_overhead_cost
         cost_per_unit = total_cost / good_qty if good_qty > 0 else 0
         waste_pct = int(waste / quantity * 100) if quantity > 0 and waste > 0 else 0
 
-        # Check stock sufficiency for each material
+        # Check stock sufficiency for materials only (not overhead)
         stock_warnings = []
         for mat in materials_needed:
             mat_key = mat["material"].lower().replace(" ", "_")
@@ -492,24 +567,38 @@ class ProductionHandler:
         else:
             lines.append(f"✅ All {qty_display} good")
 
+        # ── Raw Materials section ──
         if materials_needed:
             lines.append(f"")
-            lines.append(f"🧱 *Materials to use:*")
+            lines.append(f"🧱 *Raw Materials:*")
             for mat in materials_needed:
                 display = mat["display"]
                 mat_cost = mat['cost']
                 cost_str = ""
                 if mat_cost > 0:
                     pct = int(mat_cost / total_cost * 100) if total_cost > 0 else 0
-                    cost_str = f" (₦{int(mat_cost):,} · {pct}%)"
+                    cost_str = f" (₦{mat_cost:,.2f} · {pct}%)"
                 converted_note = " ↔" if mat.get("converted") else ""
                 lines.append(f"  • {display} {mat['material']}{cost_str}{converted_note}")
+
+        # ── Overhead Costs section ──
+        if overhead_costs:
+            lines.append(f"")
+            lines.append(f"⚡ *Overhead Costs:*")
+            for ov in overhead_costs:
+                ov_cost = ov['cost']
+                pct = int(ov_cost / total_cost * 100) if total_cost > 0 else 0
+                rate_str = f"₦{ov['rate']:,.2f}/{ov['unit']}"
+                lines.append(f"  • {ov['display']} {ov['material']} @ {rate_str} (₦{ov_cost:,.2f} · {pct}%)")
+
+        # ── Totals ──
+        if materials_needed or overhead_costs:
             lines.append(f"")
             if total_cost > 0:
-                lines.append(f"💰 Total cost: {format_amount(total_cost)} _(auto-calculated from recipe)_")
-                lines.append(f"💰 Cost/unit: {format_amount(cost_per_unit)}")
+                lines.append(f"💰 *Total cost: ₦{total_cost:,.2f}*")
+                lines.append(f"💰 Cost/unit: ₦{cost_per_unit:,.2f}")
             else:
-                lines.append(f"💰 Cost: ₦0 _(set material costs via Buy Raw Materials or Set Landing Cost)_")
+                lines.append(f"💰 Cost: ₦0 _(set costs via recipe or purchases)_")
             # Show conversion warnings
             if conversion_warnings:
                 lines.append(f"")
@@ -519,7 +608,7 @@ class ProductionHandler:
             lines.append(f"\n⚠️ _No recipe set — materials won't be deducted._")
             lines.append(f"_Set a recipe to enable auto-deduction._")
 
-        # Show stock insufficiency warnings
+        # Show stock insufficiency warnings (materials only)
         if stock_warnings:
             lines.append(f"")
             lines.append(f"🚨 *Insufficient Stock:*")
@@ -531,6 +620,7 @@ class ProductionHandler:
 
         context["prod_step"] = "confirm_production"
         context["prod_materials_needed"] = materials_needed
+        context["prod_overhead_costs"] = overhead_costs
         context["prod_total_cost"] = total_cost
         context["prod_cost_per_unit"] = cost_per_unit
         self.session.save(phone_number, states.PRODUCTION_RECORDING, context)
@@ -635,25 +725,35 @@ class ProductionHandler:
         self.session.reset(phone_number)
 
         # Build result message
-        actual_cost = int(total_cost / good_qty) if good_qty > 0 and total_cost > 0 else 0
+        actual_cost = total_cost / good_qty if good_qty > 0 and total_cost > 0 else 0
+        good_display = int(good_qty) if good_qty == int(good_qty) else good_qty
         lines = [
             f"✅ *Production Recorded!*  _{batch_num}_",
             f"",
-            f"📦 +{good_qty} *{product_name}* added to stock",
+            f"📦 +{good_display} *{product_name}* added to stock",
         ]
         if waste > 0:
             waste_pct = int(waste / quantity * 100)
-            lines.append(f"🗑️ Waste: {waste} units ({waste_pct}%)")
+            lines.append(f"🗑️ Waste: {int(waste)} units ({waste_pct}%)")
             if actual_cost > 0:
-                lines.append(f"💰 Actual cost/unit: {format_amount(actual_cost)} _(adjusted for waste)_")
+                lines.append(f"💰 Actual cost/unit: ₦{actual_cost:,.2f} _(adjusted for waste)_")
         if deduction_results:
             lines.append(f"")
             lines.append(f"🧱 *Materials deducted:*")
             lines.extend(deduction_results)
+
+        # Show overhead costs in summary
+        overhead_costs = context.get("prod_overhead_costs", [])
+        if overhead_costs:
+            lines.append(f"")
+            lines.append(f"⚡ *Overhead applied:*")
+            for ov in overhead_costs:
+                lines.append(f"  • {ov['material']}: ₦{ov['cost']:,.2f}")
+
         if total_cost > 0 and waste == 0:
             lines.append(f"")
-            lines.append(f"💰 Cost per unit: {format_amount(cost_per_unit)}")
-            lines.append(f"💰 Total batch cost: {format_amount(total_cost)}")
+            lines.append(f"💰 Cost per unit: ₦{cost_per_unit:,.2f}")
+            lines.append(f"💰 Total batch cost: ₦{total_cost:,.2f}")
 
         lines.append("")
 
@@ -906,79 +1006,129 @@ class ProductionHandler:
             )]
 
     def _recipe_add_material(self, phone_number: str, text: str, context: dict) -> list:
-        """User typed a material name — ask for quantity needed per unit."""
+        """User typed a material name — ask if it's a raw material or overhead rate."""
         if text.lower() == "done":
             self.session.reset(phone_number)
             return [text_response("✅ Recipe saved! You can now record production.")]
 
         material_name = text.strip().title()
         if len(material_name) < 2:
-            return [text_response("Please type the material name (at least 2 characters):")]
+            return [text_response("Please type the material/cost name (at least 2 characters):")]
 
-        context["prod_step"] = "recipe_material_qty"
         context["current_material"] = material_name
+
+        # Check if this material already exists in catalog — auto-detect type
+        user = self.db.get_user(phone_number)
+        catalog = user.get("product_catalog", {}) if user else {}
+        products = catalog.get("products", {})
+        mat_key = material_name.lower().replace(" ", "_")
+        existing_product = products.get(mat_key, {})
+
+        # If already tagged as overhead, skip the type question
+        if existing_product.get("item_type") == "overhead":
+            context["current_mat_type"] = "overhead"
+            context["prod_step"] = "recipe_material_qty"
+            self.session.save(phone_number, states.PRODUCTION_RECORDING, context)
+            return [text_response(
+                f"⚡ *{material_name}* (overhead rate)\n\n"
+                f"How much *{material_name}* is used to make *1 unit* of {context.get('recipe_product_name', 'product')}?\n\n"
+                f"Type: *quantity* then *unit*\n\n"
+                f"_e.g. 5 wh, 30 seconds, 0.5 hours, 2 minutes_"
+            )]
+
+        # If already tagged as raw_material, skip the type question
+        if existing_product.get("item_type") == "raw_material":
+            context["current_mat_type"] = "material"
+            context["prod_step"] = "recipe_material_qty"
+            self.session.save(phone_number, states.PRODUCTION_RECORDING, context)
+            punit = existing_product.get("primary_unit", "")
+            unit_hint = f" _({punit})_" if punit else ""
+            return [text_response(
+                f"🧱 *{material_name}* (raw material)\n\n"
+                f"How much *{material_name}* is needed to make *1 unit*?{unit_hint}\n\n"
+                f"Type: *quantity* then *unit*\n\n"
+                f"_e.g. 0.5 kg, 50 CL, 2 pieces, 500 ml_\n\n"
+                f"_Type *back* to change the name_"
+            )]
+
+        # Unknown — ask user to classify
+        context["prod_step"] = "recipe_ask_type"
         self.session.save(phone_number, states.PRODUCTION_RECORDING, context)
 
-        return [text_response(
+        return [button_response(
             f"🧱 *{material_name}*\n\n"
-            f"How much *{material_name}* is needed to make *1 unit* of {context.get('recipe_product_name', 'product')}?\n\n"
-            f"Type: *quantity* then *unit*\n\n"
-            f"Examples:\n"
-            f"  _500 ml_\n"
-            f"  _2 kg_\n"
-            f"  _1 piece_\n"
-            f"  _0.5 litres_\n"
-            f"  _300 grams_\n\n"
-            f"_Type *back* to change the material name_"
+            f"Is this a *raw material* you physically buy,\n"
+            f"or an *overhead cost* (electricity, labour, machine time)?",
+            [
+                {"id": "prod_mattype_material", "title": "🧱 Raw Material"},
+                {"id": "prod_mattype_overhead", "title": "⚡ Overhead Rate"},
+            ]
         )]
 
     def _recipe_material_qty(self, phone_number: str, text: str, context: dict) -> list:
-        """User typed quantity — now ask for cost per unit."""
+        """User typed quantity — now ask for cost/rate."""
         # Parse quantity and unit
         match = re.match(r'^([\d.]+)\s*(.*)', text.strip())
         if not match:
-            return [text_response("Please enter quantity + unit (e.g. 500 ml, 2 kg, 1 bottle) or type *back*:")]
+            return [text_response("Please enter quantity + unit (e.g. 500 ml, 2 kg, 5 wh, 30 seconds) or type *back*:")]
 
         qty = float(match.group(1))
         unit = match.group(2).strip() or "units"
-
+        mat_type = context.get("current_mat_type", "material")
         material_name = context.get("current_material", "Material")
 
-        # Save qty and unit to context, ask for cost
+        # Save qty and unit to context, ask for cost/rate
         context["current_qty"] = qty
         context["current_unit"] = unit
         context["prod_step"] = "recipe_material_cost"
         self.session.save(phone_number, states.PRODUCTION_RECORDING, context)
 
-        return [text_response(
-            f"✅ *{qty} {unit} {material_name}* per unit\n\n"
-            f"💰 What does *1 {unit}* of {material_name} cost?\n\n"
-            f"_e.g. 500, 2K, 10000_\n\n"
-            f"_Type *skip* if you don't know or it comes from purchases_\n"
-            f"_Type *back* to change the quantity_"
-        )]
+        if mat_type == "overhead":
+            return [text_response(
+                f"⚡ *{qty} {unit} {material_name}* per unit\n\n"
+                f"💰 What is the *rate* for {material_name}?\n"
+                f"(Cost per 1 {unit})\n\n"
+                f"_e.g. 60 (₦60 per {unit}), 0.5, 1500_\n"
+                f"_Decimals allowed: 0.06, 1.5, 0.001_\n\n"
+                f"_Type *back* to change quantity_"
+            )]
+        else:
+            return [text_response(
+                f"🧱 *{qty} {unit} {material_name}* per unit\n\n"
+                f"💰 What does *1 {unit}* of {material_name} cost?\n\n"
+                f"_e.g. 500, 2K, 10000, 0.5_\n\n"
+                f"_Type *skip* if you don't know (will use purchase price)_\n"
+                f"_Type *back* to change the quantity_"
+            )]
 
     def _recipe_material_cost(self, phone_number: str, text: str, context: dict) -> list:
-        """User typed cost per unit (or skip) — save material to recipe."""
+        """User typed cost/rate (or skip) — save to recipe."""
         material_name = context.get("current_material", "Material")
         qty = context.get("current_qty", 1)
         unit = context.get("current_unit", "units")
+        mat_type = context.get("current_mat_type", "material")
         product_key = context.get("recipe_product_key", "")
         product_name = context.get("recipe_product_name", "Product")
 
-        # Parse cost
-        cost_per_unit = 0
+        # Parse cost/rate — support decimals
+        cost_value = 0.0
         if text.lower().strip() not in ("skip", "no", "0", "none"):
-            from utils.parser import parse_amount
-            cost = parse_amount(text)
-            if cost:
-                cost_per_unit = float(cost)
+            # Try decimal parsing first
+            decimal_match = re.match(r'^[\d.]+$', text.strip())
+            if decimal_match:
+                cost_value = float(text.strip())
             else:
-                return [text_response(
-                    f"💰 Enter cost per {unit} (e.g. 500, 2K) or type *skip*:"
-                )]
+                from utils.parser import parse_amount
+                cost = parse_amount(text)
+                if cost:
+                    cost_value = float(cost)
+                else:
+                    label = "rate" if mat_type == "overhead" else "cost"
+                    return [text_response(
+                        f"💰 Enter {label} per {unit} (e.g. 500, 0.06, 2K) or type *skip*:"
+                    )]
 
-        # Now save material to recipe
+        # Now save to recipe
         user = self.db.get_user(phone_number)
         catalog = user.get("product_catalog", {}) if user else {}
         products = catalog.get("products", {})
@@ -986,49 +1136,70 @@ class ProductionHandler:
         if product_key in products:
             recipe = products[product_key].setdefault("recipe", [])
 
+            # Build recipe entry based on type
+            recipe_entry = {
+                "material": material_name,
+                "quantity": qty,
+                "unit": unit,
+                "type": mat_type,  # "material" or "overhead"
+            }
+            if mat_type == "overhead":
+                recipe_entry["rate"] = cost_value
+            else:
+                recipe_entry["cost_per_unit"] = cost_value
+
             # Check if material already exists in recipe — update it
             found = False
-            for existing in recipe:
+            for i, existing in enumerate(recipe):
                 if existing["material"].lower() == material_name.lower():
-                    existing["quantity"] = qty
-                    existing["unit"] = unit
-                    existing["cost_per_unit"] = cost_per_unit
+                    recipe[i] = recipe_entry
                     found = True
                     break
 
             if not found:
-                recipe.append({
-                    "material": material_name,
-                    "quantity": qty,
-                    "unit": unit,
-                    "cost_per_unit": cost_per_unit,
-                })
+                recipe.append(recipe_entry)
 
-            # If cost wasn't set manually, try to auto-fill from material's landing_cost
+            # For raw materials: auto-fill cost from landing_cost if skipped
             mat_key = material_name.lower().replace(" ", "_")
-            if cost_per_unit == 0 and mat_key in products:
-                mat_cost = products[mat_key].get("landing_cost", 0)
+            if mat_type == "material" and cost_value == 0 and mat_key in products:
+                mat_cost = float(products[mat_key].get("landing_cost", 0))
                 if mat_cost:
                     for mat in recipe:
                         if mat["material"].lower() == material_name.lower():
-                            mat["cost_per_unit"] = float(mat_cost)
-                            cost_per_unit = float(mat_cost)
+                            mat["cost_per_unit"] = mat_cost
+                            cost_value = mat_cost
 
-            # Auto-create material as raw_material if not in catalog
+            # Auto-create in catalog if not exists
             if mat_key not in products:
-                products[mat_key] = {
-                    "name": material_name,
-                    "stock": 0,
-                    "landing_cost": int(cost_per_unit) if cost_per_unit else 0,
-                    "item_type": "raw_material",
-                    "category": "",
-                    "variants": [],
-                    "recipe": [],
-                    "conversions": {},
-                }
-            elif cost_per_unit > 0 and not products[mat_key].get("landing_cost"):
-                # Update material's landing_cost from recipe cost
-                products[mat_key]["landing_cost"] = int(cost_per_unit)
+                if mat_type == "overhead":
+                    products[mat_key] = {
+                        "name": material_name,
+                        "stock": 0,
+                        "landing_cost": cost_value,
+                        "item_type": "overhead",
+                        "category": "",
+                        "variants": [],
+                        "recipe": [],
+                        "conversions": {},
+                    }
+                else:
+                    products[mat_key] = {
+                        "name": material_name,
+                        "stock": 0,
+                        "landing_cost": cost_value,
+                        "item_type": "raw_material",
+                        "category": "",
+                        "variants": [],
+                        "recipe": [],
+                        "conversions": {},
+                    }
+            elif mat_type == "overhead":
+                # Tag existing item as overhead
+                products[mat_key]["item_type"] = "overhead"
+                if cost_value > 0:
+                    products[mat_key]["landing_cost"] = cost_value
+            elif cost_value > 0 and not products[mat_key].get("landing_cost"):
+                products[mat_key]["landing_cost"] = cost_value
 
             # Tag the finished product
             products[product_key]["item_type"] = "finished_product"
@@ -1037,21 +1208,26 @@ class ProductionHandler:
             self.db.update_user_field(phone_number, "product_catalog", catalog)
 
         # Build success message
-        cost_str = f" @ {format_amount(cost_per_unit)}/{unit}" if cost_per_unit else ""
+        if mat_type == "overhead":
+            cost_str = f" @ ₦{cost_value:,.2f}/{unit}" if cost_value else ""
+            emoji = "⚡"
+        else:
+            cost_str = f" @ ₦{cost_value:,.2f}/{unit}" if cost_value else ""
+            emoji = "🧱"
 
         # Ask for next material
         context["prod_step"] = "recipe_add_material"
-        for key in ("current_material", "current_qty", "current_unit"):
+        for key in ("current_material", "current_qty", "current_unit", "current_mat_type"):
             context.pop(key, None)
         self.session.save(phone_number, states.PRODUCTION_RECORDING, context)
 
         return [
             text_response(
-                f"✅ Added: *{qty} {unit} {material_name}*{cost_str} per unit of {product_name}\n\n"
-                f"Add another material or type *done* to finish."
+                f"✅ Added: {emoji} *{qty} {unit} {material_name}*{cost_str} per unit of {product_name}\n\n"
+                f"Add another material/cost or type *done* to finish."
             ),
             button_response(
-                "More materials?",
+                "More?",
                 [
                     {"id": "prod_recipe_add", "title": "➕ Add More"},
                     {"id": "prod_recipe_done", "title": "✅ Done"},
