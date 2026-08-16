@@ -288,11 +288,16 @@ class TransactionHandler:
             "pending_transaction": tx_data,
         })
 
-        # Services/hybrid sales: show deposit option via list (4+ options)
-        user = self.db.get_user(phone_number) or {}
-        industry = user.get("industry_class", user.get("business_type", "trading"))
-        if tx_type == "sale" and industry in ("services", "hybrid"):
+        # For sales and purchases: show deposit/part payment option via list (4 options)
+        if tx_type in ("sale", "purchase"):
             from utils.whatsapp_ui import list_response
+            if tx_type == "sale":
+                deposit_desc = "Customer paid partial, owes balance"
+                credit_desc = "Not paid yet — full amount owed"
+            else:
+                deposit_desc = "You paid partial, owe balance"
+                credit_desc = "Not paid yet — you owe full amount"
+
             return [list_response(
                 header="💳 Payment",
                 body=prompt,
@@ -300,11 +305,12 @@ class TransactionHandler:
                 sections=[{"title": "Payment Method", "rows": [
                     {"id": "pm_cash", "title": "💵 Cash", "description": "Paid in full — cash"},
                     {"id": "pm_transfer", "title": "🏦 Transfer/POS", "description": "Paid in full — bank transfer"},
-                    {"id": "pm_deposit", "title": "💳 Deposit/Part Payment", "description": "Client paid partial, owes balance"},
-                    {"id": "pm_credit", "title": "📝 On Credit (Full)", "description": "Not paid yet — full amount owed"},
+                    {"id": "pm_deposit", "title": "💳 Deposit/Part Payment", "description": deposit_desc},
+                    {"id": "pm_credit", "title": "📝 On Credit (Full)", "description": credit_desc},
                 ]}]
             )]
 
+        # Expenses: simple 3-button (no deposit concept)
         return [button_response(
             prompt,
             [
@@ -396,6 +402,51 @@ class TransactionHandler:
             # Determine credit direction
             if has_credit and vendor:
                 return self._save_credit_transaction(phone_number, tx_data)
+
+            # Credit flagged but no vendor — save normally, then ask who owes
+            if has_credit and not vendor:
+                # Save the transaction first (as credit/unpaid)
+                extra = {}
+                if tx_data.get("details"):
+                    extra["details"] = tx_data["details"]
+                if tx_data.get("catalog_product"):
+                    extra["catalog_product"] = tx_data["catalog_product"]
+                if tx_data.get("catalog_product_name"):
+                    extra["catalog_product_name"] = tx_data["catalog_product_name"]
+
+                result = self.db.save_transaction(
+                    phone_number,
+                    int(tx_data["amount"]),
+                    tx_data["type"],
+                    tx_data["description"],
+                    tx_data["category"],
+                    vendor="",
+                    quantity=tx_data.get("quantity"),
+                    brand=tx_data.get("brand"),
+                    item_name=tx_data.get("description"),
+                    unit_cost=tx_data.get("unit_cost"),
+                    payment_method="credit",
+                    extra_details=extra if extra else None,
+                )
+                tx_id = result.get("transaction_id", "") if isinstance(result, dict) else ""
+
+                # Ask who bought on credit — use CRM_HINT state
+                from core.states import CRM_HINT
+                self.session.save(phone_number, CRM_HINT, {
+                    "crm_step": "ask_credit_name",
+                    "transaction_id": tx_id,
+                    "tx_type": tx_data["type"],
+                    "amount": tx_data["amount"],
+                    "description": tx_data["description"],
+                })
+
+                tx_label = "buy from" if tx_data["type"] == "purchase" else "sell to"
+                return [text_response(
+                    f"✅ *{format_amount(tx_data['amount'])} on credit recorded.*\n\n"
+                    f"👤 *Who did you {tx_label}?*\n\n"
+                    f"_Type their name so I can track the debt._\n"
+                    f"_Or type *skip* to record without a name._"
+                )]
 
             # Normal save
             # Build extra_details including catalog linkage
@@ -490,7 +541,19 @@ class TransactionHandler:
                         # No recipe cost set — fall through to ask landing cost
                         return self._check_variants_then_landing_cost(phone_number, tx_id, tx_data)
                 else:
-                    # Trading: check variants → ask landing cost
+                    # Trading: deduct stock immediately, then ask landing cost
+                    from features.catalog import CatalogHandler
+                    cat = CatalogHandler(self.session, self.db)
+                    desc = tx_data.get("description", "")
+                    brand = tx_data.get("brand", "")
+                    search_name = f"{brand} {desc}".strip() if brand else desc
+                    qty = self._parse_qty(tx_data.get("quantity", "1"))
+                    qty_str = tx_data.get("quantity", "")
+                    variant = self._detect_variant(phone_number, search_name)
+                    cat.update_stock(phone_number, search_name, -qty, quantity_str=qty_str, variant=variant)
+
+                    # Now ask landing cost (for margin tracking only, stock already handled)
+                    tx_data["_stock_already_deducted"] = True
                     return self._check_variants_then_landing_cost(phone_number, tx_id, tx_data)
 
             # ── For PURCHASES: update inventory (add stock + save cost) ──
@@ -659,19 +722,42 @@ class TransactionHandler:
 
             if is_buyer:
                 # I owe them
-                self.db.record_debt(phone_number, vendor, amount, 'i_owe', f"Credit purchase: {description}")
-                self.session.reset(phone_number)
-                return [
-                    text_response(
-                        f"✅ Saved! {format_amount(amount)} purchase on credit.\n"
-                        f"📝 You owe *{vendor}* {format_amount(amount)}."
-                    ),
-                    button_response("What's next?", [
-                        {"id": "record_purchase", "title": "📦 Buy More"},
-                        {"id": "menu_debts", "title": "💳 View Debts"},
-                        {"id": "menu_home", "title": "☰ Menu"},
-                    ])
-                ]
+                deposit_amount = tx_data.get("deposit_amount", 0)
+                balance_owed = tx_data.get("balance_owed", 0)
+
+                if deposit_amount and balance_owed:
+                    # Deposit: record only the balance as debt (I owe them the rest)
+                    self.db.record_debt(phone_number, vendor, balance_owed, 'i_owe',
+                                        f"Balance after deposit: {description}")
+                    self.session.reset(phone_number)
+                    return [
+                        text_response(
+                            f"✅ *Purchase saved!* {format_amount(amount)}\n\n"
+                            f"💳 You paid: *{format_amount(deposit_amount)}*\n"
+                            f"📝 You still owe *{vendor}*: *{format_amount(balance_owed)}*\n\n"
+                            f"_Balance tracked in Debts. Pay the rest when ready._"
+                        ),
+                        button_response("What's next?", [
+                            {"id": "record_purchase", "title": "📦 Buy More"},
+                            {"id": "menu_debts", "title": "💳 View Debts"},
+                            {"id": "menu_home", "title": "☰ Menu"},
+                        ])
+                    ]
+                else:
+                    # Full credit — no payment made
+                    self.db.record_debt(phone_number, vendor, amount, 'i_owe', f"Credit purchase: {description}")
+                    self.session.reset(phone_number)
+                    return [
+                        text_response(
+                            f"✅ Saved! {format_amount(amount)} purchase on credit.\n"
+                            f"📝 You owe *{vendor}* {format_amount(amount)}."
+                        ),
+                        button_response("What's next?", [
+                            {"id": "record_purchase", "title": "📦 Buy More"},
+                            {"id": "menu_debts", "title": "💳 View Debts"},
+                            {"id": "menu_home", "title": "☰ Menu"},
+                        ])
+                    ]
             else:
                 # They owe me — this is a credit sale, offer invoice
                 # Check if this is a deposit (partial payment) vs full credit
@@ -908,6 +994,7 @@ class TransactionHandler:
             "lc_catalog_path": tx_data.get("catalog_path", []),
             "lc_quantity": quantity,
             "lc_variant": tx_data.get("selected_variant", ""),
+            "lc_stock_deducted": tx_data.get("_stock_already_deducted", False),
         })
 
         if saved_cost:
@@ -1048,7 +1135,12 @@ class TransactionHandler:
         ]
 
     def _decrement_stock_on_sale(self, phone_number: str, description: str, qty: int, context: dict):
-        """Decrement stock when a sale is recorded. Searches catalog by description."""
+        """Decrement stock when a sale is recorded. Skips if already deducted at save time."""
+        # Skip if stock was already deducted during _save_transaction
+        if context.get("lc_stock_deducted"):
+            logger.info(f"Stock already deducted for: {description} (skipping)")
+            return
+
         try:
             from features.catalog import CatalogHandler
             cat = CatalogHandler(self.session, self.db)

@@ -141,46 +141,55 @@ class ReportsHandler:
         net         = gross - opex
         tx_count    = len(transactions)
 
+        # ── Get user industry for labels ──
+        user = self.db.get_user(phone_number) or {}
+        industry = user.get("industry_class", user.get("business_type", "trading"))
+
         # ── Gross margin % ──
         gross_pct   = f"{int(gross / revenue * 100)}%" if revenue > 0 else "—"
         net_pct     = f"{int(net / revenue * 100)}%" if revenue > 0 else "—"
 
         # ════════════════════════════════════════════════════
-        # FORMAT A — Cash Flow Style
+        # REPORT — Cash Flow Summary
+        # Shows money in (revenue) vs money out (purchases + expenses)
         # ════════════════════════════════════════════════════
+
+        # Industry-specific labels
+        if industry == "manufacturing":
+            cogs_label = "Materials & Production"
+            revenue_label = "Output Sales"
+        elif industry == "services":
+            cogs_label = "Supplies & Job Costs"
+            revenue_label = "Service Revenue"
+        else:
+            cogs_label = "Stock Purchases"
+            revenue_label = "Sales"
+
         lines = [
-            f"📊 *{label} — P&L Report*",
+            f"📊 *{label} — Cash Flow*",
             f"",
             f"━━━━━━━━━━━━━━━━━━━━",
-            f"💰 *REVENUE*",
-            f"  Sales:        {format_amount(revenue)}",
+            f"💰 *MONEY IN*",
+            f"  {revenue_label}:  {format_amount(revenue)}",
             f"",
-            f"📦 *COST OF GOODS SOLD*",
-            f"  Purchases:    {format_amount(cogs)}",
-            f"",
-            f"━━━━━━━━━━━━━━━━━━━━",
-            f"{'📈' if gross >= 0 else '📉'} *GROSS PROFIT*   "
-            f"{format_amount(gross)} _({gross_pct})_",
-            f"",
-            f"💸 *OPERATING EXPENSES*",
+            f"💸 *MONEY OUT*",
+            f"  {cogs_label}:  {format_amount(cogs)}",
             f"  Expenses:     {format_amount(opex)}",
+            f"  *Total Out:*  {format_amount(cogs + opex)}",
             f"",
             f"━━━━━━━━━━━━━━━━━━━━",
         ]
 
-        # Net profit line
+        # Net cash position
         if net >= 0:
-            lines.append(
-                f"📈 *NET PROFIT*      {format_amount(net)} _({net_pct})_"
-            )
+            lines.append(f"📈 *NET CASH:*  +{format_amount(net)} _({net_pct} margin)_")
         else:
-            lines.append(
-                f"📉 *NET LOSS*       ({format_amount(abs(net))}) _({net_pct})_"
-            )
+            lines.append(f"📉 *NET CASH:*  -{format_amount(abs(net))}")
 
         lines.append(f"━━━━━━━━━━━━━━━━━━━━")
         lines.append(f"")
         lines.append(f"📝 {tx_count} transaction{'s' if tx_count != 1 else ''}")
+        lines.append(f"_This is a cash flow view (money in vs out)._")
 
         # ── Top expense categories breakdown ──
         if expenses:
@@ -198,8 +207,9 @@ class ReportsHandler:
         responses = [text_response("\n".join(lines))]
 
         # ════════════════════════════════════════════════════
-        # FORMAT B — True Margin (Landing Cost based)
-        # Uses landing_cost stored on sales OR from catalog lookup
+        # REPORT B — True Profit Margin (Landing Cost based)
+        # Shows actual profit per item sold (selling price - cost price)
+        # Only available when landing costs are recorded
         # ════════════════════════════════════════════════════
         margin_report = self._build_margin_report_v2(phone_number, sales, label)
         if margin_report:
@@ -393,16 +403,16 @@ class ReportsHandler:
         # (expenses already shown in Format A, so this shows the accounting view)
         lines = [
             f"━━━━━━━━━━━━━━━━━━━━",
-            f"📈  *TRUE MARGIN — {period_label}*",
-            f"_(Proper Accounting View)_",
+            f"📈  *PROFIT MARGIN — {period_label}*",
+            f"_(Sell Price vs Cost Price)_",
             f"━━━━━━━━━━━━━━━━━━━━",
             f"",
-            f"_Based on {len(costed_sales)} sale{'s' if len(costed_sales) != 1 else ''} with recorded/catalog cost_",
+            f"_Based on {len(costed_sales)} sale{'s' if len(costed_sales) != 1 else ''} with known cost_",
             f"",
-            f"💰 Revenue:       {format_amount(total_revenue)}",
-            f"🏷️ COGS (Cost):   {format_amount(total_cost)}",
+            f"💰 Sold for:      {format_amount(total_revenue)}",
+            f"🏷️ Cost price:    {format_amount(total_cost)}",
             f"━━━━━━━━━━━━━━━━━━━━",
-            f"📈 *Gross Profit:  {format_amount(total_margin)}  ({margin_pct}%)*",
+            f"📈 *Profit:  {format_amount(total_margin)}  ({margin_pct}%)*",
             f"",
         ]
 

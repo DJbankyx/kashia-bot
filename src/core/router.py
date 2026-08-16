@@ -711,6 +711,53 @@ class Router:
             self.session.reset(phone_number)
             return self.transactions.record(phone_number, text, self.session.get(phone_number))
 
+        if step == "ask_credit_name":
+            # Credit sale/purchase without vendor — user is now telling us who owes/is owed
+            name = text.strip()
+            tx_id = context.get("transaction_id")
+            tx_type = context.get("tx_type", "sale")
+            amount_val = float(context.get("amount", 0))
+            description = context.get("description", "")
+
+            if tx_id and name:
+                self.db.update_transaction(phone_number, tx_id, {"vendor": name})
+
+                # Record the debt
+                if tx_type in ("purchase", "expense"):
+                    self.db.record_debt(phone_number, name, amount_val, 'i_owe',
+                                        f"Credit purchase: {description}")
+                    self.session.reset(phone_number)
+                    return [
+                        text_response(
+                            f"📝 *{name}* noted!\n"
+                            f"You owe *{name}* {format_amount(amount_val)}."
+                        ),
+                        button_response("What's next?", [
+                            {"id": "record_purchase", "title": "📦 Buy More"},
+                            {"id": "menu_debts", "title": "💳 View Debts"},
+                            {"id": "menu_home", "title": "☰ Menu"},
+                        ])
+                    ]
+                else:
+                    self.db.record_debt(phone_number, name, amount_val, 'owed_to_me',
+                                        f"Credit sale: {description}")
+                    self.session.reset(phone_number)
+                    return [
+                        text_response(
+                            f"📝 *{name}* owes you {format_amount(amount_val)}.\n"
+                            f"_Tracked in Debts._"
+                        ),
+                        button_response("What's next?", [
+                            {"id": "record_sale", "title": "💰 Record Sale"},
+                            {"id": "menu_debts", "title": "💳 View Debts"},
+                            {"id": "menu_home", "title": "☰ Menu"},
+                        ])
+                    ]
+
+            # No tx_id or empty name — just reset
+            self.session.reset(phone_number)
+            return [text_response("👍 Credit recorded without a name. Send your next transaction.")]
+
         if step == "ask_name":
             # Save the name to the transaction
             name = text.strip()

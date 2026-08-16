@@ -53,11 +53,16 @@ def lambda_handler(event, context):
 
             try:
                 messages = build_notifications(db, reports, phone, report_type, user)
+                if not messages:
+                    logger.info(f"No notifications for {phone} (no activity or empty report)")
+                    continue
+
                 for msg in messages:
                     sent = whatsapp.send_text(phone, msg)
                     if sent:
                         success_count += 1
                     else:
+                        logger.warning(f"Failed to send to {phone}")
                         error_count += 1
 
             except Exception as e:
@@ -259,7 +264,7 @@ def build_inactivity_alert(db, phone, now):
 # ============================================
 
 def get_active_users(db):
-    """Get all users who have onboarded (active in last 30 days)"""
+    """Get all users who have onboarded and have notifications enabled."""
     try:
         response = db.users.scan(
             FilterExpression='attribute_exists(phone_number) AND onboarding_complete = :true',
@@ -267,19 +272,40 @@ def get_active_users(db):
         )
         all_users = response.get('Items', [])
 
-        # Filter to users active in last 30 days
+        # Handle pagination (scan returns max 1MB)
+        while 'LastEvaluatedKey' in response:
+            response = db.users.scan(
+                FilterExpression='attribute_exists(phone_number) AND onboarding_complete = :true',
+                ExpressionAttributeValues={':true': True},
+                ExclusiveStartKey=response['LastEvaluatedKey']
+            )
+            all_users.extend(response.get('Items', []))
+
+        # Filter: notifications enabled (default True if field not set) + active in last 30 days
         thirty_days_ago = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
         today = datetime.now().strftime('%Y-%m-%d')
 
         active = []
         for user in all_users:
             phone = user.get('phone_number', '')
-            # Include if they have transactions OR debts recorded
+            if not phone:
+                continue
+
+            # Check notification preference (default: enabled)
+            notifications = user.get('notifications_enabled', True)
+            if notifications is False or notifications == 'false':
+                continue
+
+            # Check for recent activity (transactions in last 30 days)
             transactions = db.get_transactions_by_period(phone, thirty_days_ago, today)
+            if transactions:
+                active.append(user)
+                continue
+
+            # Also include if they have outstanding debts (even without recent transactions)
             debt_summary = db.get_debt_summary(phone)
             has_debts = debt_summary['total_owed_to_me'] > 0 or debt_summary['total_i_owe'] > 0
-
-            if transactions or has_debts:
+            if has_debts:
                 active.append(user)
 
         logger.info(f"Found {len(active)} active users out of {len(all_users)} total")
