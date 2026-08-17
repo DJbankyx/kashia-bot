@@ -55,18 +55,21 @@ class ProductionHandler:
                 mat_key = mat.get("material", "").lower().replace(" ", "_")
                 raw_material_keys.add(mat_key)
 
-        # Filter: show only finished products (have a recipe OR not a raw material)
+        # Filter: show only finished products (have a recipe OR explicitly tagged as finished_product)
         # Priority: products WITH recipes first (they're ready to produce)
         finished_products = {}
         for key, data in products.items():
             has_recipe = bool(data.get("recipe", []))
-            is_raw_material = key in raw_material_keys
+            item_type = data.get("item_type", "")
+            is_raw_material = key in raw_material_keys or item_type == "raw_material"
+            is_overhead = item_type == "overhead"
 
             # Show if: has a recipe (definitely a finished product)
-            # OR: not identified as a raw material (could be a finished product without recipe yet)
-            if has_recipe:
-                finished_products[key] = data
-            elif not is_raw_material:
+            # OR: explicitly tagged as finished_product
+            # EXCLUDE: raw materials, overhead, consumables
+            if is_raw_material or is_overhead or item_type == "consumable":
+                continue
+            if has_recipe or item_type == "finished_product":
                 finished_products[key] = data
 
         if not finished_products:

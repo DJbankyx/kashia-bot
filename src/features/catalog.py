@@ -320,7 +320,17 @@ class CatalogHandler:
         text_low = text_s.lower()
 
         # Command detection
-        if text_low in ("cancel", "exit", "done", "stop", "back"):
+        if text_low in ("cancel", "exit", "stop"):
+            self.session.reset(phone_number)
+            return [
+                text_response("❌ Cancelled."),
+                button_response("What's next?", [
+                    {"id": "cat_stock", "title": "📊 View Stock"},
+                    {"id": "cat_add", "title": "➕ Add Product"},
+                    {"id": "menu_home", "title": "☰ Menu"},
+                ])
+            ]
+        if text_low in ("done", "back"):
             self.session.reset(phone_number)
             return [
                 text_response("✅ Done!"),
@@ -925,6 +935,111 @@ class CatalogHandler:
     # ─────────────────────────────────────────────────────────
     # EDIT PRODUCT — Multi-field editor
     # ─────────────────────────────────────────────────────────
+    # VIEW PRODUCT DETAIL
+    # ─────────────────────────────────────────────────────────
+
+    def _view_product_detail(self, phone_number: str, product_key: str) -> list:
+        """Show full detail for a single product/material."""
+        products = self._get_products(phone_number)
+        if product_key not in products:
+            return [text_response("❓ Product not found.")]
+
+        prod = products[product_key]
+        name = prod.get("name", product_key)
+        stock = int(prod.get("stock", 0))
+        cost = float(prod.get("landing_cost", 0))
+        item_type = prod.get("item_type", "product")
+        primary_unit = prod.get("primary_unit", "")
+        variants = prod.get("variants", [])
+        variant_stock = prod.get("variant_stock", {})
+        variant_costs = prod.get("variant_costs", {})
+        recipe = prod.get("recipe", [])
+        conversions = prod.get("conversions", {})
+        cost_history = prod.get("cost_history", [])
+
+        # Type label
+        type_labels = {
+            "finished_product": "🏭 Finished Product",
+            "raw_material": "🧱 Raw Material",
+            "overhead": "⚡ Overhead Rate",
+            "consumable": "📦 Consumable",
+            "service": "💼 Service",
+            "product": "📦 Product",
+        }
+        type_label = type_labels.get(item_type, "📦 Product")
+
+        lines = [
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"📦  *{name}*",
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"",
+            f"📊 Type: {type_label}",
+        ]
+
+        if item_type != "overhead":
+            unit_str = f" {primary_unit}" if primary_unit else ""
+            lines.append(f"📐 Stock: *{stock}{unit_str}*")
+
+        if cost > 0:
+            if item_type == "overhead":
+                unit_label = primary_unit or "unit"
+                lines.append(f"💰 Rate: *{format_amount(cost)}/{unit_label}*")
+            else:
+                unit_label = primary_unit or "unit"
+                lines.append(f"💰 Cost: *{format_amount(cost)}/{unit_label}*")
+
+        if primary_unit:
+            lines.append(f"📏 Unit: {primary_unit}")
+
+        # Variants
+        if variants:
+            lines.append(f"")
+            lines.append(f"🏷️ *Variants:* {', '.join(variants[:8])}")
+            if variant_stock:
+                for v, vs in list(variant_stock.items())[:5]:
+                    vc = variant_costs.get(v, 0)
+                    cost_str = f" · {format_amount(vc)}" if vc else ""
+                    lines.append(f"  • {v}: {vs} in stock{cost_str}")
+
+        # Recipe
+        if recipe:
+            lines.append(f"")
+            lines.append(f"📋 *Recipe:* ({len(recipe)} materials)")
+            for mat in recipe[:5]:
+                qty = mat.get("quantity", 0)
+                unit = mat.get("unit", "")
+                mat_name = mat.get("material", "")
+                lines.append(f"  • {qty} {unit} {mat_name}")
+
+        # Conversions
+        if conversions:
+            lines.append(f"")
+            lines.append(f"📦 *Conversions:*")
+            for ck, cv in list(conversions.items())[:3]:
+                lines.append(f"  • {ck} = {cv.get('qty', '')} {cv.get('unit', '')}")
+
+        # Cost history (last 3)
+        if cost_history:
+            lines.append(f"")
+            lines.append(f"📈 *Recent Costs:*")
+            for ch in cost_history[-3:]:
+                lines.append(f"  • {ch.get('date', '')}: {format_amount(ch.get('cost', 0))} × {ch.get('qty', '')}")
+
+        lines.append(f"")
+        lines.append(f"━━━━━━━━━━━━━━━━━━━━")
+
+        return [
+            text_response("\n".join(lines)),
+            button_response("Actions:", [
+                {"id": f"cat_editpick_{product_key}", "title": "✏️ Edit"},
+                {"id": "menu_catalog", "title": "← Catalog"},
+                {"id": "menu_home", "title": "☰ Menu"},
+            ])
+        ]
+
+    # ─────────────────────────────────────────────────────────
+    # EDIT PRODUCT
+    # ─────────────────────────────────────────────────────────
 
     def _start_edit_product(self, phone_number: str) -> list:
         """Pick a product to edit."""
@@ -1095,15 +1210,18 @@ class CatalogHandler:
             if add_match:
                 qty = float(add_match.group(1))
                 prod["stock"] = current + qty
-                action = f"+{qty}"
+                qty_display = int(qty) if qty == int(qty) else qty
+                action = f"+{qty_display}"
             elif sub_match:
                 qty = float(sub_match.group(1))
                 prod["stock"] = max(0, current - qty)
-                action = f"-{qty}"
+                qty_display = int(qty) if qty == int(qty) else qty
+                action = f"-{qty_display}"
             elif set_match:
                 qty = float(set_match.group(1))
                 prod["stock"] = qty
-                action = f"set to {qty}"
+                qty_display = int(qty) if qty == int(qty) else qty
+                action = f"set to {qty_display}"
             else:
                 return [text_response("Enter: _+10_, _-5_, or _50_ (set to 50):")]
 

@@ -265,7 +265,8 @@ class Router:
 
         # ── Done button ──
         if bid == "btn_done":
-            if state in (states.CATALOG_SETUP_DETAILS, states.CATALOG_ORGANIZE, states.CATALOG_ADD_DATA):
+            if state in (states.CATALOG_SETUP_DETAILS, states.CATALOG_ORGANIZE,
+                         states.CATALOG_ADD_DATA, states.CATALOG_SETUP_PRODUCTS):
                 return self.catalog.handle(phone_number, "done", session)
 
         # ── Back button ──

@@ -333,10 +333,11 @@ class TransactionHandler:
                 "pending_transaction": tx_data,
                 "pm_step": "ask_deposit_amount",
             })
+            tx_label = "Total sale" if tx_data.get("type") == "sale" else "Total amount"
             return [text_response(
                 f"💳 *Deposit / Part Payment*\n\n"
-                f"Total job: *{format_amount(amount)}*\n\n"
-                f"💰 How much did they pay as deposit?\n\n"
+                f"{tx_label}: *{format_amount(amount)}*\n\n"
+                f"💰 How much was paid as deposit?\n\n"
                 f"_e.g. 25000, 50K, half_"
             )]
 
@@ -998,24 +999,28 @@ class TransactionHandler:
         })
 
         if saved_cost:
-            # Catalog has a saved cost — offer as suggestion
+            # Catalog has a saved cost — offer as suggestion (show total)
+            total_saved = int(saved_cost) * qty
             return [button_response(
                 f"✅ *Sale saved!* {format_amount(amount)}\n\n"
-                f"🏷️ *Landing cost for {display_name}?*\n\n"
-                f"Last recorded cost: *{format_amount(saved_cost)}*\n\n"
-                f"_Use this or type a different amount._",
+                f"🏷️ *What did you pay for this?*\n"
+                f"_{display_name}_\n\n"
+                f"Last cost: *{format_amount(saved_cost)}/unit*"
+                + (f" (×{qty} = {format_amount(total_saved)})" if qty > 1 else "") +
+                f"\n\n_Use this or type the total cost:_",
                 [
-                    {"id": "lc_use_saved", "title": f"✅ Use {format_amount(saved_cost)}"},
+                    {"id": "lc_use_saved", "title": f"✅ Use {format_amount(total_saved)}"},
                     {"id": "lc_skip",      "title": "⏭️ Skip"},
                 ]
             )]
         else:
             # No saved cost — ask directly
+            qty_hint = f"\n_({qty} units sold)_" if qty > 1 else ""
             return [button_response(
                 f"✅ *Sale saved!* {format_amount(amount)}\n\n"
-                f"🏷️ *Landing cost for {display_name}?*\n"
-                f"_(How much did you buy/source this item for?)_\n\n"
-                f"Type the cost amount, or tap Skip.",
+                f"🏷️ *What did you pay for {display_name}?*{qty_hint}\n"
+                f"_(Total cost — how much you bought/sourced it for)_\n\n"
+                f"Type the total cost amount, or tap Skip.",
                 [
                     {"id": "lc_skip", "title": "⏭️ Skip"},
                 ]
@@ -1076,7 +1081,7 @@ class TransactionHandler:
 
         # ── Use saved cost from catalog ──
         if text_low == "lc_use_saved" and saved_cost:
-            landing_cost = int(saved_cost)
+            landing_cost_parsed = int(saved_cost) * qty  # saved_cost is per-unit, calculate total
         else:
             # Parse typed amount
             landing_cost_parsed = parse_amount(text)
@@ -1087,17 +1092,18 @@ class TransactionHandler:
                 )]
             landing_cost = int(landing_cost_parsed)
 
-        # Save landing cost (per unit) to the transaction, plus total cost
-        total_cost = landing_cost * qty
+        # Save landing cost — entered as TOTAL cost for the transaction
+        total_cost = int(landing_cost_parsed)
+        landing_cost_per_unit = total_cost // qty if qty > 0 else total_cost
         if tx_id:
             self.db.update_transaction(phone_number, tx_id, {
                 "landing_cost": total_cost,
-                "landing_cost_per_unit": landing_cost,
+                "landing_cost_per_unit": landing_cost_per_unit,
             })
 
-        # Also update catalog with this cost for future auto-fill
+        # Also update catalog with per-unit cost for future auto-fill
         if catalog_key:
-            self._update_catalog_cost(phone_number, catalog_key, landing_cost)
+            self._update_catalog_cost(phone_number, catalog_key, landing_cost_per_unit)
 
         # Decrement stock on sale
         self._decrement_stock_on_sale(phone_number, desc, qty, context)
@@ -1106,16 +1112,16 @@ class TransactionHandler:
         sale_unit_price = int(amount) // qty if qty > 0 else int(amount)
         self._save_last_sale_price(phone_number, desc, sale_unit_price, context.get("lc_variant", ""))
 
-        # Calculate and show margin (landing_cost is per unit, multiply by qty)
+        # Calculate and show margin
         margin = int(amount) - total_cost
         margin_pct = int(margin / int(amount) * 100) if int(amount) > 0 else 0
 
         self.session.reset(phone_number)
 
-        # Show per-unit cost breakdown if qty > 1
+        # Show cost breakdown
         cost_line = f"🏷️ Cost: {format_amount(total_cost)}"
         if qty > 1:
-            cost_line += f" ({qty} × {format_amount(landing_cost)})"
+            cost_line += f" ({qty} × {format_amount(landing_cost_per_unit)})"
 
         return [
             text_response(
