@@ -52,6 +52,12 @@ class TransactionHandler:
             if self._is_payment(text_lower):
                 return self._handle_payment_text(phone_number, text)
 
+            # ── Multi-item detection ──
+            # If message contains multiple amounts or comma-separated items with amounts
+            multi_result = self._try_multi_item_parse(phone_number, text, text_lower)
+            if multi_result:
+                return multi_result
+
             # Parse amount
             amount = parse_amount(text)
             if not amount:
@@ -161,6 +167,167 @@ class TransactionHandler:
                 "_sold shoes 50K_\n_bought rice from Alhaji 30000_\n_transport 5K_"
             )]
 
+    # ═══════════════════════════════════════════════════════════
+    # MULTI-ITEM TRANSACTION — Multiple items in one message
+    # ═══════════════════════════════════════════════════════════
+
+    def _try_multi_item_parse(self, phone_number: str, text: str, text_lower: str) -> list:
+        """
+        Detect and handle multi-item messages like:
+        - "sold 6 dish wash 1L and 6 toilet wash 1L to Mrs Taiwo 36K"
+        - "3 toilet wash 2500 each, 2 dish wash 3000 each"
+        - "bought flour 50K, sugar 30K, oil 20K from market"
+        
+        Returns list of responses if multi-item detected, or None for single item.
+        """
+        import re
+
+        # Detection heuristics for multi-item messages:
+        # 1. Multiple amounts in one message (e.g. "flour 50K, sugar 30K")
+        amounts_found = re.findall(r'\d+[kKmM]|\d{4,}', text)
+        
+        # 2. Comma-separated items with "each" or amounts
+        has_commas = ',' in text
+        has_and = ' and ' in text_lower
+        has_each = 'each' in text_lower
+
+        # Only try multi-parse if: multiple amounts, OR (commas/and with "each")
+        is_likely_multi = (len(amounts_found) >= 2) or (has_commas and has_each) or (has_and and has_each)
+
+        if not is_likely_multi:
+            return None
+
+        # Use AI multi-transaction parser
+        user = self.db.get_user(phone_number)
+        industry_class = user.get("industry_class", "trading") if user else "trading"
+
+        items = self.categorizer.parse_multi_transaction(
+            text, phone_number=phone_number,
+            business_type=industry_class, industry_class=industry_class
+        )
+
+        if not items or len(items) < 2:
+            return None  # AI didn't find multiple items — fall through to single parse
+
+        # Build multi-item confirmation card
+        tx_type = items[0].get("transaction_type", "sale")
+        total_amount = sum(int(i.get("total_amount", 0) or 0) for i in items)
+        vendor = items[0].get("vendor_or_customer", "") or ""
+
+        # Clean vendor
+        bad_vendors = {"sold", "bought", "paid", "received", "sale", "purchase"}
+        if vendor.lower().strip() in bad_vendors:
+            vendor = ""
+
+        type_config = {
+            "income": {"emoji": "💰", "label": "SALE"},
+            "sale": {"emoji": "💰", "label": "SALE"},
+            "expense": {"emoji": "📦", "label": "PURCHASE"},
+            "purchase": {"emoji": "📦", "label": "PURCHASE"},
+        }
+        config = type_config.get(tx_type, {"emoji": "📝", "label": "TRANSACTION"})
+
+        lines = [
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"{config['emoji']}  *{config['label']}* ({len(items)} items)",
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"",
+        ]
+
+        for i, item in enumerate(items, 1):
+            item_name = item.get("item_name", item.get("description", f"Item {i}"))
+            item_amount = int(item.get("total_amount", 0) or 0)
+            item_qty = item.get("quantity", "")
+            item_unit_cost = item.get("unit_cost")
+
+            line = f"  {i}. {item_name}"
+            if item_qty and item_unit_cost:
+                line += f"\n     {item_qty} × {format_amount(item_unit_cost)} = {format_amount(item_amount)}"
+            elif item_amount:
+                line += f" — {format_amount(item_amount)}"
+            lines.append(line)
+
+        lines.append(f"")
+        lines.append(f"━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"*TOTAL: {format_amount(total_amount)}*")
+
+        if vendor:
+            lines.append(f"👤 {vendor}")
+
+        lines.append(f"━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"_Is this correct?_")
+
+        # Normalize type
+        if tx_type in ("income", "sale", "sales"):
+            tx_type = "sale"
+        elif tx_type in ("expense", "cost"):
+            tx_type = "expense"
+        elif tx_type in ("purchase", "buy"):
+            tx_type = "purchase"
+
+        # Save multi-item data to session for confirmation
+        self.session.save(phone_number, states.AWAITING_CONFIRMATION, {
+            "pending_transaction": {
+                "amount": total_amount,
+                "type": tx_type,
+                "description": f"{len(items)} items",
+                "category": items[0].get("category", "Sales & Income"),
+                "vendor": vendor,
+                "quantity": "",
+                "brand": "",
+                "unit_cost": None,
+                "raw_text": text,
+                "has_credit": False,
+                "_multi_items": items,  # Store all items for multi-save
+            }
+        })
+
+        return [
+            text_response("\n".join(lines)),
+            button_response("Confirm all items?", confirm_buttons())
+        ]
+
+    def _save_multi_items(self, phone_number: str, items: list, vendor: str, tx_type: str) -> str:
+        """Save each item in a multi-item transaction separately. Returns summary text."""
+        saved_count = 0
+        total = 0
+
+        for item in items:
+            item_name = item.get("item_name", item.get("description", "Item"))
+            item_amount = int(item.get("total_amount", 0) or 0)
+            item_qty = item.get("quantity", "")
+            item_category = item.get("category", "Sales & Income")
+            item_vendor = item.get("vendor_or_customer", vendor) or vendor
+            item_unit_cost = item.get("unit_cost")
+
+            # Clean vendor
+            bad_vendors = {"sold", "bought", "paid", "received"}
+            if item_vendor.lower().strip() in bad_vendors:
+                item_vendor = vendor
+
+            self.db.save_transaction(
+                phone_number,
+                item_amount,
+                tx_type,
+                item_name,
+                item_category,
+                vendor=item_vendor,
+                quantity=str(item_qty) if item_qty else None,
+                item_name=item_name,
+                unit_cost=item_unit_cost,
+            )
+            saved_count += 1
+            total += item_amount
+
+            # Update CRM
+            if item_vendor:
+                try:
+                    self.db.update_contact_totals(phone_number, item_vendor, item_amount, tx_type)
+                except Exception:
+                    pass
+
+        return f"✅ *{saved_count} items saved!* Total: {format_amount(total)}"
+
     def _build_confirmation(self, tx_data: dict, has_credit: bool) -> list:
         """Build a polished transaction confirmation card."""
         tx_type = tx_data["type"]
@@ -237,6 +404,21 @@ class TransactionHandler:
 
         # ── YES — Ask payment method before saving ──
         if text_lower in ("yes", "y", "correct", "confirm_yes", "✅ yes"):
+            # Multi-item: save all items directly (skip payment method per item)
+            multi_items = tx_data.get("_multi_items")
+            if multi_items:
+                vendor = tx_data.get("vendor", "")
+                tx_type = tx_data.get("type", "sale")
+                summary = self._save_multi_items(phone_number, multi_items, vendor, tx_type)
+                self.session.reset(phone_number)
+                return [
+                    text_response(summary),
+                    button_response("What's next?", [
+                        {"id": "record_sale", "title": "💰 Record Sale"},
+                        {"id": "record_purchase", "title": "📦 Record Purchase"},
+                        {"id": "menu_home", "title": "☰ Menu"},
+                    ])
+                ]
             return self._ask_payment_method(phone_number, tx_data)
 
         # ── EDIT — Show edit options ──
