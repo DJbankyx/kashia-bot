@@ -501,9 +501,13 @@ class CatalogHandler:
         lines.append(f"{indicator} *{name}*")
 
         unit_str = f" {primary_unit}" if primary_unit else ""
-        if variant_stock:
+        # Only show variant_stock if it has real variants (not old tree/subcategory data)
+        # Real variants are short strings, not product keys with underscores
+        clean_variants = {k: v for k, v in variant_stock.items()
+                         if isinstance(v, (int, float)) and len(k) < 30}
+        if clean_variants and len(clean_variants) <= 10:
             lines.append(f"   Stock: *{stock}* total")
-            for v_name, v_stock in variant_stock.items():
+            for v_name, v_stock in clean_variants.items():
                 v_cost = int(variant_costs.get(v_name, 0))
                 v_stock_int = int(v_stock)
                 value += v_stock_int * v_cost
@@ -1964,7 +1968,7 @@ class CatalogHandler:
     # ─────────────────────────────────────────────────────────
 
     def _show_product_picker(self, phone_number: str, action: str, title: str) -> list:
-        """Show product list for selection. Saves action to context."""
+        """Show product list for selection. Uses multiple sections to exceed 10-row limit."""
         products = self._get_products(phone_number)
 
         if not products:
@@ -1973,19 +1977,65 @@ class CatalogHandler:
                 "Tap ➕ *Add Product* to get started."
             )]
 
-        rows = []
-        for key, prod in list(products.items())[:10]:
-            name  = prod.get("name", key)
-            stock = int(prod.get("stock", 0))
-            cost  = int(prod.get("landing_cost", 0))
-            desc_parts = [f"Stock: {stock}"]
-            if cost:
-                desc_parts.append(f"Cost: ₦{cost:,}")
-            rows.append({
-                "id": f"cat_pick_{key}",
-                "title": name[:24],
-                "description": " · ".join(desc_parts)[:72],
-            })
+        # Check industry for grouping
+        user = self.db.get_user(phone_number) or {}
+        industry = user.get("industry_class", user.get("business_type", "trading"))
+        is_manufacturing = industry in ("manufacturing", "hybrid")
+
+        # Build rows grouped by type for manufacturing
+        if is_manufacturing:
+            finished = []
+            raw_mats = []
+            for key, prod in sorted(products.items(), key=lambda x: x[1].get("name", "")):
+                item_type = prod.get("item_type", "")
+                if item_type == "overhead":
+                    continue  # Skip overhead items from picker
+                name = prod.get("name", key)
+                stock = int(prod.get("stock", 0))
+                row = {
+                    "id": f"cat_pick_{key}",
+                    "title": name[:24],
+                    "description": f"Stock: {stock}"[:72],
+                }
+                if item_type == "raw_material":
+                    raw_mats.append(row)
+                else:
+                    finished.append(row)
+
+            sections = []
+            if finished:
+                sections.append({"title": "🏭 Finished Products", "rows": finished[:10]})
+            if raw_mats:
+                sections.append({"title": "🧱 Raw Materials", "rows": raw_mats[:10]})
+            if not sections:
+                sections = [{"title": "Products", "rows": []}]
+        else:
+            # Trading/Services: single section, sorted alphabetically
+            rows = []
+            for key, prod in sorted(products.items(), key=lambda x: x[1].get("name", "")):
+                item_type = prod.get("item_type", "")
+                if item_type == "overhead":
+                    continue
+                name = prod.get("name", key)
+                stock = int(prod.get("stock", 0))
+                cost = int(prod.get("landing_cost", 0))
+                desc_parts = [f"Stock: {stock}"]
+                if cost:
+                    desc_parts.append(f"₦{cost:,}")
+                rows.append({
+                    "id": f"cat_pick_{key}",
+                    "title": name[:24],
+                    "description": " · ".join(desc_parts)[:72],
+                })
+
+            # Split into sections of 10 if more than 10 items
+            if len(rows) > 10:
+                sections = [
+                    {"title": "Products (A-M)", "rows": rows[:10]},
+                    {"title": "Products (N-Z)", "rows": rows[10:20]},
+                ]
+            else:
+                sections = [{"title": "Products", "rows": rows}]
 
         self.session.save(phone_number, states.CATALOG_ADD_DATA, {
             "cat_step": "picking_product",
@@ -1996,7 +2046,7 @@ class CatalogHandler:
             header="📦 Select Product",
             body=title,
             button_text="Select",
-            sections=[{"title": "Products", "rows": rows}]
+            sections=sections
         )]
 
     def _handle_product_picked(self, phone_number: str, product_key: str,
@@ -2331,16 +2381,29 @@ class CatalogHandler:
         return int(product.get("landing_cost", 0))
 
     def get_product_list_for_recording(self, phone_number: str) -> list:
-        """Get products as rows for the Record Sale/Purchase picker."""
+        """Get products as rows for the Record Sale/Purchase picker.
+        For manufacturing: only shows finished products (not raw materials/overhead).
+        """
         products = self._get_products(phone_number)
         if not products:
             return []
 
+        # Check industry — manufacturing sales should only show finished products
+        user = self.db.get_user(phone_number) or {}
+        industry = user.get("industry_class", user.get("business_type", "trading"))
+        is_manufacturing = industry in ("manufacturing", "hybrid")
+
         rows = []
-        for key, prod in list(products.items())[:9]:
-            name  = prod.get("name", key)
+        for key, prod in sorted(products.items(), key=lambda x: x[1].get("name", "")):
+            item_type = prod.get("item_type", "")
+
+            # For manufacturing: skip raw materials and overhead in sale picker
+            if is_manufacturing and item_type in ("raw_material", "overhead", "consumable"):
+                continue
+
+            name = prod.get("name", key)
             stock = int(prod.get("stock", 0))
-            cost  = int(prod.get("landing_cost", 0))
+            cost = int(prod.get("landing_cost", 0))
 
             indicator = "🟢" if stock > 3 else ("🟡" if stock > 0 else "🔴")
             desc = f"{indicator} {stock} in stock"
@@ -2352,6 +2415,9 @@ class CatalogHandler:
                 "title": f"📦 {name}"[:24],
                 "description": desc[:72],
             })
+
+            if len(rows) >= 9:  # Leave room for "Other" option
+                break
 
         return rows
 
