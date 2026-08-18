@@ -366,6 +366,20 @@ class CatalogHandler:
         if step == "setting_conversion":
             return self._handle_set_conversion(phone_number, text_s, context)
 
+        if step == "typing_product_name":
+            # User typed a product name manually — find it and route to action
+            action = context.get("cat_action", "")
+            products = self._get_products(phone_number)
+            # Try to find matching product
+            matched_key = self._find_product_key(products, text_s)
+            if matched_key:
+                return self._handle_product_picked(phone_number, matched_key, action, context)
+            else:
+                return [text_response(
+                    f"❓ *{text_s}* not found in your catalog.\n\n"
+                    f"_Check the spelling or add it first._"
+                )]
+
         if step == "setting_unit":
             return self._handle_set_unit(phone_number, text_s, context)
 
@@ -2042,9 +2056,17 @@ class CatalogHandler:
             "cat_action": action,
         })
 
+        # Add "Type name" option to the last section
+        if sections and sections[-1].get("rows"):
+            sections[-1]["rows"].append({
+                "id": "cat_pick___type__",
+                "title": "📝 Type Name",
+                "description": "Type the product name manually",
+            })
+
         return [list_response(
             header="📦 Select Product",
-            body=title,
+            body=title + "\n\n_If your item isn't listed, tap 'Type Name' at the bottom._",
             button_text="Select",
             sections=sections
         )]
@@ -2052,6 +2074,17 @@ class CatalogHandler:
     def _handle_product_picked(self, phone_number: str, product_key: str,
                                 action: str, context: dict) -> list:
         """Route after product is picked based on action."""
+        # "Type Name" option — ask user to type the product name
+        if product_key == "__type__":
+            self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+                "cat_step": "typing_product_name",
+                "cat_action": action,
+            })
+            return [text_response(
+                "📝 *Type the product name:*\n\n"
+                "_e.g. Floor Cleaner 4L, Sulphonic Acid, Dish Wash 1L_"
+            )]
+
         products = self._get_products(phone_number)
         if product_key not in products:
             self.session.reset(phone_number)
