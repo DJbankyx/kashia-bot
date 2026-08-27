@@ -3,6 +3,7 @@
 
 import json
 import logging
+import time
 import requests
 
 from utils.config import get_whatsapp_token, get_phone_number_id
@@ -11,8 +12,15 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 # Meta WhatsApp API base URL
-API_VERSION = "v17.0"
+API_VERSION = "v21.0"
 BASE_URL = f"https://graph.facebook.com/{API_VERSION}"
+
+# Retry policy for transient send failures (timeouts, connection errors,
+# HTTP 429 rate limits, and 5xx server errors). Non-transient 4xx errors
+# (bad payload, auth) are NOT retried. Kept small to stay within Lambda time.
+MAX_SEND_ATTEMPTS = 3
+BACKOFF_BASE_SECONDS = 0.5   # 0.5s, 1s, ... (exponential)
+MAX_BACKOFF_SECONDS = 4.0
 
 
 class WhatsAppClient:
@@ -142,29 +150,69 @@ class WhatsAppClient:
 
     def _send(self, payload):
         """
-        Send a request to WhatsApp API.
-        Returns True on success, False on failure.
-        """
-        try:
-            response = requests.post(
-                self.url,
-                headers=self.headers,
-                json=payload,
-                timeout=10
-            )
+        Send a request to WhatsApp API, retrying transient failures with
+        exponential backoff. Returns True on success, False on failure.
 
-            if response.status_code == 200:
-                logger.info(f"Message sent successfully to {payload.get('to', 'unknown')}")
-                return True
-            else:
-                logger.error(
-                    f"WhatsApp API error: {response.status_code} - {response.text}"
+        Retries: timeouts, connection errors, HTTP 429, and 5xx.
+        Does NOT retry: non-transient 4xx (e.g. 400 bad payload, 401 auth).
+        """
+        to = payload.get("to", "unknown")
+
+        for attempt in range(1, MAX_SEND_ATTEMPTS + 1):
+            retry_after = None
+            try:
+                response = requests.post(
+                    self.url,
+                    headers=self.headers,
+                    json=payload,
+                    timeout=10,
                 )
+
+                if response.status_code == 200:
+                    if attempt > 1:
+                        logger.info(f"Message sent to {to} on attempt {attempt}")
+                    else:
+                        logger.info(f"Message sent successfully to {to}")
+                    return True
+
+                # Non-transient client errors (except 429) — don't retry
+                if 400 <= response.status_code < 500 and response.status_code != 429:
+                    logger.error(
+                        f"WhatsApp API non-retryable error: "
+                        f"{response.status_code} - {response.text}"
+                    )
+                    return False
+
+                # Transient: 429 or 5xx — log and fall through to backoff/retry
+                logger.warning(
+                    f"WhatsApp API transient error (attempt {attempt}/"
+                    f"{MAX_SEND_ATTEMPTS}): {response.status_code} - {response.text}"
+                )
+                if response.status_code == 429:
+                    # Honor Retry-After header when present (seconds), capped.
+                    hdr = response.headers.get("Retry-After")
+                    if hdr:
+                        try:
+                            retry_after = min(float(hdr), MAX_BACKOFF_SECONDS)
+                        except (ValueError, TypeError):
+                            retry_after = None
+
+            except (requests.Timeout, requests.ConnectionError) as e:
+                logger.warning(
+                    f"WhatsApp API network error (attempt {attempt}/"
+                    f"{MAX_SEND_ATTEMPTS}): {type(e).__name__}"
+                )
+            except Exception as e:
+                # Unexpected error — don't retry blindly
+                logger.error(f"Error sending message: {str(e)}")
                 return False
 
-        except requests.Timeout:
-            logger.error("WhatsApp API timeout")
-            return False
-        except Exception as e:
-            logger.error(f"Error sending message: {str(e)}")
-            return False
+            # If there are attempts left, wait (exponential backoff) then retry.
+            if attempt < MAX_SEND_ATTEMPTS:
+                delay = retry_after if retry_after is not None else min(
+                    BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)), MAX_BACKOFF_SECONDS
+                )
+                time.sleep(delay)
+
+        logger.error(f"WhatsApp send failed after {MAX_SEND_ATTEMPTS} attempts to {to}")
+        return False

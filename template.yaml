@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Kashia WhatsApp Bot - Build 20260802214951
+Description: Kashia WhatsApp Bot - Build 20260827230911
 
 Globals:
   Function:
@@ -30,7 +30,7 @@ Resources:
     Type: AWS::Serverless::Api
     Properties:
       StageName: !Ref Stage
-      Description: Kashia WhatsApp Bot - Build 20260802214951
+      Description: Kashia WhatsApp Bot - Build 20260827230911
 
   # ============================================
   # LAMBDA FUNCTIONS
@@ -43,7 +43,7 @@ Resources:
       CodeUri: src/
       Layers:
         - !Ref DependenciesLayer
-      Description: Kashia WhatsApp Bot - Build 20260802214951
+      Description: Kashia WhatsApp Bot - Build 20260827230911
       Events:
         WebhookPost:
           Type: Api
@@ -83,20 +83,25 @@ Resources:
       CodeUri: src/
       Layers:
         - !Ref DependenciesLayer
-      Description: Kashia WhatsApp Bot - Build 20260802214951
+      Description: Kashia WhatsApp Bot - Build 20260827230911
       Timeout: 300
+      # Async (EventBridge Schedule) invocation failures land here after Lambda's
+      # built-in retries, so a failed daily/weekly report is not silently lost.
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt ScheduledReportsDLQ.Arn
       Events:
         DailyReport:
           Type: Schedule
           Properties:
             Schedule: cron(0 19 * * ? *)
-            Description: Kashia WhatsApp Bot - Build 20260802214951
+            Description: Kashia WhatsApp Bot - Build 20260827230911
             Enabled: true
         WeeklyReport:
           Type: Schedule
           Properties:
             Schedule: cron(0 17 ? * SUN *)
-            Description: Kashia WhatsApp Bot - Build 20260802214951
+            Description: Kashia WhatsApp Bot - Build 20260827230911
             Enabled: true
       Policies:
         - DynamoDBCrudPolicy:
@@ -109,6 +114,9 @@ Resources:
             BucketName: !Ref GeneratedFilesBucket
         - SSMParameterReadPolicy:
             ParameterName: "kashia/*"
+        # Allow the function to write failed async invocations to its DLQ
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ScheduledReportsDLQ.QueueName
 
   # Paystack Webhook (payment confirmations)
   PaystackWebhookFunction:
@@ -261,9 +269,77 @@ Resources:
       BucketName: !Sub kashia-generated-files-${Stage}-${AWS::AccountId}
       LifecycleConfiguration:
         Rules:
-          - Id: DeleteAfter1Day
+          - Id: DeleteTempFilesAfter1Day
             Status: Enabled
+            Prefix: "exports/"
             ExpirationInDays: 1
+          - Id: DeleteDocsAfter7Days
+            Status: Enabled
+            Prefix: "documents/"
+            ExpirationInDays: 7
+
+  # ============================================
+  # DEAD-LETTER QUEUE (failed async report invocations)
+  # ============================================
+  ScheduledReportsDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub kashia-scheduled-reports-dlq-${Stage}
+      MessageRetentionPeriod: 1209600  # 14 days (max) — time to inspect failures
+
+  # ============================================
+  # CLOUDWATCH ALARMS (webhook health)
+  # ============================================
+  WebhookErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub kashia-webhook-errors-${Stage}
+      AlarmDescription: Webhook Lambda is throwing errors
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref WebhookFunction
+      Statistic: Sum
+      Period: 300           # 5-minute windows
+      EvaluationPeriods: 1
+      Threshold: 5          # >5 errors in 5 min
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  WebhookThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub kashia-webhook-throttles-${Stage}
+      AlarmDescription: Webhook Lambda is being throttled
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref WebhookFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1          # any throttling is worth knowing about
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  ScheduledReportsDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub kashia-scheduled-reports-dlq-not-empty-${Stage}
+      AlarmDescription: A scheduled report failed and landed in the DLQ
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt ScheduledReportsDLQ.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0          # >0 messages = something failed
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
 
   # ============================================
   # LAMBDA LAYER (extra Python packages)
@@ -272,7 +348,7 @@ Resources:
     Type: AWS::Serverless::LayerVersion
     Properties:
       LayerName: !Sub kashia-dependencies-${Stage}
-      Description: Kashia WhatsApp Bot - Build 20260802214951
+      Description: Kashia WhatsApp Bot - Build 20260827230911
       ContentUri: layers/dependencies/layer.zip
       CompatibleRuntimes:
         - python3.12
@@ -282,12 +358,12 @@ Resources:
 # ============================================
 Outputs:
   WebhookUrl:
-    Description: Kashia WhatsApp Bot - Build 20260802214951
+    Description: Kashia WhatsApp Bot - Build 20260827230911
     Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/webhook"
   WebhookFunctionArn:
-    Description: Kashia WhatsApp Bot - Build 20260802214951
+    Description: Kashia WhatsApp Bot - Build 20260827230911
     Value: !GetAtt WebhookFunction.Arn
   ScheduledReportsFunctionArn:
-    Description: Kashia WhatsApp Bot - Build 20260802214951
+    Description: Kashia WhatsApp Bot - Build 20260827230911
     Value: !GetAtt ScheduledReportsFunction.Arn
 # force deploy Sat Jul  4 18:39:10 WAT 2026

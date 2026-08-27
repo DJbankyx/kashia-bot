@@ -66,10 +66,10 @@ These are the "lapses" surfaced in review. Ordered by risk.
 |---|-------|------|-----|--------|
 | S1 | PIN stored as unsalted SHA-256 | High | ✅ Done (2026-08-27) — salted PBKDF2 (200k iters) in `utils/pin_security.py`; legacy SHA-256 verified + auto-upgraded on next successful entry (no lockout). | ✅ Done |
 | S2 | No retry/backoff on WhatsApp API sends | Med | ✅ Done (2026-08-27) — `_send` retries 429/5xx/timeouts/connection errors up to 3x with exponential backoff (honors Retry-After); non-transient 4xx not retried. | ✅ Done |
-| S3 | Session race condition on rapid concurrent messages | Med | Use DynamoDB conditional writes / optimistic locking on session updates. | ⬜ To do |
+| S3 | Session race condition on rapid concurrent messages | Med | ✅ Partial (2026-08-27) — sessions now carry a `version`; `save_session` supports conditional writes and `SessionManager.update_context` does a conditional read-modify-write with retry. Direct `save()` calls still overwrite unconditionally (see note). | 🟡 Partial |
 | S4 | `check_can_generate_pdf` has `TODO: re-enable tier check after beta` | Low | Re-enable the tier gate when beta ends. | ⬜ Parked (beta) |
 | S5 | Router is 900+ lines | Low | Split `_route_button` into a `ButtonDispatcher`. | ⬜ To do |
-| S6 | No CloudWatch alarms / DLQ on webhook Lambda | Med | Add a DLQ and basic alarms (errors, throttles, duration) in `template.yaml`. | ⬜ To do |
+| S6 | No CloudWatch alarms / DLQ on webhook Lambda | Med | ✅ Done (2026-08-27) — SQS DLQ on the async ScheduledReports fn (webhook is sync, so DLQ N/A there); CloudWatch alarms for webhook Errors & Throttles + DLQ-not-empty. Alarms have no SNS action yet (visible in console); wire notifications later. | ✅ Done |
 
 ---
 

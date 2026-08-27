@@ -8,6 +8,42 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 
+# ─────────────────────────────────────────────────────────
+# Vendor / client name filtering (single source of truth)
+#
+# These are transaction verbs, payment words, and generic placeholders that
+# get mistaken for a real customer/supplier name. Centralized here so every
+# feature filters the SAME set — previously this list was duplicated (and
+# inconsistent) across contacts.py, reports.py, services_industry.py and
+# several spots in transactions.py.
+# ─────────────────────────────────────────────────────────
+BAD_VENDOR_NAMES = {
+    # transaction verbs
+    "sold", "bought", "paid", "received", "sell", "buy",
+    # transaction types
+    "sale", "purchase", "expense", "income",
+    # payment words
+    "cash", "transfer", "pos", "credit",
+    # generic placeholders / skips
+    "customer", "client", "vendor", "supplier", "unknown",
+    "skip", "no", "nah", "yes", "none", "n/a", "na",
+}
+
+
+def is_bad_vendor(name: str) -> bool:
+    """True if `name` is empty or a junk/placeholder vendor name (case-insensitive)."""
+    if not name:
+        return True
+    return name.strip().lower() in BAD_VENDOR_NAMES
+
+
+def clean_vendor(name: str) -> str:
+    """Return a cleaned vendor name, or "" if it's a junk/placeholder name."""
+    if not name:
+        return ""
+    return "" if name.strip().lower() in BAD_VENDOR_NAMES else name.strip()
+
+
 def parse_amount(text):
     """
     Extract a naira amount from Nigerian-style text.

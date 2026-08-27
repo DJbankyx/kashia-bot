@@ -415,7 +415,7 @@ class Database:
     # ==========================================
 
     def get_session(self, phone_number):
-        """Get current conversation state for a user"""
+        """Get current conversation state for a user (includes a 'version' field)."""
         try:
             response = self.sessions.get_item(Key={'phone_number': phone_number})
             return response.get('Item')
@@ -423,24 +423,62 @@ class Database:
             logger.error(f"Error getting session: {e}")
             return None
 
-    def save_session(self, phone_number, state, context=None):
+    def save_session(self, phone_number, state, context=None, expected_version=None):
         """
         Save conversation state.
+
         Args:
             state: current state (e.g., "IDLE", "RECORDING", "AWAITING_CONFIRMATION")
             context: dict with temporary data (e.g., pending transaction details)
+            expected_version: if provided, the write only succeeds when the stored
+                session's version matches (optimistic locking). This prevents two
+                concurrent messages from clobbering each other's context
+                (lost-update race). Returns True on success, False on conflict.
+                When None, the write is unconditional (backwards compatible).
+
+        Returns:
+            bool — True if written, False if a version conflict blocked the write.
         """
         # TTL: expire after 24 hours of inactivity
         ttl = int(time.time()) + 86400  # 24 hours from now
+
+        # Bump the version on every write so concurrent writers can detect conflict.
+        next_version = int(expected_version or 0) + 1 if expected_version is not None else None
 
         item = {
             'phone_number': phone_number,
             'state': state,
             'context': context or {},
             'last_activity': datetime.now().isoformat(),
-            'ttl': ttl
+            'ttl': ttl,
         }
-        self.sessions.put_item(Item=self._sanitize_for_dynamo(item))
+
+        if expected_version is None:
+            # Unconditional write — still stamp a version so future conditional
+            # writers have something to compare against.
+            item['version'] = 1
+            self.sessions.put_item(Item=self._sanitize_for_dynamo(item))
+            return True
+
+        # Conditional write: only succeed if the stored version is unchanged
+        # (or the item doesn't exist yet, for a brand-new session).
+        item['version'] = next_version
+        from botocore.exceptions import ClientError
+        try:
+            self.sessions.put_item(
+                Item=self._sanitize_for_dynamo(item),
+                ConditionExpression=(
+                    'attribute_not_exists(phone_number) OR version = :ev'
+                ),
+                ExpressionAttributeValues={':ev': int(expected_version)},
+            )
+            return True
+        except ClientError as e:
+            if e.response.get('Error', {}).get('Code') == 'ConditionalCheckFailedException':
+                logger.warning(f"Session version conflict for {phone_number} "
+                               f"(expected v{expected_version}) — write skipped")
+                return False
+            raise
 
     def clear_session(self, phone_number):
         """Reset session to IDLE state"""

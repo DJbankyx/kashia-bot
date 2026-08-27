@@ -12,6 +12,7 @@ Key differences from Trading:
 
 from industries.base import BaseIndustry
 from utils.whatsapp_ui import list_response, text_response, button_response, format_amount
+from utils.parser import is_bad_vendor
 
 
 class ServicesIndustry(BaseIndustry):
@@ -255,7 +256,7 @@ class ServicesIndustry(BaseIndustry):
         client_totals = {}
         for t in jobs:
             vendor = t.get("vendor", "")
-            if vendor and vendor.lower() not in ("sold", "bought", "paid", "received"):
+            if not is_bad_vendor(vendor):
                 client_totals[vendor] = client_totals.get(vendor, 0) + int(t.get("amount", 0))
 
         top_clients = sorted(client_totals.items(), key=lambda x: x[1], reverse=True)[:3]

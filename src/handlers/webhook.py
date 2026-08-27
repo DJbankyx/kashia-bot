@@ -5,10 +5,33 @@ import json
 import hashlib
 import hmac
 import logging
+from collections import OrderedDict
 
 # Set up logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+# ─── Message Deduplication ───
+# In-memory LRU cache of recently processed message IDs.
+# Handles retries that hit the same Lambda instance (most common case).
+_processed_messages = OrderedDict()
+MAX_DEDUP_CACHE = 200
+
+
+def _is_duplicate(message_id: str) -> bool:
+    """Check if we've already processed this message ID."""
+    if not message_id:
+        return False
+
+    if message_id in _processed_messages:
+        return True
+
+    # Add to cache (evict oldest if full)
+    _processed_messages[message_id] = True
+    if len(_processed_messages) > MAX_DEDUP_CACHE:
+        _processed_messages.popitem(last=False)
+
+    return False
 
 
 def lambda_handler(event, context):
@@ -81,7 +104,13 @@ def handle_incoming_message(event):
                 for message in messages:
                     # Extract the important info
                     phone_number = message.get('from', '')  # sender's phone
+                    message_id = message.get('id', '')  # unique message ID
                     message_type = message.get('type', '')  # text, image, button, etc.
+
+                    # ── Deduplication: skip if already processed ──
+                    if _is_duplicate(message_id):
+                        logger.info(f'Duplicate message skipped: {message_id}')
+                        continue
 
                     # Get the message text
                     if message_type == 'text':
@@ -155,7 +184,7 @@ def handle_image_upload(phone_number, media_id, caption=""):
 
         # Step 1: Get the media URL from Meta
         media_url_resp = requests.get(
-            f"https://graph.facebook.com/v17.0/{media_id}",
+            f"https://graph.facebook.com/v21.0/{media_id}",
             headers={"Authorization": f"Bearer {token}"},
             timeout=10
         )
@@ -234,9 +263,20 @@ def verify_signature(event):
     """
     from utils.config import get_app_secret
 
-    app_secret = get_app_secret()
+    try:
+        app_secret = get_app_secret()
+    except Exception:
+        app_secret = None
+
     if not app_secret:
-        # If no secret configured, skip verification (dev mode)
+        # If no secret configured, skip verification (dev/test mode only)
+        # In production, this should never happen — fail closed
+        import os
+        stage = os.environ.get('STAGE', 'dev')
+        if stage == 'prod':
+            logger.error("CRITICAL: No app secret configured in production!")
+            return False
+        logger.warning("Webhook signature verification skipped (no app secret, dev mode)")
         return True
 
     headers = event.get('headers', {}) or {}
@@ -251,7 +291,7 @@ def verify_signature(event):
     computed = hmac.new(
         app_secret.encode('utf-8'),
         body.encode('utf-8'),
-        hashlib.sha256
+        hashlib.sha256,
     ).hexdigest()
 
     # compare_digest(a, b) — put expected first (Meta's value), computed second

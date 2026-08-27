@@ -113,14 +113,21 @@ def verify_pin(db, session_mgr, phone_number: str, text: str, session: dict) -> 
         return [text_response("❌ Error. Please try again.")]
 
     stored_hash = user.get("pin_hash", "")
-    entered_hash = hashlib.sha256(pin_text.encode()).hexdigest()
+    from utils.pin_security import verify_pin as _verify_pin, hash_pin as _hash_pin
+    is_valid, needs_upgrade = _verify_pin(pin_text, stored_hash)
 
-    if entered_hash == stored_hash:
+    if is_valid:
         # ✅ Correct — mark as verified for 1 hour
-        db.update_user(phone_number, {
+        updates = {
             "pin_verified_at": int(time.time()),
             "pin_attempts": 0,
-        })
+        }
+        # Transparently migrate legacy unsalted SHA-256 PINs to salted PBKDF2
+        # on successful entry — no user action needed, no lockout.
+        if needs_upgrade:
+            updates["pin_hash"] = _hash_pin(pin_text)
+            logger.info(f"Upgraded legacy PIN hash for {phone_number}")
+        db.update_user(phone_number, updates)
         session_mgr.reset(phone_number)
 
         # Return marker so main.py can re-execute the original action

@@ -577,9 +577,13 @@ class PersonalInfoHandler:
         """Verify confirmation matches and save."""
         pin              = text.strip()
         temp_hash        = context.get("pin_hash_temp", "")
-        confirmation_hash = _hash_pin(pin)
 
-        if temp_hash != confirmation_hash:
+        # Salted hashes differ per call, so confirm by verifying the re-typed
+        # PIN against the stored temp hash (not by comparing two hashes).
+        from utils.pin_security import verify_pin as _verify_pin
+        matches, _ = _verify_pin(pin, temp_hash)
+
+        if not matches:
             # Mismatch — restart
             self.session.save(phone_number, PERSONAL_INFO_STATE, {
                 "pi_step": "pin_step_set",
@@ -654,8 +658,9 @@ class PersonalInfoHandler:
 # ─────────────────────────────────────────────────────────
 
 def _hash_pin(pin: str) -> str:
-    """SHA-256 hash of PIN — never store plain text PINs."""
-    return hashlib.sha256(pin.encode()).hexdigest()
+    """Salted PBKDF2 hash of PIN — never store plain text PINs."""
+    from utils.pin_security import hash_pin
+    return hash_pin(pin)
 
 
 def _valid_email(text: str) -> bool:

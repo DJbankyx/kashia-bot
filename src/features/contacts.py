@@ -18,15 +18,15 @@ from core import states
 from utils.whatsapp_ui import (
     text_response, button_response, list_response, format_amount
 )
+from utils.parser import BAD_VENDOR_NAMES
 
 logger = logging.getLogger(__name__)
 
 # State for multi-step add contact flow
 CRM_ADDING = "CRM_ADDING"
 
-# Filter bad vendor names
-BAD_NAMES = {"sold", "bought", "paid", "received", "sale", "purchase",
-             "expense", "income", "cash", "transfer", "unknown", "customer"}
+# Filter bad vendor names — shared single source of truth (utils.parser)
+BAD_NAMES = BAD_VENDOR_NAMES
 
 
 class ContactsHandler:

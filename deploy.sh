@@ -20,10 +20,21 @@ rm -rf .aws-sam/build
 sam build
 
 # Step 3: Deploy
+# NOTE: --force-upload removed. It re-uploaded the full ~14.5MB dependency
+# layer on every deploy (slow and stall-prone). Without it, SAM skips
+# artifacts whose contents haven't changed. If you ever need to force a
+# clean re-upload, run: ./deploy.sh dev --force  (see below).
 echo "☁️  Deploying to AWS (${STAGE})..."
+
+FORCE_FLAG=""
+if [ "$2" = "--force" ]; then
+  FORCE_FLAG="--force-upload"
+  echo "⚠️  Forcing full artifact re-upload."
+fi
+
 sam deploy \
   --no-confirm-changeset \
-  --force-upload \
+  ${FORCE_FLAG} \
   --parameter-overrides "Stage=${STAGE}"
 
 echo ""
