@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from utils.whatsapp_ui import (
     text_response, button_response, list_response, format_amount
 )
+from utils.parser import is_bad_vendor
 
 logger = logging.getLogger(__name__)
 
@@ -14,12 +15,6 @@ COGS_CATEGORIES = {
     "Goods & Stock",
     "Production & Manufacturing",
     "Service Costs",
-}
-
-# Bad vendor names that are really transaction verbs — filter these out of displays
-BAD_VENDORS = {
-    "sold", "bought", "paid", "received", "sale", "purchase",
-    "expense", "income", "cash", "transfer",
 }
 
 
@@ -207,6 +202,16 @@ class ReportsHandler:
         responses = [text_response("\n".join(lines))]
 
         # ════════════════════════════════════════════════════
+        # HYBRID: Product vs Service revenue split
+        # Uses the persisted sale_kind marker (falls back to a heuristic for
+        # legacy sales), mirroring the hybrid dashboard.
+        # ════════════════════════════════════════════════════
+        if industry == "hybrid":
+            split_report = self._build_hybrid_revenue_split(sales, label)
+            if split_report:
+                responses.append(text_response(split_report))
+
+        # ════════════════════════════════════════════════════
         # REPORT B — True Profit Margin (Landing Cost based)
         # Shows actual profit per item sold (selling price - cost price)
         # Only available when landing costs are recorded
@@ -302,7 +307,7 @@ class ReportsHandler:
             desc    = _clean_desc(t)
             amt     = format_amount(t.get("amount", 0))
             vendor  = t.get("vendor", "")
-            vendor  = "" if vendor.lower() in BAD_VENDORS else vendor
+            vendor  = "" if is_bad_vendor(vendor) else vendor
             date_s  = t.get("date", "")[-5:]   # MM-DD
             vendor_str = f" · {vendor}" if vendor else ""
             lines.append(f"• {desc}{vendor_str} — {amt}  _{date_s}_")
@@ -438,6 +443,66 @@ class ReportsHandler:
 
         lines.append("━━━━━━━━━━━━━━━━━━━━")
 
+        return "\n".join(lines)
+
+    # ─────────────────────────────────────────────────────────
+    # HYBRID — Product vs Service revenue split
+    # ─────────────────────────────────────────────────────────
+
+    def _build_hybrid_revenue_split(self, sales: list, period_label: str) -> str:
+        """
+        Split sales revenue into Product vs Service for hybrid businesses.
+        Prefers the persisted sale_kind marker; falls back to a category
+        heuristic for legacy transactions recorded before the marker existed.
+        Returns a formatted string, or None if there are no sales.
+        """
+        if not sales:
+            return None
+
+        product_total = 0
+        service_total = 0
+        product_count = 0
+        service_count = 0
+
+        for t in sales:
+            amount = int(t.get("amount", 0))
+            sale_kind = (t.get("extra_details") or {}).get("sale_kind", "")
+            if sale_kind == "service":
+                is_service = True
+            elif sale_kind == "product":
+                is_service = False
+            else:
+                # Legacy fallback: guess from category / item_type
+                cat = (t.get("category", "") or "").lower()
+                is_service = "service" in cat or t.get("item_type") == "service"
+
+            if is_service:
+                service_total += amount
+                service_count += 1
+            else:
+                product_total += amount
+                product_count += 1
+
+        total = product_total + service_total
+        if total <= 0:
+            return None
+
+        prod_pct = int(product_total / total * 100)
+        svc_pct = int(service_total / total * 100)
+
+        lines = [
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"⚡  *REVENUE SPLIT — {period_label}*",
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"",
+            f"📦 Product Sales:  {format_amount(product_total)} ({prod_pct}%)",
+            f"    _{product_count} sale{'s' if product_count != 1 else ''}_",
+            f"💼 Service Revenue: {format_amount(service_total)} ({svc_pct}%)",
+            f"    _{service_count} job{'s' if service_count != 1 else ''}_",
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"📈 *Total Revenue:*  {format_amount(total)}",
+            f"━━━━━━━━━━━━━━━━━━━━",
+        ]
         return "\n".join(lines)
 
     # ─────────────────────────────────────────────────────────

@@ -70,6 +70,27 @@ class Router:
         logger.info(f"Router: phone={phone_number}, state={state}, type={message_type}, text={text_stripped[:50]}")
 
         # ═══════════════════════════════════════════════════════
+        # 0. STUCK SESSION RECOVERY
+        # ═══════════════════════════════════════════════════════
+        # If user has been in a non-IDLE state for >1 hour, auto-reset.
+        # Prevents users getting permanently stuck in a flow.
+        if state and state not in (states.IDLE, states.NEW_USER, states.ONBOARDING, ""):
+            last_activity = session.get("last_activity", "")
+            if last_activity:
+                try:
+                    from datetime import datetime
+                    last_time = datetime.fromisoformat(last_activity)
+                    elapsed = (datetime.now() - last_time).total_seconds()
+                    if elapsed > 3600:  # 1 hour
+                        logger.info(f"Stuck session detected for {phone_number}: state={state}, idle={elapsed:.0f}s. Auto-resetting.")
+                        self.session.reset(phone_number)
+                        session = self.session.get(phone_number)
+                        state = session.get("state", "")
+                        context = session.get("context", {})
+                except (ValueError, TypeError):
+                    pass  # Malformed timestamp — ignore, don't block the user
+
+        # ═══════════════════════════════════════════════════════
         # 1. NEW USER — hasn't completed onboarding
         # ═══════════════════════════════════════════════════════
         if state in (states.NEW_USER, "") or not self._user_exists(phone_number):
@@ -666,7 +687,11 @@ class Router:
             header = f"📦 What did you {label}?"
             other_desc = "Type the item name manually"
 
-        # Add "Other" option
+        # Guarantee "Other / Not Listed" always appears and the section never
+        # exceeds WhatsApp's 10-row limit. Trim products to 9 so the appended
+        # "Other" row is always the 10th and never gets dropped, regardless of
+        # what any catalog list-builder returns.
+        rows = (rows or [])[:9]
         rows.append({
             "id": "catrec___other__",
             "title": "📝 Other / Not Listed",

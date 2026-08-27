@@ -2413,39 +2413,64 @@ class CatalogHandler:
         # Fallback to base landing_cost
         return int(product.get("landing_cost", 0))
 
+    # Item types that are sellable in a manufacturing/hybrid sale picker.
+    # Everything else (raw_material, overhead, consumable) is a production input,
+    # not a finished good, so it must never appear when recording an output sale.
+    _SELLABLE_ITEM_TYPES = ("finished_product", "product", "service", "")
+
     def get_product_list_for_recording(self, phone_number: str) -> list:
         """Get products as rows for the Record Sale/Purchase picker.
         For manufacturing: only shows finished products (not raw materials/overhead).
         """
-        products = self._get_products(phone_number)
-        if not products:
-            return []
-
         # Check industry — manufacturing sales should only show finished products
         user = self.db.get_user(phone_number) or {}
         industry = user.get("industry_class", user.get("business_type", "trading"))
         is_manufacturing = industry in ("manufacturing", "hybrid")
 
+        # For manufacturing/hybrid, auto-classify items first so raw materials that
+        # were only added via a recipe (and never explicitly tagged) get detected
+        # and excluded. ensure_item_types tags recipe inputs as raw_material.
+        if is_manufacturing:
+            products = self.ensure_item_types(phone_number)
+        else:
+            products = self._get_products(phone_number)
+
+        if not products:
+            return []
+
         rows = []
         for key, prod in sorted(products.items(), key=lambda x: x[1].get("name", "")):
             item_type = prod.get("item_type", "")
 
-            # For manufacturing: skip raw materials and overhead in sale picker
-            if is_manufacturing and item_type in ("raw_material", "overhead", "consumable"):
+            # For manufacturing: only show sellable finished goods, never inputs.
+            # Use an allowlist so any input type (raw_material/overhead/consumable)
+            # is excluded even if new input types are added later.
+            if is_manufacturing and item_type not in self._SELLABLE_ITEM_TYPES:
                 continue
 
             name = prod.get("name", key)
             stock = int(prod.get("stock", 0))
             cost = int(prod.get("landing_cost", 0))
+            primary_unit = prod.get("primary_unit", "")
+
+            # Show the tracking unit in the title so the user knows what unit
+            # this item is measured in — e.g. "Flour (kg)".
+            if primary_unit:
+                title = f"📦 {name} ({primary_unit})"
+            else:
+                title = f"📦 {name}"
 
             indicator = "🟢" if stock > 3 else ("🟡" if stock > 0 else "🔴")
-            desc = f"{indicator} {stock} in stock"
+            # Include the unit alongside the stock count: "50 kg in stock".
+            unit_suffix = f" {primary_unit}" if primary_unit else ""
+            desc = f"{indicator} {stock}{unit_suffix} in stock"
             if cost:
-                desc += f" · ₦{cost:,}"
+                unit_label = primary_unit if primary_unit else "unit"
+                desc += f" · ₦{cost:,}/{unit_label}"
 
             rows.append({
                 "id": f"catrec_{key}",
-                "title": f"📦 {name}"[:24],
+                "title": title[:24],
                 "description": desc[:72],
             })
 

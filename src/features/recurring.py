@@ -121,19 +121,25 @@ class RecurringHandler:
                     "description": f"{service} — {format_amount(amount)}"[:72],
                 })
             rows.append({
+                "id": "rec_manage",
+                "title": "✏️ Edit / Manage",
+                "description": "Change or remove a recurring service",
+            })
+            rows.append({
                 "id": "rec_add",
                 "title": "➕ Add New Recurring",
                 "description": "Set up a new regular client",
             })
             responses.append(list_response(
                 header="🔁 Actions",
-                body="Mark jobs as done or add new:",
+                body="Mark jobs as done, edit, or add new:",
                 button_text="Select",
                 sections=[{"title": "Due / Actions", "rows": rows}]
             ))
         else:
             responses.append(button_response("Actions:", [
                 {"id": "rec_add", "title": "➕ Add Recurring"},
+                {"id": "rec_manage", "title": "✏️ Edit / Manage"},
                 {"id": "menu_home", "title": "☰ Menu"},
             ]))
 
@@ -144,10 +150,27 @@ class RecurringHandler:
         if button_id == "rec_add":
             return self._start_add(phone_number)
 
+        if button_id == "rec_manage":
+            return self._show_manage_list(phone_number)
+
+        if button_id.startswith("rec_edit_"):
+            # Pick a service to edit — show field menu
+            rec_id = button_id[9:]
+            return self._show_edit_menu(phone_number, rec_id)
+
+        if button_id.startswith("rec_field_"):
+            # rec_field_<field>_<rec_id> — field is one of client/service/amount/frequency
+            rest = button_id[len("rec_field_"):]
+            field, _, rec_id = rest.partition("_")
+            return self._start_edit_field(phone_number, field, rec_id)
+
         if button_id.startswith("rec_freq_"):
-            # Frequency selection from list — route to step handler
+            # Frequency selection from list. If we're editing an existing service,
+            # apply the edit; otherwise it's the add flow's frequency step.
             session = self.session.get(phone_number)
             context = session.get("context", {})
+            if context.get("rec_step") == "edit_value" and context.get("edit_field") == "frequency":
+                return self._apply_edit(phone_number, button_id, context)
             return self._step_frequency(phone_number, button_id, context)
 
         if button_id.startswith("rec_done_"):
@@ -183,6 +206,10 @@ class RecurringHandler:
 
         if step == "add_frequency":
             return self._step_frequency(phone_number, text_s, context)
+
+        # Editing an existing recurring service (typed value for client/service/amount)
+        if step == "edit_value":
+            return self._apply_edit(phone_number, text_s, context)
 
         # Legacy: try to parse free-text input
         if step == "add_details":
@@ -344,6 +371,205 @@ class RecurringHandler:
             button_response("What's next?", [
                 {"id": "rec_add", "title": "➕ Add Another"},
                 {"id": "record_sale", "title": "💼 Record Job"},
+                {"id": "menu_home", "title": "☰ Menu"},
+            ])
+        ]
+
+    # ─────────────────────────────────────────────────────────
+    # EDIT / MANAGE
+    # ─────────────────────────────────────────────────────────
+
+    def _find_service(self, phone_number: str, rec_id: str):
+        """Return (recurring_list, service_dict) for a given id, or (list, None)."""
+        user = self.db.get_user(phone_number) or {}
+        recurring = user.get("recurring_services", [])
+        for svc in recurring:
+            if svc.get("id") == rec_id:
+                return recurring, svc
+        return recurring, None
+
+    def _show_manage_list(self, phone_number: str) -> list:
+        """List all active recurring services so the user can pick one to edit/remove."""
+        user = self.db.get_user(phone_number) or {}
+        recurring = user.get("recurring_services", [])
+        active = [r for r in recurring if r.get("active", True)]
+
+        if not active:
+            return [
+                text_response("🔁 No recurring services to manage yet."),
+                button_response("Add one?", [
+                    {"id": "rec_add", "title": "➕ Add Recurring"},
+                    {"id": "menu_home", "title": "☰ Menu"},
+                ])
+            ]
+
+        rows = []
+        for svc in active[:9]:
+            rec_id = svc.get("id", "")
+            client = svc.get("client", "Client")
+            service = svc.get("service", "Service")
+            amount = int(svc.get("amount", 0))
+            freq = svc.get("frequency", "monthly")
+            rows.append({
+                "id": f"rec_edit_{rec_id}",
+                "title": f"✏️ {client}"[:24],
+                "description": f"{service} · {format_amount(amount)} · {freq.title()}"[:72],
+            })
+
+        return [list_response(
+            header="✏️ Edit / Manage",
+            body="Pick a recurring service to change or remove:",
+            button_text="Select",
+            sections=[{"title": "Recurring Services", "rows": rows}]
+        )]
+
+    def _show_edit_menu(self, phone_number: str, rec_id: str) -> list:
+        """Show which field to edit for a chosen recurring service."""
+        _, svc = self._find_service(phone_number, rec_id)
+        if not svc:
+            return [text_response("❓ Recurring service not found.")]
+
+        client = svc.get("client", "Client")
+        service = svc.get("service", "Service")
+        amount = int(svc.get("amount", 0))
+        freq = svc.get("frequency", "monthly")
+
+        return [
+            text_response(
+                f"✏️ *Editing:*\n\n"
+                f"👤 Client: *{client}*\n"
+                f"💼 Service: {service}\n"
+                f"💰 Amount: {format_amount(amount)}\n"
+                f"🔄 Frequency: {freq.title()}\n"
+                f"📅 Next due: {svc.get('next_due', 'Not set')}"
+            ),
+            list_response(
+                header="✏️ What to change?",
+                body="Pick a field to edit, or remove this service:",
+                button_text="Select",
+                sections=[{
+                    "title": "Edit Options",
+                    "rows": [
+                        {"id": f"rec_field_client_{rec_id}", "title": "👤 Client",
+                         "description": "Change the client name"},
+                        {"id": f"rec_field_service_{rec_id}", "title": "💼 Service",
+                         "description": "Change the service"},
+                        {"id": f"rec_field_amount_{rec_id}", "title": "💰 Amount",
+                         "description": "Change the charge"},
+                        {"id": f"rec_field_frequency_{rec_id}", "title": "🔄 Frequency",
+                         "description": "Change how often"},
+                        {"id": f"rec_delete_{rec_id}", "title": "🗑️ Remove",
+                         "description": "Delete this recurring service"},
+                    ]
+                }]
+            )
+        ]
+
+    def _start_edit_field(self, phone_number: str, field: str, rec_id: str) -> list:
+        """Prompt the user for the new value of the chosen field."""
+        _, svc = self._find_service(phone_number, rec_id)
+        if not svc:
+            return [text_response("❓ Recurring service not found.")]
+
+        # Frequency uses the same button list as the add flow
+        if field == "frequency":
+            self.session.save(phone_number, states.RECURRING_SERVICES, {
+                "rec_step": "edit_value",
+                "edit_rec_id": rec_id,
+                "edit_field": "frequency",
+            })
+            return [list_response(
+                header="🔄 New frequency",
+                body="How often should this repeat?",
+                button_text="Select Frequency",
+                sections=[{
+                    "title": "Frequency",
+                    "rows": [
+                        {"id": "rec_freq_daily", "title": "📅 Daily", "description": "Every day"},
+                        {"id": "rec_freq_weekly", "title": "📅 Weekly", "description": "Once a week"},
+                        {"id": "rec_freq_biweekly", "title": "📅 Every 2 Weeks", "description": "Twice a month"},
+                        {"id": "rec_freq_monthly", "title": "📅 Monthly", "description": "Once a month"},
+                        {"id": "rec_freq_quarterly", "title": "📅 Quarterly", "description": "Every 3 months"},
+                    ]
+                }]
+            )]
+
+        self.session.save(phone_number, states.RECURRING_SERVICES, {
+            "rec_step": "edit_value",
+            "edit_rec_id": rec_id,
+            "edit_field": field,
+        })
+
+        prompts = {
+            "client": "👤 *New client name?*\n\n_e.g. Mrs Ade, Dangote Office_",
+            "service": "💼 *New service?*\n\n_e.g. Office Cleaning, Delivery_",
+            "amount": "💰 *New amount?*\n\n_e.g. 30000, 50K, 150K_",
+        }
+        return [text_response(prompts.get(field, "Type the new value:") + "\n\n_Type *cancel* to stop_")]
+
+    def _apply_edit(self, phone_number: str, text: str, context: dict) -> list:
+        """Write the new field value back to the recurring service."""
+        rec_id = context.get("edit_rec_id", "")
+        field = context.get("edit_field", "")
+        recurring, svc = self._find_service(phone_number, rec_id)
+        if not svc:
+            self.session.reset(phone_number)
+            return [text_response("❓ Recurring service not found.")]
+
+        text_s = text.strip()
+
+        if field == "amount":
+            amount = parse_amount(text_s)
+            if not amount:
+                return [text_response("💰 Enter a valid amount (e.g. 30000, 50K):")]
+            svc["amount"] = int(amount)
+
+        elif field == "client":
+            if len(text_s) < 2:
+                return [text_response("👤 Enter a valid client name (at least 2 characters):")]
+            svc["client"] = text_s.title()
+
+        elif field == "service":
+            if len(text_s) < 2:
+                return [text_response("💼 Enter a valid service name (at least 2 characters):")]
+            svc["service"] = text_s.title()
+
+        elif field == "frequency":
+            freq_text = text_s.lower().replace("rec_freq_", "")
+            freq_map = {
+                "daily": "daily", "weekly": "weekly", "biweekly": "biweekly",
+                "monthly": "monthly", "quarterly": "quarterly",
+                "every 2 weeks": "biweekly", "every day": "daily",
+                "once a week": "weekly", "once a month": "monthly",
+            }
+            frequency = freq_map.get(freq_text, "monthly")
+            svc["frequency"] = frequency
+            # Recompute next_due from last_done (or today) + new frequency
+            days = FREQ_DAYS.get(frequency, 30)
+            base_str = svc.get("last_done") or datetime.now().strftime("%Y-%m-%d")
+            try:
+                base = datetime.strptime(base_str, "%Y-%m-%d")
+            except ValueError:
+                base = datetime.now()
+            svc["next_due"] = (base + timedelta(days=days)).strftime("%Y-%m-%d")
+        else:
+            self.session.reset(phone_number)
+            return [text_response("❓ Unknown field.")]
+
+        self.db.update_user_field(phone_number, "recurring_services", recurring)
+        self.session.reset(phone_number)
+
+        return [
+            text_response(
+                f"✅ *Updated!*\n\n"
+                f"👤 Client: *{svc.get('client', '')}*\n"
+                f"💼 Service: {svc.get('service', '')}\n"
+                f"💰 Amount: {format_amount(int(svc.get('amount', 0)))}\n"
+                f"🔄 Frequency: {svc.get('frequency', 'monthly').title()}\n"
+                f"📅 Next due: {svc.get('next_due', 'Not set')}"
+            ),
+            button_response("What's next?", [
+                {"id": "rec_manage", "title": "✏️ Edit Another"},
                 {"id": "menu_home", "title": "☰ Menu"},
             ])
         ]

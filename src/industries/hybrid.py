@@ -152,6 +152,8 @@ class HybridIndustry(BaseIndustry):
                      "description": "Who owes, payments"},
                     {"id": "biz_recurring", "title": "🔁 Recurring Services",
                      "description": "Regular clients & reminders"},
+                    {"id": "biz_quotes", "title": "📝 Quotes & Estimates",
+                     "description": "Send quotes, convert to invoice"},
                     {"id": "biz_docs", "title": "🧾 Documents",
                      "description": "Invoice, receipt, statement"},
                     {"id": "biz_export", "title": "📁 Export Data",
@@ -240,13 +242,20 @@ class HybridIndustry(BaseIndustry):
         for t in transactions:
             if t.get("type") not in ("sale", "income"):
                 continue
-            cat = t.get("category", "")
-            desc = (t.get("description", "") + " " + t.get("item_name", "")).lower()
-            # Heuristic: if category mentions service, or item_type is service-like
-            if "service" in cat.lower() or t.get("item_type") == "service":
+            # Prefer the explicit sale_kind marker persisted at save time
+            # (reliable). Fall back to the old heuristic only for legacy
+            # transactions recorded before the marker existed.
+            sale_kind = (t.get("extra_details") or {}).get("sale_kind", "")
+            if sale_kind == "service":
                 service_sales.append(t)
-            else:
+            elif sale_kind == "product":
                 product_sales.append(t)
+            else:
+                cat = t.get("category", "")
+                if "service" in cat.lower() or t.get("item_type") == "service":
+                    service_sales.append(t)
+                else:
+                    product_sales.append(t)
 
         purchases = [t for t in transactions if t.get("type") == "purchase"]
         expenses = [t for t in transactions if t.get("type") == "expense"]

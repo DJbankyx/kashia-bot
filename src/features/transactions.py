@@ -16,7 +16,7 @@ import traceback
 from datetime import datetime
 
 from core import states
-from utils.parser import parse_amount, detect_transaction_type, extract_vendor_name
+from utils.parser import parse_amount, detect_transaction_type, extract_vendor_name, clean_vendor, is_bad_vendor
 from utils.whatsapp_ui import (
     text_response, button_response, list_response, confirm_buttons, format_amount
 )
@@ -108,10 +108,7 @@ class TransactionHandler:
                 unit_cost = None
 
             # Clean bad vendor names (transaction verbs that get mistaken for names)
-            bad_vendors = {"sold", "bought", "paid", "received", "sale", "purchase",
-                          "expense", "income", "cash", "transfer", "sell", "buy"}
-            if vendor.lower().strip() in bad_vendors:
-                vendor = ""
+            vendor = clean_vendor(vendor)
 
             # Check for credit signals
             has_credit = any(sig in text_lower for sig in CREDIT_SIGNALS)
@@ -215,9 +212,7 @@ class TransactionHandler:
         vendor = items[0].get("vendor_or_customer", "") or ""
 
         # Clean vendor
-        bad_vendors = {"sold", "bought", "paid", "received", "sale", "purchase"}
-        if vendor.lower().strip() in bad_vendors:
-            vendor = ""
+        vendor = clean_vendor(vendor)
 
         type_config = {
             "income": {"emoji": "💰", "label": "SALE"},
@@ -300,9 +295,8 @@ class TransactionHandler:
             item_vendor = item.get("vendor_or_customer", vendor) or vendor
             item_unit_cost = item.get("unit_cost")
 
-            # Clean vendor
-            bad_vendors = {"sold", "bought", "paid", "received"}
-            if item_vendor.lower().strip() in bad_vendors:
+            # Clean vendor — fall back to the parent vendor if the item's is junk
+            if is_bad_vendor(item_vendor):
                 item_vendor = vendor
 
             self.db.save_transaction(
@@ -363,11 +357,14 @@ class TransactionHandler:
         if brand:
             lines.append(f"  🏷️ {brand}")
 
-        # Quantity + unit cost
-        if quantity and unit_cost:
-            lines.append(f"  📐 {quantity} × {format_amount(unit_cost)} each")
-        elif quantity:
-            lines.append(f"  📐 Qty: {quantity}")
+        # Quantity + unit cost. Prefer the "entered = converted" display when a
+        # unit conversion was applied, so the user sees both units clearly.
+        quantity_display = tx_data.get("quantity_display", "")
+        qty_label = quantity_display if quantity_display else quantity
+        if qty_label and unit_cost:
+            lines.append(f"  📐 {qty_label} × {format_amount(unit_cost)} each")
+        elif qty_label:
+            lines.append(f"  📐 Qty: {qty_label}")
 
         # Details (colors, patterns, etc from guided flow)
         details = tx_data.get("details", "")
@@ -576,6 +573,26 @@ class TransactionHandler:
         # Now save the transaction with payment method set
         return self._save_transaction(phone_number, tx_data)
 
+    # Categories that represent a direct cost of delivering goods/services
+    # (i.e. Cost of Goods Sold), by industry. Anything else defaults to indirect.
+    _DIRECT_COST_CATEGORIES = {
+        "manufacturing": {"Production & Manufacturing"},
+        "hybrid":        {"Production & Manufacturing", "Service Costs", "Goods & Stock"},
+        "services":      {"Service Costs"},
+    }
+
+    def _default_expense_class(self, phone_number: str, category: str) -> str:
+        """
+        Derive a sensible default expense_class ("direct" or "indirect") from the
+        expense category, so cost splits are meaningful even without a manual tap.
+        Direct = cost of delivering the product/service (COGS-like). Otherwise
+        indirect (overhead: rent, utilities, transport, admin, etc.).
+        """
+        user = self.db.get_user(phone_number) or {}
+        industry = user.get("industry_class", user.get("business_type", "trading"))
+        direct_cats = self._DIRECT_COST_CATEGORIES.get(industry, set())
+        return "direct" if category in direct_cats else "indirect"
+
     def _save_transaction(self, phone_number: str, tx_data: dict) -> list:
         """Save confirmed transaction to DynamoDB."""
         try:
@@ -646,6 +663,11 @@ class TransactionHandler:
                 extra["catalog_product_name"] = tx_data["catalog_product_name"]
             if tx_data.get("landing_cost"):
                 extra["landing_cost"] = int(tx_data["landing_cost"])
+            # Persist whether a sale was a service job vs a product sale, so the
+            # hybrid dashboard can split revenue reliably instead of guessing
+            # from the category text.
+            if tx_data.get("type") == "sale":
+                extra["sale_kind"] = "service" if tx_data.get("is_service_job") else "product"
 
             result = self.db.save_transaction(
                 phone_number,
@@ -789,6 +811,21 @@ class TransactionHandler:
             if tx_data["type"] == "expense":
                 user = self.db.get_user(phone_number) or {}
                 industry = user.get("industry_class", user.get("business_type", "trading"))
+
+                # Write a sensible default classification NOW (derived from the
+                # category), so the cost split is meaningful even if the user
+                # never taps the prompt below. The button tap simply overrides it.
+                if industry in ("manufacturing", "hybrid", "services"):
+                    default_class = self._default_expense_class(
+                        phone_number, tx_data.get("category", "")
+                    )
+                    try:
+                        self.db.update_transaction(phone_number, tx_id, {
+                            "expense_class": default_class,
+                        })
+                    except Exception:
+                        pass  # Non-critical — prompt still lets the user classify
+
                 if industry in ("manufacturing", "hybrid"):
                     # Don't reset session yet — ask expense classification
                     self.session.reset(phone_number)
@@ -887,6 +924,12 @@ class TransactionHandler:
             description = tx_data["description"]
             raw_text = tx_data.get("raw_text", "").lower()
 
+            # Mark service vs product sales so the hybrid dashboard can split
+            # revenue reliably (mirrors the non-credit save path).
+            credit_extra = {}
+            if tx_type == "sale":
+                credit_extra["sale_kind"] = "service" if tx_data.get("is_service_job") else "product"
+
             # Save the transaction
             result = self.db.save_transaction(
                 phone_number,
@@ -897,6 +940,7 @@ class TransactionHandler:
                 vendor=vendor,
                 item_name=description,
                 payment_method="credit",
+                extra_details=credit_extra if credit_extra else None,
             )
             tx_id = result.get("transaction_id", "") if isinstance(result, dict) else ""
 
@@ -2060,8 +2104,13 @@ class TransactionHandler:
             # Update the quantity to the converted amount
             raw_qty = float(guided_data.get("quantity", "1"))
             converted_qty = raw_qty * conv_qty
-            guided_data["quantity"] = str(int(converted_qty) if converted_qty == int(converted_qty) else converted_qty)
+            raw_qty_disp = int(raw_qty) if raw_qty == int(raw_qty) else raw_qty
+            conv_qty_disp = int(converted_qty) if converted_qty == int(converted_qty) else converted_qty
+            guided_data["quantity"] = str(conv_qty_disp)
             guided_data["quantity_unit"] = conv_unit
+            # Preserve what the user entered vs what it converted to, so the
+            # confirmation can show both: "3 cartons = 72 pieces".
+            guided_data["quantity_display"] = f"{raw_qty_disp} {teach_unit} = {conv_qty_disp} {conv_unit}"
 
             # Clean up
             if "teach_unit" in guided_data:
@@ -2126,8 +2175,9 @@ class TransactionHandler:
                 mat_key = item_name.lower().replace(" ", "_")
                 mat_product = products.get(mat_key, {})
                 punit = mat_product.get("primary_unit", "")
+                item_label = mat_product.get("name", item_name)
                 if punit:
-                    _qty_unit_hint = f" _(stock is in {punit})_"
+                    _qty_unit_hint = f"\n\n📏 *{item_label}* is tracked in *{punit}*."
             prompt = f"📐 *How many* did you buy?{_qty_unit_hint}\n\n_Just a number: 20, 50, 100_\n_Or number + unit: 1 drum, 5 bags, 220 litres_\n\n_Type *skip* if unsure (defaults to 1)_"
         else:
             prompt_keys = {
@@ -2223,10 +2273,7 @@ class TransactionHandler:
             return [text_response("💰 How much was it? (e.g. 50000, 150K)")]
 
         # Clean vendor — filter bad names
-        bad_vendors = {"sold", "bought", "paid", "received", "sale", "purchase",
-                      "expense", "income", "cash", "transfer", "sell", "buy", "skip"}
-        if vendor.lower().strip() in bad_vendors:
-            vendor = ""
+        vendor = clean_vendor(vendor)
 
         # Determine transaction type
         if guided_type == "sale":
@@ -2265,6 +2312,9 @@ class TransactionHandler:
             "raw_text": f"{guided_type} {item} {amount}",
             "has_credit": False,
             "is_service_job": data.get("is_service_job", False),
+            # Human-readable "entered = converted" string when a unit conversion
+            # was applied (e.g. "3 bags = 150 kg"). Empty when no conversion.
+            "quantity_display": data.get("quantity_display", ""),
         }
 
         # Save state for confirmation
@@ -2697,11 +2747,8 @@ class TransactionHandler:
 
         # ── Step: ask_vendor ──
         if step == "ask_vendor":
-            vendor = "" if text_low in ("skip", "no", "nah") else text_s
-            # Clean bad vendor names
-            bad = {"sold", "bought", "paid", "received", "skip", "no"}
-            if vendor.lower() in bad:
-                vendor = ""
+            # Clean bad vendor names (skip/no/nah and transaction verbs → "")
+            vendor = clean_vendor(text_s)
             context["cat_rec_vendor"] = vendor
             # Finalize — build confirmation
             return self._catrec_finalize(phone_number, context)
@@ -2928,10 +2975,38 @@ class TransactionHandler:
 
     def _catrec_quantity(self, phone_number: str, text: str, context: dict) -> list:
         """Handle quantity input in catalog recording."""
+        context["cat_rec_quantity_display"] = ""
         if text.lower() in ("skip", "no", "nah"):
             context["cat_rec_quantity"] = ""
         else:
-            context["cat_rec_quantity"] = text.strip()
+            entered = text.strip()
+            context["cat_rec_quantity"] = entered
+            # If the entered quantity uses a unit that the product has a
+            # conversion for (e.g. "3 bags" of an item tracked in kg), convert
+            # to the tracked unit and remember both for a clear confirmation.
+            try:
+                import re as _re
+                product_key = context.get("cat_rec_product_key", "")
+                if product_key:
+                    from features.catalog import CatalogHandler
+                    cat = CatalogHandler(self.session, self.db)
+                    products = cat._get_products(phone_number)
+                    product = products.get(product_key, {})
+                    m = _re.match(r'^(\d+(?:\.\d+)?)\s*(.*)', entered)
+                    if product and m and m.group(2).strip():
+                        raw_qty = float(m.group(1))
+                        raw_qty_i = int(raw_qty) if raw_qty == int(raw_qty) else raw_qty
+                        converted = cat._apply_conversion(product, entered, raw_qty_i)
+                        if converted is not None and converted != raw_qty_i:
+                            punit = product.get("primary_unit", "units")
+                            entered_unit = m.group(2).strip()
+                            conv_i = int(converted) if float(converted) == int(converted) else converted
+                            context["cat_rec_quantity"] = str(conv_i)
+                            context["cat_rec_quantity_display"] = (
+                                f"{raw_qty_i} {entered_unit} = {conv_i} {punit}"
+                            )
+            except Exception:
+                pass  # Non-critical — fall back to the raw entered quantity
 
         # Check for last_sale_price to auto-suggest amount
         tx_type = context.get("cat_rec_type", "sale")
@@ -3044,6 +3119,8 @@ class TransactionHandler:
             "raw_text": f"{tx_type} {full_desc} {amount}",
             "has_credit": False,
             "is_service_job": context.get("is_service_job", False),
+            # "entered = converted" display when a unit conversion was applied
+            "quantity_display": context.get("cat_rec_quantity_display", ""),
             # Catalog linkage data
             "catalog_product": product_key,
             "catalog_path": path,

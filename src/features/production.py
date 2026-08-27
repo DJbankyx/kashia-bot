@@ -189,6 +189,9 @@ class ProductionHandler:
         if step == "recipe_material_cost":
             return self._recipe_material_cost(phone_number, text_s, context)
 
+        if step == "recipe_edit_value":
+            return self._recipe_edit_apply(phone_number, text_s, context)
+
         self.session.reset(phone_number)
         return [text_response("Something went wrong. Try again from the menu.")]
 
@@ -265,7 +268,7 @@ class ProductionHandler:
         if button_id == "prod_set_recipe":
             return self._start_recipe_setup(phone_number)
 
-        if button_id.startswith("prod_recipe_") and button_id not in ("prod_recipe_done", "prod_recipe_add"):
+        if button_id.startswith("prod_recipe_") and button_id not in ("prod_recipe_done", "prod_recipe_add", "prod_recipe_edit", "prod_recipe_remove"):
             # User selected a product for recipe setup (e.g. prod_recipe_detergent)
             product_key = button_id[12:]
             session = self.session.get(phone_number)
@@ -313,6 +316,31 @@ class ProductionHandler:
             context = session.get("context", {})
             mat_idx = button_id[11:]  # after "prod_rmmat_"
             return self._recipe_remove_material(phone_number, mat_idx, context)
+
+        if button_id == "prod_recipe_edit":
+            # Show the list of materials to edit
+            session = self.session.get(phone_number)
+            context = session.get("context", {})
+            return self._recipe_show_edit_list(phone_number, context)
+
+        if button_id.startswith("prod_editmat_"):
+            # User picked a material to edit — ask which field (qty/cost)
+            session = self.session.get(phone_number)
+            context = session.get("context", {})
+            mat_idx = button_id[13:]  # after "prod_editmat_"
+            return self._recipe_edit_pick_field(phone_number, mat_idx, context)
+
+        if button_id.startswith("prod_editqty_"):
+            session = self.session.get(phone_number)
+            context = session.get("context", {})
+            mat_idx = button_id[13:]  # after "prod_editqty_"
+            return self._recipe_edit_prompt_value(phone_number, "quantity", mat_idx, context)
+
+        if button_id.startswith("prod_editcost_"):
+            session = self.session.get(phone_number)
+            context = session.get("context", {})
+            mat_idx = button_id[14:]  # after "prod_editcost_"
+            return self._recipe_edit_prompt_value(phone_number, "cost", mat_idx, context)
 
         if button_id == "prod_mattype_material":
             session = self.session.get(phone_number)
@@ -982,13 +1010,14 @@ class ProductionHandler:
             for i, mat in enumerate(recipe):
                 cost_str = f" @ ₦{int(mat.get('cost_per_unit', 0)):,}" if mat.get('cost_per_unit') else ""
                 lines.append(f"  {i+1}. {mat['quantity']} {mat.get('unit', '')} {mat['material']}{cost_str}")
-            lines.append(f"\n_Add, remove, or finish._")
+            lines.append(f"\n_Add, edit, remove, or finish._")
             return [
                 text_response("\n".join(lines)),
                 button_response(
                     "What next?",
                     [
                         {"id": "prod_recipe_add", "title": "➕ Add Material"},
+                        {"id": "prod_recipe_edit", "title": "✏️ Edit Material"},
                         {"id": "prod_recipe_remove", "title": "🗑️ Remove"},
                         {"id": "prod_recipe_done", "title": "✅ Done"},
                     ]
@@ -1316,6 +1345,7 @@ class ProductionHandler:
                     "What next?",
                     [
                         {"id": "prod_recipe_add", "title": "➕ Add Material"},
+                        {"id": "prod_recipe_edit", "title": "✏️ Edit Material"},
                         {"id": "prod_recipe_remove", "title": "🗑️ Remove More"},
                         {"id": "prod_recipe_done", "title": "✅ Done"},
                     ]
@@ -1332,6 +1362,213 @@ class ProductionHandler:
                     ]
                 )
             ]
+
+    # ─────────────────────────────────────────────────────────
+    # RECIPE MATERIAL EDIT (qty / cost of an existing material)
+    # ─────────────────────────────────────────────────────────
+
+    def _recipe_show_edit_list(self, phone_number: str, context: dict) -> list:
+        """Show list of current recipe materials to edit."""
+        product_key = context.get("recipe_product_key", "")
+        product_name = context.get("recipe_product_name", "Product")
+
+        user = self.db.get_user(phone_number)
+        catalog = user.get("product_catalog", {}) if user else {}
+        products = catalog.get("products", {})
+        product = products.get(product_key, {})
+        recipe = product.get("recipe", [])
+
+        if not recipe:
+            return [text_response(
+                "📋 Recipe is empty — nothing to edit.\n\n"
+                "_Tap ➕ Add Material to add one first._"
+            )]
+
+        rows = []
+        for i, mat in enumerate(recipe[:9]):
+            name = mat.get("material", "Material")
+            qty = mat.get("quantity", 0)
+            unit = mat.get("unit", "")
+            # cost is stored as cost_per_unit for materials, rate for overhead
+            cost = mat.get("cost_per_unit", mat.get("rate", 0))
+            cost_str = f" @ ₦{int(cost):,}/{unit}" if cost else ""
+            rows.append({
+                "id": f"prod_editmat_{i}",
+                "title": f"✏️ {name}"[:24],
+                "description": f"{qty} {unit} per unit{cost_str}"[:72],
+            })
+
+        return [list_response(
+            header="✏️ Edit Material",
+            body=f"Which material in *{product_name}* do you want to edit?",
+            button_text="Select",
+            sections=[{"title": "Recipe Materials", "rows": rows}]
+        )]
+
+    def _recipe_edit_pick_field(self, phone_number: str, mat_idx_str: str, context: dict) -> list:
+        """User picked a material to edit — ask whether to change quantity or cost."""
+        product_key = context.get("recipe_product_key", "")
+
+        try:
+            mat_idx = int(mat_idx_str)
+        except ValueError:
+            return [text_response("❌ Invalid selection.")]
+
+        user = self.db.get_user(phone_number)
+        catalog = user.get("product_catalog", {}) if user else {}
+        products = catalog.get("products", {})
+        recipe = products.get(product_key, {}).get("recipe", [])
+
+        if mat_idx < 0 or mat_idx >= len(recipe):
+            return [text_response("❌ Invalid material index.")]
+
+        mat = recipe[mat_idx]
+        name = mat.get("material", "Material")
+        qty = mat.get("quantity", 0)
+        unit = mat.get("unit", "")
+        cost = mat.get("cost_per_unit", mat.get("rate", 0))
+        is_overhead = mat.get("type") == "overhead"
+
+        # Remember which material is being edited
+        context["edit_mat_idx"] = mat_idx
+        self.session.save(phone_number, states.PRODUCTION_RECORDING, context)
+
+        cost_label = "Rate" if is_overhead else "Cost"
+        cost_str = f"₦{int(cost):,}/{unit}" if cost else "not set"
+
+        return [button_response(
+            f"✏️ *{name}*\n\n"
+            f"Current: *{qty} {unit}* per unit · {cost_label}: *{cost_str}*\n\n"
+            f"What do you want to change?",
+            [
+                {"id": f"prod_editqty_{mat_idx}", "title": "📐 Edit Quantity"},
+                {"id": f"prod_editcost_{mat_idx}", "title": f"💰 Edit {cost_label}"},
+            ]
+        )]
+
+    def _recipe_edit_prompt_value(self, phone_number: str, field: str, mat_idx_str: str, context: dict) -> list:
+        """Prompt the user to type the new quantity or cost for the chosen material."""
+        product_key = context.get("recipe_product_key", "")
+
+        try:
+            mat_idx = int(mat_idx_str)
+        except ValueError:
+            return [text_response("❌ Invalid selection.")]
+
+        user = self.db.get_user(phone_number)
+        catalog = user.get("product_catalog", {}) if user else {}
+        products = catalog.get("products", {})
+        recipe = products.get(product_key, {}).get("recipe", [])
+
+        if mat_idx < 0 or mat_idx >= len(recipe):
+            return [text_response("❌ Invalid material index.")]
+
+        mat = recipe[mat_idx]
+        name = mat.get("material", "Material")
+        unit = mat.get("unit", "")
+        is_overhead = mat.get("type") == "overhead"
+
+        context["edit_mat_idx"] = mat_idx
+        context["edit_mat_field"] = field  # "quantity" or "cost"
+        context["prod_step"] = "recipe_edit_value"
+        self.session.save(phone_number, states.PRODUCTION_RECORDING, context)
+
+        if field == "quantity":
+            return [text_response(
+                f"📐 *Edit quantity for {name}*\n\n"
+                f"How much {name} is needed to make *1 unit*?\n\n"
+                f"Type: *quantity* then *unit*\n"
+                f"_e.g. 0.5 kg, 50 CL, 2 pieces, 500 ml_"
+            )]
+        else:
+            cost_word = "rate" if is_overhead else "cost"
+            return [text_response(
+                f"💰 *Edit {cost_word} for {name}*\n\n"
+                f"What does *1 {unit}* of {name} cost?\n\n"
+                f"_e.g. 500, 2K, 10000, 0.5_"
+            )]
+
+    def _recipe_edit_apply(self, phone_number: str, text: str, context: dict) -> list:
+        """Apply the typed new quantity/cost to the recipe material, then re-show recipe."""
+        field = context.get("edit_mat_field", "")
+        mat_idx = context.get("edit_mat_idx", -1)
+        product_key = context.get("recipe_product_key", "")
+        product_name = context.get("recipe_product_name", "Product")
+
+        user = self.db.get_user(phone_number)
+        catalog = user.get("product_catalog", {}) if user else {}
+        products = catalog.get("products", {})
+
+        if product_key not in products:
+            return [text_response("❓ Product not found.")]
+
+        recipe = products[product_key].get("recipe", [])
+        if not isinstance(mat_idx, int) or mat_idx < 0 or mat_idx >= len(recipe):
+            return [text_response("❌ Could not find that material anymore.")]
+
+        mat = recipe[mat_idx]
+        is_overhead = mat.get("type") == "overhead"
+
+        if field == "quantity":
+            # Parse "0.5 kg" — reuse the same qty+unit format as adding
+            match = re.match(r'^([\d.]+)\s*(.*)', text.strip())
+            if not match:
+                return [text_response(
+                    "Please enter quantity + unit (e.g. 500 ml, 2 kg, 5 wh):"
+                )]
+            mat["quantity"] = float(match.group(1))
+            new_unit = match.group(2).strip()
+            if new_unit:
+                mat["unit"] = new_unit
+        else:
+            # Parse cost — support K/M suffixes and decimals
+            if text.lower().strip() in ("skip", "no", "0", "none"):
+                cost_value = 0.0
+            elif re.match(r'^[\d.]+$', text.strip()):
+                cost_value = float(text.strip())
+            else:
+                from utils.parser import parse_amount
+                parsed = parse_amount(text)
+                if parsed is None:
+                    return [text_response(
+                        "💰 Enter a cost like 500, 2K, 0.5 or type *skip*:"
+                    )]
+                cost_value = float(parsed)
+            if is_overhead:
+                mat["rate"] = cost_value
+            else:
+                mat["cost_per_unit"] = cost_value
+
+        products[product_key]["recipe"] = recipe
+        catalog["products"] = products
+        self.db.update_user_field(phone_number, "product_catalog", catalog)
+
+        # Clean edit context and return to the recipe menu
+        context["prod_step"] = "recipe_add_material"
+        for key in ("edit_mat_idx", "edit_mat_field"):
+            context.pop(key, None)
+        self.session.save(phone_number, states.PRODUCTION_RECORDING, context)
+
+        lines = [
+            f"✅ Updated *{mat.get('material', 'material')}*.\n",
+            f"📋 *Recipe for {product_name}:*\n",
+        ]
+        for i, m in enumerate(recipe):
+            cost = m.get("cost_per_unit", m.get("rate", 0))
+            cost_str = f" @ ₦{int(cost):,}" if cost else ""
+            lines.append(f"  {i+1}. {m['quantity']} {m.get('unit', '')} {m['material']}{cost_str}")
+
+        return [
+            text_response("\n".join(lines)),
+            button_response(
+                "What next?",
+                [
+                    {"id": "prod_recipe_edit", "title": "✏️ Edit More"},
+                    {"id": "prod_recipe_add", "title": "➕ Add Material"},
+                    {"id": "prod_recipe_done", "title": "✅ Done"},
+                ]
+            )
+        ]
 
     # ─────────────────────────────────────────────────────────
     # RECALCULATE ALL RECIPE COSTS
