@@ -122,6 +122,16 @@ limits allow. Phases 1–6 shipped 2026-09-03 (all verified, WhatsApp untouched)
 
 ---
 
+## Telegram Elevation (master plan)
+
+The full Telegram root-level upgrade roadmap — CRM, the flagship "shelf & counter"
+Catalog redesign, Reports dashboard, Documents, Debt board, Onboarding, Mini App —
+lives in **docs/TELEGRAM_MASTER_PLAN.md** (authoritative). Sequenced safest-first,
+each stage shipped + live-tested before the next, WhatsApp untouched throughout.
+Current gate: validate the sale fast-entry pilot live, then Stage 1 (CRM).
+
+---
+
 ## Document Scanning & Smart Auto-Record (proposed — next big feature)
 
 Goal: user snaps/forwards a photo or PDF of a receipt, invoice, or quote; Kashia
