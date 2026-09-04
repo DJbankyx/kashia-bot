@@ -166,7 +166,7 @@ def process_message(phone_number, text, message_type):
     """
     from main import get_bot
     bot = get_bot()
-    bot.handle_message(phone_number, text, message_type)
+    bot.handle_message(phone_number, text, message_type, platform="whatsapp")
 
 
 def handle_image_upload(phone_number, media_id, caption=""):

@@ -13,6 +13,18 @@ logger = logging.getLogger(__name__)
 
 PAYSTACK_BASE_URL = "https://api.paystack.co"
 
+
+def _paystack_safe(user_id: str) -> str:
+    """Make a user id safe for a Paystack reference / email local-part.
+
+    Replaces any character that isn't alphanumeric with an underscore. This is
+    only for the derived reference/email fields; the original id is kept intact
+    in the transaction metadata (used for routing + the tier upgrade).
+    Example: "tg:12345678" -> "tg_12345678".
+    """
+    import re
+    return re.sub(r"[^A-Za-z0-9]", "_", str(user_id or ""))
+
 # Plan amounts in kobo (Paystack uses kobo = naira × 100)
 PLANS = {
     "basic": {"amount": 300000, "name": "Kashia Basic", "price_display": "₦3,000/month"},
@@ -52,13 +64,20 @@ class PaystackService:
 
         plan_data = PLANS[plan]
 
-        # Use phone as email fallback (Paystack requires email)
-        if not email:
-            email = f"{phone_number}@kashia.app"
+        # The user id may be namespaced (e.g. "tg:12345678" for Telegram users).
+        # Paystack references and email local-parts must not contain characters
+        # like ":", so we derive a safe token for THOSE fields only. The full
+        # id is preserved verbatim in metadata below, which is what the webhook
+        # uses to route the confirmation and key the upgrade.
+        safe_id = _paystack_safe(phone_number)
 
-        # Generate unique reference
+        # Use the safe id as an email fallback (Paystack requires an email)
+        if not email:
+            email = f"{safe_id}@kashia.app"
+
+        # Generate unique reference (alphanumerics + separators only)
         import time
-        reference = f"kashia_{plan}_{phone_number}_{int(time.time())}"
+        reference = f"kashia_{plan}_{safe_id}_{int(time.time())}"
 
         payload = {
             "email": email,

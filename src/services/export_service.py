@@ -12,6 +12,7 @@ from openpyxl.utils import get_column_letter
 
 from services.database import Database
 from services.whatsapp_client import WhatsAppClient
+from services.messaging_client import resolve_client
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -312,12 +313,22 @@ class ExportService:
             return None
 
     def deliver_file(self, phone_number, filepath, filename, caption=""):
-        """Full pipeline: upload to S3 then send to user via WhatsApp."""
+        """Full pipeline: upload to S3 then send to the user on their platform.
+
+        `phone_number` is the namespaced user id. We resolve the correct
+        messaging client (WhatsApp or Telegram) from that id, so a Telegram
+        user's exports/PDFs go out over Telegram — not WhatsApp. Falls back to
+        the WhatsApp client if the platform's client isn't available.
+        """
         url = self.upload_to_s3(filepath, filename)
         if not url:
             return False, None
 
-        success = self.whatsapp.send_document(phone_number, url, filename, caption)
+        client, recipient = resolve_client(phone_number, whatsapp_fallback=self.whatsapp)
+        if client is None:
+            client = self.whatsapp
+            recipient = phone_number
+        success = client.send_document(recipient, url, filename, caption)
 
         try:
             os.remove(filepath)

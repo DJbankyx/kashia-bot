@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from services.database import Database
 from services.reports import ReportGenerator
 from services.whatsapp_client import WhatsAppClient
+from services.messaging_client import resolve_client
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -35,6 +36,9 @@ def lambda_handler(event, context):
 
         db = Database()
         reports = ReportGenerator(database=db)
+        # WhatsApp client kept as the fallback; each user's report is delivered
+        # via their own platform's client (resolved from the user-id namespace),
+        # so Telegram users get their reports on Telegram.
         whatsapp = WhatsAppClient()
 
         active_users = get_active_users(db)
@@ -47,26 +51,35 @@ def lambda_handler(event, context):
         error_count = 0
 
         for user in active_users:
-            phone = user.get('phone_number', '')
-            if not phone:
+            # This is the namespaced user id (bare phone for WhatsApp,
+            # "tg:<chat_id>" for Telegram) — the users-table HASH key.
+            user_id = user.get('phone_number', '')
+            if not user_id:
                 continue
 
+            # Resolve the recipient's platform client once per user; all their
+            # messages go to the same place. Falls back to WhatsApp if the
+            # platform client isn't available.
+            client, recipient = resolve_client(user_id, whatsapp_fallback=whatsapp)
+            if client is None:
+                client, recipient = whatsapp, user_id
+
             try:
-                messages = build_notifications(db, reports, phone, report_type, user)
+                messages = build_notifications(db, reports, user_id, report_type, user)
                 if not messages:
-                    logger.info(f"No notifications for {phone} (no activity or empty report)")
+                    logger.info(f"No notifications for {user_id} (no activity or empty report)")
                     continue
 
                 for msg in messages:
-                    sent = whatsapp.send_text(phone, msg)
+                    sent = client.send_text(recipient, msg)
                     if sent:
                         success_count += 1
                     else:
-                        logger.warning(f"Failed to send to {phone}")
+                        logger.warning(f"Failed to send to {user_id}")
                         error_count += 1
 
             except Exception as e:
-                logger.error(f"Error sending notification to {phone}: {e}")
+                logger.error(f"Error sending notification to {user_id}: {e}")
                 error_count += 1
                 continue
 
@@ -139,7 +152,74 @@ def build_notifications(db, reports, phone, report_type, user):
         except Exception as e:
             logger.error(f"Error building inactivity alert for {phone}: {e}")
 
+    # ============================================
+    # 5. RECURRING SERVICE REMINDERS (roadmap Q3)
+    # ============================================
+    # These "due soon / overdue" nudges are computed in-app but historically
+    # never actually sent. Now they ride the scheduled path and deliver via the
+    # recipient's platform client (Telegram has no template-approval wall, so
+    # they finally go out for Telegram users).
+    try:
+        recurring_msg = build_recurring_reminder(user, now)
+        if recurring_msg:
+            messages.append(recurring_msg)
+    except Exception as e:
+        logger.error(f"Error building recurring reminder for {phone}: {e}")
+
     return messages
+
+
+def build_recurring_reminder(user, now):
+    """Build a reminder for recurring services that are due soon or overdue.
+
+    Reads recurring_services off the user profile (no extra DB call). A service
+    is included when its next_due is today-or-past (overdue) or within the next
+    3 days (due soon). Returns None if nothing needs attention.
+    """
+    recurring = (user or {}).get("recurring_services", []) or []
+    active = [r for r in recurring if r.get("active", True)]
+    if not active:
+        return None
+
+    today = now.strftime("%Y-%m-%d")
+    soon = (now + timedelta(days=3)).strftime("%Y-%m-%d")
+
+    overdue = []
+    due_soon = []
+    for svc in active:
+        next_due = svc.get("next_due", "")
+        if not next_due:
+            continue
+        if next_due <= today:
+            overdue.append(svc)
+        elif next_due <= soon:
+            due_soon.append(svc)
+
+    if not overdue and not due_soon:
+        return None
+
+    lines = ["🔁 *Recurring Services Due*\n"]
+
+    if overdue:
+        lines.append("🔴 *Overdue:*")
+        for svc in overdue[:5]:
+            client = svc.get("client", "Client")
+            service = svc.get("service", "Service")
+            amount = int(svc.get("amount", 0))
+            lines.append(f"  • *{client}* — {service} (₦{amount:,})")
+        lines.append("")
+
+    if due_soon:
+        lines.append("🟡 *Due soon (next 3 days):*")
+        for svc in due_soon[:5]:
+            client = svc.get("client", "Client")
+            service = svc.get("service", "Service")
+            due = svc.get("next_due", "")
+            lines.append(f"  • *{client}* — {service} (due {due})")
+        lines.append("")
+
+    lines.append("_Open Recurring Services to mark jobs as done._")
+    return "\n".join(lines).strip()
 
 
 def build_debt_notification(db, phone, report_type, now):
@@ -306,6 +386,14 @@ def get_active_users(db):
             debt_summary = db.get_debt_summary(phone)
             has_debts = debt_summary['total_owed_to_me'] > 0 or debt_summary['total_i_owe'] > 0
             if has_debts:
+                active.append(user)
+                continue
+
+            # Also include if they have active recurring services — otherwise a
+            # service provider whose only activity is recurring jobs would never
+            # get their "due soon / overdue" reminders (roadmap Q3).
+            recurring = user.get('recurring_services', []) or []
+            if any(r.get('active', True) for r in recurring):
                 active.append(user)
 
         logger.info(f"Found {len(active)} active users out of {len(all_users)} total")

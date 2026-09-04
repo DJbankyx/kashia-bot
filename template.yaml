@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Kashia WhatsApp Bot - Build 20260827230911
+Description: Kashia WhatsApp Bot - Build 20260904004536
 
 Globals:
   Function:
@@ -30,7 +30,7 @@ Resources:
     Type: AWS::Serverless::Api
     Properties:
       StageName: !Ref Stage
-      Description: Kashia WhatsApp Bot - Build 20260827230911
+      Description: Kashia WhatsApp Bot - Build 20260904004536
 
   # ============================================
   # LAMBDA FUNCTIONS
@@ -43,7 +43,7 @@ Resources:
       CodeUri: src/
       Layers:
         - !Ref DependenciesLayer
-      Description: Kashia WhatsApp Bot - Build 20260827230911
+      Description: Kashia WhatsApp Bot - Build 20260904004536
       Events:
         WebhookPost:
           Type: Api
@@ -83,7 +83,7 @@ Resources:
       CodeUri: src/
       Layers:
         - !Ref DependenciesLayer
-      Description: Kashia WhatsApp Bot - Build 20260827230911
+      Description: Kashia WhatsApp Bot - Build 20260904004536
       Timeout: 300
       # Async (EventBridge Schedule) invocation failures land here after Lambda's
       # built-in retries, so a failed daily/weekly report is not silently lost.
@@ -95,13 +95,13 @@ Resources:
           Type: Schedule
           Properties:
             Schedule: cron(0 19 * * ? *)
-            Description: Kashia WhatsApp Bot - Build 20260827230911
+            Description: Kashia WhatsApp Bot - Build 20260904004536
             Enabled: true
         WeeklyReport:
           Type: Schedule
           Properties:
             Schedule: cron(0 17 ? * SUN *)
-            Description: Kashia WhatsApp Bot - Build 20260827230911
+            Description: Kashia WhatsApp Bot - Build 20260904004536
             Enabled: true
       Policies:
         - DynamoDBCrudPolicy:
@@ -115,6 +115,37 @@ Resources:
         - SSMParameterReadPolicy:
             ParameterName: "kashia/*"
         # Allow the function to write failed async invocations to its DLQ
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ScheduledReportsDLQ.QueueName
+
+  # Monthly Counter Reset (zeroes exports/invoices counters on the 1st)
+  MonthlyResetFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub kashia-monthly-reset-${Stage}
+      Handler: handlers/monthly_reset.lambda_handler
+      CodeUri: src/
+      Layers:
+        - !Ref DependenciesLayer
+      Description: Resets monthly usage counters for all users
+      Timeout: 300
+      # Async (EventBridge) failures land in a DLQ so a missed reset is visible.
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt ScheduledReportsDLQ.Arn
+      Events:
+        MonthlyReset:
+          Type: Schedule
+          Properties:
+            # 00:05 UTC on the 1st of every month
+            Schedule: cron(5 0 1 * ? *)
+            Description: Reset monthly usage counters
+            Enabled: true
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UsersTable
+        - SSMParameterReadPolicy:
+            ParameterName: "kashia/*"
         - SQSSendMessagePolicy:
             QueueName: !GetAtt ScheduledReportsDLQ.QueueName
 
@@ -139,6 +170,48 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref UsersTable
+        - SSMParameterReadPolicy:
+            ParameterName: "kashia/*"
+
+  # Telegram Webhook (incoming Telegram updates) — independent bot, same engine
+  TelegramWebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub kashia-telegram-webhook-${Stage}
+      Handler: handlers/telegram_webhook.lambda_handler
+      CodeUri: src/
+      Layers:
+        - !Ref DependenciesLayer
+      Description: Kashia Telegram Bot webhook — shares the KashiaBot engine
+      Environment:
+        Variables:
+          # Lets the webhook's secret-token check fail closed in prod.
+          STAGE: !Ref Stage
+      Events:
+        # Telegram only POSTs updates (no GET verification handshake; the
+        # webhook is registered out-of-band via the Bot API setWebhook method).
+        TelegramPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /telegram
+            Method: post
+      Policies:
+        # Same data access as the WhatsApp webhook — it runs the same engine.
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UsersTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TransactionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ConversationStateTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MLFeedbackTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MerchantMemoryTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ContactsTable
+        - S3CrudPolicy:
+            BucketName: !Ref GeneratedFilesBucket
         - SSMParameterReadPolicy:
             ParameterName: "kashia/*"
 
@@ -324,6 +397,40 @@ Resources:
       ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
 
+  TelegramWebhookErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub kashia-telegram-webhook-errors-${Stage}
+      AlarmDescription: Telegram webhook Lambda is throwing errors
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref TelegramWebhookFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  TelegramWebhookThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub kashia-telegram-webhook-throttles-${Stage}
+      AlarmDescription: Telegram webhook Lambda is being throttled
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref TelegramWebhookFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
   ScheduledReportsDLQAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -348,7 +455,7 @@ Resources:
     Type: AWS::Serverless::LayerVersion
     Properties:
       LayerName: !Sub kashia-dependencies-${Stage}
-      Description: Kashia WhatsApp Bot - Build 20260827230911
+      Description: Kashia WhatsApp Bot - Build 20260904004536
       ContentUri: layers/dependencies/layer.zip
       CompatibleRuntimes:
         - python3.12
@@ -358,12 +465,15 @@ Resources:
 # ============================================
 Outputs:
   WebhookUrl:
-    Description: Kashia WhatsApp Bot - Build 20260827230911
+    Description: Kashia WhatsApp Bot - Build 20260904004536
     Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/webhook"
+  TelegramWebhookUrl:
+    Description: Point Telegram setWebhook at this URL
+    Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/telegram"
   WebhookFunctionArn:
-    Description: Kashia WhatsApp Bot - Build 20260827230911
+    Description: Kashia WhatsApp Bot - Build 20260904004536
     Value: !GetAtt WebhookFunction.Arn
   ScheduledReportsFunctionArn:
-    Description: Kashia WhatsApp Bot - Build 20260827230911
+    Description: Kashia WhatsApp Bot - Build 20260904004536
     Value: !GetAtt ScheduledReportsFunction.Arn
 # force deploy Sat Jul  4 18:39:10 WAT 2026

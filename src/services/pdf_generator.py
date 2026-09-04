@@ -15,7 +15,6 @@ from reportlab.platypus import (
 )
 
 from services.database import Database
-from services.whatsapp_client import WhatsAppClient
 from services.export_service import ExportService
 
 logger = logging.getLogger()
@@ -27,7 +26,9 @@ class PDFGenerator:
 
     def __init__(self, database=None):
         self.db = database or Database()
-        self.whatsapp = WhatsAppClient()
+        # Document delivery goes through export_service.deliver_file(), which is
+        # platform-aware (WhatsApp or Telegram). PDFGenerator no longer holds a
+        # WhatsApp client of its own — that would bypass platform routing.
         self.export_service = ExportService(database=self.db)
         self.styles = getSampleStyleSheet()
         self._add_custom_styles()

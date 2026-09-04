@@ -7,6 +7,7 @@ import time
 import requests
 
 from utils.config import get_whatsapp_token, get_phone_number_id
+from services.messaging_client import MessagingClient
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -23,8 +24,10 @@ BACKOFF_BASE_SECONDS = 0.5   # 0.5s, 1s, ... (exponential)
 MAX_BACKOFF_SECONDS = 4.0
 
 
-class WhatsAppClient:
-    """Handles all outgoing WhatsApp messages"""
+class WhatsAppClient(MessagingClient):
+    """Handles all outgoing WhatsApp messages via the Meta Cloud API."""
+
+    platform = "whatsapp"
 
     def __init__(self):
         self.token = get_whatsapp_token()

@@ -15,6 +15,30 @@ STEP_WHAT_YOU_DO = "what_you_do"
 STEP_LIST_PRODUCTS = "list_products"
 STEP_COMPLETE = "complete"
 
+# Button IDs that can leak in as text if a user taps a stale button mid-onboarding.
+_BUTTON_PREFIXES = (
+    "menu_", "record_", "sec_", "pi_", "biz_", "cat_", "crm_",
+    "set_", "report_", "export_", "gen_", "txedit_", "txact_",
+    "debt_", "lc_", "pm_", "prod_", "rec_", "confirm_", "btn_",
+    "catrec_", "industry_", "var_", "quote_", "expclass_",
+)
+
+# Commands/keywords that are never a valid free-text answer.
+_COMMAND_WORDS = {
+    "menu", "help", "hi", "hello", "hey", "cancel", "back",
+    "done", "skip", "yes", "no", "ok", "okay",
+}
+
+
+def _looks_like_button_or_command(text: str) -> bool:
+    """True if the input is a stray button ID or a command word, not a real answer."""
+    t = (text or "").lower().strip()
+    if not t:
+        return True
+    if any(t.startswith(p) for p in _BUTTON_PREFIXES):
+        return True
+    return t in _COMMAND_WORDS
+
 
 class OnboardingHandler:
     """Handles new user registration flow."""
@@ -53,11 +77,16 @@ class OnboardingHandler:
             "onboarding_step": STEP_BUSINESS_NAME
         })
 
+        # Name the platform the user is actually on (WhatsApp or Telegram).
+        from services.messaging_client import platform_for_user
+        platform_name = "Telegram" if platform_for_user(phone_number) == "telegram" else "WhatsApp"
+
         return [text_response(
             "👋 Welcome to *Kashia*!\n\n"
             "I'm your AI bookkeeper. I'll help you track sales, expenses, "
-            "debts, and more — all right here on WhatsApp.\n\n"
+            f"debts, and more — all right here on {platform_name}.\n\n"
             "Let's get you set up in 30 seconds.\n\n"
+            "*Step 1 of 3*\n"
             "📝 *What's your business name?*"
         )]
 
@@ -71,27 +100,8 @@ class OnboardingHandler:
         if len(business_name) > 100:
             return [text_response("That's too long! Please use a shorter business name:")]
 
-        # Reject button IDs that get accidentally passed as text
-        # Common pattern: contains underscore and matches known prefixes
-        BUTTON_PREFIXES = (
-            "menu_", "record_", "sec_", "pi_", "biz_", "cat_", "crm_",
-            "set_", "report_", "export_", "gen_", "txedit_", "txact_",
-            "debt_", "lc_", "pm_", "prod_", "rec_", "confirm_", "btn_",
-            "catrec_", "industry_", "var_",
-        )
-        text_lower = business_name.lower()
-        if any(text_lower.startswith(p) for p in BUTTON_PREFIXES):
-            return [text_response(
-                "📝 *What's your business name?*\n\n"
-                "_e.g. Sandra's Fashion, Alhaji Motors, ABC Electronics_"
-            )]
-
-        # Also reject if it looks like a command/keyword
-        COMMANDS = {
-            "menu", "help", "hi", "hello", "hey", "cancel", "back",
-            "done", "skip", "yes", "no", "ok", "okay",
-        }
-        if text_lower in COMMANDS:
+        # Reject stray button IDs / command words that aren't a real name.
+        if _looks_like_button_or_command(business_name):
             return [text_response(
                 "📝 *What's your business name?*\n\n"
                 "_e.g. Sandra's Fashion, Alhaji Motors, ABC Electronics_"
@@ -105,7 +115,7 @@ class OnboardingHandler:
 
         return [list_response(
             header="🏢 " + business_name,
-            body="What type of industry are you in?",
+            body="*Step 2 of 3*\nWhat type of industry are you in?",
             button_text="Select Industry",
             sections=[{
                 "title": "Choose your industry",
@@ -172,33 +182,38 @@ class OnboardingHandler:
         })
 
         # Industry-specific natural question
+        _skip_hint = "\n\n_Or type *skip* to set this up later._"
         prompts = {
             "trading": (
+                "*Step 3 of 3*\n"
                 "🛍️ Great! *What does your business sell?*\n\n"
                 "Just describe it naturally:\n\n"
                 "_e.g. \"I sell new and second hand Honda cars\"_\n"
                 "_e.g. \"We sell shoes, bags and accessories\"_\n"
-                "_e.g. \"I sell rice, oil and provisions\"_"
+                "_e.g. \"I sell rice, oil and provisions\"_" + _skip_hint
             ),
             "manufacturing": (
+                "*Step 3 of 4*\n"
                 "🏭 Great! *What does your business make?*\n\n"
                 "Just describe it naturally:\n\n"
                 "_e.g. \"We produce soap, detergent and cleaning products\"_\n"
                 "_e.g. \"I make furniture — tables, chairs, cabinets\"_\n"
-                "_e.g. \"We bake bread, cakes and pastries\"_"
+                "_e.g. \"We bake bread, cakes and pastries\"_" + _skip_hint
             ),
             "services": (
+                "*Step 3 of 3*\n"
                 "💼 Great! *What services do you offer?*\n\n"
                 "Just describe it naturally:\n\n"
                 "_e.g. \"I do hair braiding, nails and makeup\"_\n"
                 "_e.g. \"We offer cleaning and fumigation services\"_\n"
-                "_e.g. \"I do web design and digital marketing\"_"
+                "_e.g. \"I do web design and digital marketing\"_" + _skip_hint
             ),
             "hybrid": (
+                "*Step 3 of 3*\n"
                 "🔄 Great! *What do you sell or offer?*\n\n"
                 "Just describe it naturally:\n\n"
                 "_e.g. \"I sell phones and also do phone repairs\"_\n"
-                "_e.g. \"We do catering and also sell food items\"_"
+                "_e.g. \"We do catering and also sell food items\"_" + _skip_hint
             ),
         }
 
@@ -213,8 +228,24 @@ class OnboardingHandler:
         industry = context.get("industry", "trading")
         description = text.strip()
 
+        # Let users skip if they'd rather add products later.
+        if description.lower() in ("skip", "later", "not now"):
+            return self._complete_onboarding(phone_number, business_name, industry, "", [])
+
+        # Reject stray button taps / commands that would otherwise be saved as
+        # the business description verbatim (e.g. "menu_home").
+        if _looks_like_button_or_command(description):
+            return [text_response(
+                f"Just describe what your business does in a few words.\n\n"
+                f"_e.g. \"{self._what_you_do_example(industry)}\"_\n\n"
+                f"_Or type *skip* to set this up later._"
+            )]
+
         if len(description) < 3:
-            return [text_response("Please describe what your business does (even one sentence is fine):")]
+            return [text_response(
+                "Please describe what your business does (even one sentence is fine),\n"
+                "_or type *skip* to add products later._"
+            )]
 
         # For manufacturing: save description but DON'T seed catalog yet
         # Ask them to list their actual products in the next step
@@ -227,11 +258,13 @@ class OnboardingHandler:
             })
 
             return [text_response(
+                f"*Step 4 of 4*\n"
                 f"🏭 Got it! You make *{description}*.\n\n"
                 f"Now, *list the specific products* you manufacture.\n\n"
                 f"_Separate each product with a comma:_\n\n"
                 f"Example: _Liquid Soap 1L, Bar Soap, Dish Wash 500ml, Detergent 1L, Detergent 5L_\n\n"
-                f"_These will become your product catalog._"
+                f"_These will become your product catalog._\n\n"
+                f"_Or type *skip* to add them later._"
             )]
 
         # For trading/services/hybrid: extract products from description and complete
@@ -247,9 +280,14 @@ class OnboardingHandler:
 
         product_text = text.strip()
 
+        # Let the user skip listing products now — finish with an empty catalog.
+        if product_text.lower() in ("skip", "later", "not now"):
+            return self._complete_onboarding(phone_number, business_name, industry, description, [])
+
         if len(product_text) < 2:
             return [text_response(
-                "Please list at least one product you manufacture.\n\n"
+                "Please list at least one product you manufacture,\n"
+                "_or type *skip* to add them later._\n\n"
                 "_Separate with commas: e.g. Liquid Soap, Bar Soap, Detergent_"
             )]
 
@@ -387,7 +425,33 @@ class OnboardingHandler:
                     )
                 ]
 
-        # Non-manufacturing/services: standard completion
+        # Trading / hybrid: nudge toward catalog + prices, matching the guidance
+        # manufacturing and services already get.
+        if industry in ("trading", "hybrid"):
+            from utils.whatsapp_ui import button_response
+            lines.append(f"💬 *Type what you bought or sold* and I'll record it.")
+            lines.append(f"Example: \"{self._get_example(industry)}\"")
+            lines.append("")
+            if items:
+                lines.append("💡 *Tip:* Set cost prices on your products to see")
+                lines.append("true profit margins on every sale.")
+                buttons = [
+                    {"id": "cat_set_price", "title": "💰 Set Prices"},
+                    {"id": "menu_home", "title": "⏭️ Skip for Now"},
+                ]
+            else:
+                lines.append("💡 *Tip:* Add your products to track stock and")
+                lines.append("see profit on every sale.")
+                buttons = [
+                    {"id": "menu_catalog", "title": "📋 Add Products"},
+                    {"id": "menu_home", "title": "⏭️ Skip for Now"},
+                ]
+            return [
+                text_response("\n".join(lines)),
+                button_response("What first?", buttons),
+            ]
+
+        # Standard completion (fallback for any other industry)
         lines.append("Here's how I work:\n")
         lines.append(f"💬 *Type what you bought or sold* and I'll record it.")
         lines.append(f"Example: \"{self._get_example(industry)}\"")
@@ -407,14 +471,24 @@ class OnboardingHandler:
 
         desc = description.lower()
 
-        # Remove common filler words
+        # Strip trailing location / audience phrases so they don't leak into the
+        # catalog, e.g. "beans in Lagos" → "beans", "shoes for customers" → "shoes".
+        # Applied to the whole description before splitting.
+        desc = re.sub(
+            r'\b(in|at|around|for|to)\b[\s\w]*$',
+            '',
+            desc,
+        ) if re.search(r'\b(in|at|around)\b\s+\w+\s*$', desc) else desc
+
+        # Remove common filler words / lead-ins
         fillers = [
-            "i sell", "we sell", "i make", "we make", "we produce",
+            "i sell", "we sell", "i make", "we make", "we produce", "i produce",
             "i do", "we do", "i offer", "we offer", "i provide", "we provide",
-            "new and", "second hand", "brand new", "fairly used",
-            "all kinds of", "different types of", "various",
+            "i deal in", "we deal in", "i run", "we run", "my business",
+            "new and", "second hand", "brand new", "fairly used", "quality",
+            "all kinds of", "all sorts of", "different types of", "various",
             "like", "such as", "including", "e.g.", "for example",
-            "and also", "as well as",
+            "and also", "as well as", "mainly", "mostly",
         ]
         cleaned = desc
         for filler in fillers:
@@ -429,9 +503,16 @@ class OnboardingHandler:
             item = part.strip().strip('.')
             # Remove trailing "etc", "products", "items", "services"
             item = re.sub(r'\s*(etc|products?|items?|services?|goods?)\s*$', '', item)
+            # Drop a trailing location phrase on this specific part too
+            # ("beans in lagos" → "beans")
+            item = re.sub(r'\b(in|at|around)\b\s+.*$', '', item)
             item = item.strip()
-            if len(item) >= 2 and len(item) <= 40:
-                items.append(item.title())
+            # Reject junk: empty, too long, or too many words to be a product name
+            if len(item) < 2 or len(item) > 40:
+                continue
+            if len(item.split()) > 4:
+                continue
+            items.append(item.title())
 
         # Deduplicate
         seen = set()
@@ -442,6 +523,16 @@ class OnboardingHandler:
                 unique.append(item)
 
         return unique
+
+    def _what_you_do_example(self, industry: str) -> str:
+        """Short industry-specific example for the 'what you do' prompt/guard."""
+        examples = {
+            "trading": "I sell shoes, bags and accessories",
+            "manufacturing": "We produce soap and detergent",
+            "services": "I do hair braiding, nails and makeup",
+            "hybrid": "I sell phones and also do phone repairs",
+        }
+        return examples.get(industry, examples["trading"])
 
     def _get_example(self, industry: str) -> str:
         """Industry-specific example transaction."""

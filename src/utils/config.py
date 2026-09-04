@@ -28,6 +28,11 @@ def get_phone_number_id():
     return get_parameter('/kashia/whatsapp-phone-number-id')
 
 
+def get_telegram_bot_token():
+    """Telegram Bot API token from @BotFather (SSM: /kashia/telegram-bot-token)."""
+    return get_parameter('/kashia/telegram-bot-token')
+
+
 def get_verify_token():
     return get_parameter('/kashia/whatsapp-verify-token')
 

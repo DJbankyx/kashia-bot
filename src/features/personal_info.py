@@ -9,11 +9,23 @@ from core import states
 from utils.whatsapp_ui import (
     text_response, button_response, list_response, format_amount
 )
+from services.messaging_client import platform_for_user, bare_recipient_id
 
 logger = logging.getLogger(__name__)
 
 # State name for personal info multi-step flows
 PERSONAL_INFO_STATE = "PERSONAL_INFO"
+
+
+def _display_account_id(user_id: str) -> tuple:
+    """Return (label, value) for showing a user their account id per platform.
+
+    WhatsApp users see their phone number; Telegram users see a friendly
+    Telegram id without the internal "tg:" namespace prefix.
+    """
+    if platform_for_user(user_id) == "telegram":
+        return ("Telegram Account", bare_recipient_id(user_id))
+    return ("Phone Number", user_id)
 
 
 class PersonalInfoHandler:
@@ -304,11 +316,12 @@ class PersonalInfoHandler:
         )]
 
     def _show_phone(self, phone_number: str) -> list:
-        """Phone number is read-only — just display it."""
+        """Account id is read-only — just display it (platform-aware)."""
+        label, value = _display_account_id(phone_number)
         return [text_response(
-            f"📱 *Registered Phone Number*\n\n"
-            f"*{phone_number}*\n\n"
-            f"_This is your WhatsApp number and cannot be changed._"
+            f"📱 *Registered {label}*\n\n"
+            f"*{value}*\n\n"
+            f"_This is your account id and cannot be changed._"
         )]
 
     def _show_edit_menu(self, phone_number: str) -> list:
@@ -367,9 +380,10 @@ class PersonalInfoHandler:
         has_pin  = bool(user.get("pin_hash", ""))
         created  = user.get("created_at", "")[:10]
 
+        _acct_label, _acct_value = _display_account_id(phone_number)
         lines = [
             f"👤 *{name}*",
-            f"📱 {phone_number}",
+            f"📱 {_acct_value}",
             f"🏷️ {industry}  •  {tier} Plan",
         ]
         if created:

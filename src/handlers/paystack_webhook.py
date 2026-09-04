@@ -54,6 +54,7 @@ def lambda_handler(event, context):
         from services.database import Database
         from services.tier_manager import TierManager
         from services.whatsapp_client import WhatsAppClient
+        from services.messaging_client import resolve_client
 
         db = Database()
         tier_mgr = TierManager(database=db)
@@ -62,9 +63,15 @@ def lambda_handler(event, context):
         # Perform upgrade
         tier_mgr.upgrade_user(phone_number, plan)
 
-        # Notify user via WhatsApp
+        # Notify the user on their own platform. `phone_number` here is the
+        # namespaced user id carried in the payment metadata (bare phone for
+        # WhatsApp, "tg:<chat_id>" for Telegram), so this routes correctly.
+        client, recipient = resolve_client(phone_number, whatsapp_fallback=whatsapp)
+        if client is None:
+            client, recipient = whatsapp, phone_number
+
         plan_name = "Basic" if plan == "basic" else "Pro"
-        whatsapp.send_text(phone_number, (
+        client.send_text(recipient, (
             f"🎉 *Upgrade Successful!*\n\n"
             f"You're now on the *{plan_name}* plan.\n\n"
             f"✅ Unlimited transactions\n"

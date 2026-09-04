@@ -57,6 +57,24 @@ class KashiaBot:
         self.db = Database()
         self.categorizer = TransactionCategorizer()
         self.whatsapp = WhatsAppClient()
+        # Messaging clients keyed by platform. WhatsApp is always available;
+        # Telegram (and future platforms) register here as they come online.
+        # The engine stays platform-agnostic — handle_message() selects the
+        # right client per incoming message.
+        self.clients = {
+            "whatsapp": self.whatsapp,
+        }
+        # Telegram is optional: if the token isn't configured yet (e.g. the bot
+        # hasn't been created), we simply don't register it. This must never
+        # break the WhatsApp cold start, so failures are swallowed and logged.
+        try:
+            from services.telegram_client import TelegramClient
+            self.telegram = TelegramClient()
+            self.clients["telegram"] = self.telegram
+            logger.info("Telegram client registered.")
+        except Exception as e:
+            self.telegram = None
+            logger.warning(f"Telegram client not registered (token missing?): {e}")
         self.tier_manager = TierManager(database=self.db)
         self.export_service = ExportService(database=self.db)
         self.pdf_generator = PDFGenerator(database=self.db)
@@ -96,12 +114,32 @@ class KashiaBot:
         self.router.recurring = RecurringHandler(self.router.session, self.db)
         self.router.quotes = QuotesHandler(self.router.session, self.db)
 
-    def handle_message(self, phone_number: str, text: str, message_type: str = "text"):
+    def get_client(self, platform: str = "whatsapp"):
+        """
+        Return the MessagingClient for a platform.
+
+        Falls back to the WhatsApp client if an unknown platform is passed,
+        so existing WhatsApp behavior is never broken by a bad/missing value.
+        """
+        return self.clients.get(platform) or self.whatsapp
+
+    def handle_message(self, phone_number: str, text: str,
+                       message_type: str = "text", platform: str = "whatsapp"):
         """
         Main entry point — processes a message and sends response(s).
+
+        Args:
+            phone_number: the user id for this platform (phone for WhatsApp,
+                          chat_id for Telegram). Kept named phone_number for
+                          backward compatibility with existing callers.
+            text: message text or button/list id.
+            message_type: "text", "interactive", "reaction", etc.
+            platform: which messaging platform this message came from. Selects
+                      the outbound client. Defaults to "whatsapp".
         """
+        client = self.get_client(platform)
         try:
-            logger.info(f"KashiaBot: {phone_number} | {text[:50]} | {message_type}")
+            logger.info(f"KashiaBot[{platform}]: {phone_number} | {text[:50]} | {message_type}")
 
             # Check tier limit (only for potential transactions in IDLE state)
             session = self.router.session.get(phone_number)
@@ -113,14 +151,14 @@ class KashiaBot:
                 
                 allowed, warning_msg = self.tier_manager.check_can_record(phone_number)
                 if not allowed:
-                    self.whatsapp.send_text(phone_number, warning_msg)
+                    client.send_text(phone_number, warning_msg)
                     return
 
             # Route through the main router
             responses = self.router.process(phone_number, text, message_type)
 
             # Handle special internal markers
-            responses = self._resolve_markers(phone_number, responses)
+            responses = self._resolve_markers(phone_number, responses, client)
 
             # Add navigation footer (Menu/Back) if missing from last response
             # Re-fetch session after routing (state may have changed)
@@ -130,18 +168,25 @@ class KashiaBot:
 
             # Send all responses
             for response in responses:
-                self._send_response(phone_number, response)
+                self._send_response(phone_number, response, client)
 
         except Exception as e:
             import traceback
             logger.error(f"Error: {phone_number}: {e}\n{traceback.format_exc()}")
-            self.whatsapp.send_text(
+            client.send_text(
                 phone_number,
                 f"Sorry, something went wrong. Please try again.\n\n_Debug: {type(e).__name__}: {str(e)[:150]}_"
             )
 
-    def _resolve_markers(self, phone_number: str, responses: list) -> list:
-        """Resolve internal markers (e.g. __SHOW_HOME_MENU__, __ROUTE_TO_DEBT__, __EXPORT_REPORT__)."""
+    def _resolve_markers(self, phone_number: str, responses: list, client=None) -> list:
+        """Resolve internal markers (e.g. __SHOW_HOME_MENU__, __ROUTE_TO_DEBT__, __EXPORT_REPORT__).
+
+        `client` is the active platform's MessagingClient, used for markers that
+        send messages directly (e.g. debtor reminders). Defaults to WhatsApp
+        for backward compatibility.
+        """
+        if client is None:
+            client = self.whatsapp
         resolved = []
         for resp in responses:
             if resp.get("type") == "__SHOW_HOME_MENU__":
@@ -183,7 +228,11 @@ class KashiaBot:
                 continue
 
             if resp.get("type") == "__SEND_REMINDER__":
-                # Send a WhatsApp message to a debtor's phone number
+                # Send a reminder to a debtor's PHONE NUMBER. This is inherently
+                # a WhatsApp action (the target is a phone number, not the
+                # sender's platform), so it always uses the WhatsApp client
+                # regardless of which platform the request came from.
+                # (Telegram-native debtor reminders are a future enhancement.)
                 content = resp.get("content", {})
                 debtor_phone = content.get("debtor_phone", "")
                 reminder_text = content.get("reminder_text", "")
@@ -309,31 +358,118 @@ class KashiaBot:
 
         return responses
 
-    def _send_response(self, phone_number: str, response: dict):
-        """Send a single response via WhatsApp based on its type."""
+    def _maybe_send_paginated_list(self, phone_number, client, header, body, sections) -> bool:
+        """Telegram-only: render a long, description-less picker as a paged keyboard.
+
+        Returns True if it sent a paginated message (caller should NOT also call
+        send_list); False to fall back to the normal list rendering.
+
+        Guard conditions (all must hold):
+          - the client is the Telegram client (has page_keyboard/send_and_get_id),
+          - the combined rows have NO descriptions (pure picker, not a rich menu),
+          - there are more rows than one page (PAGE_SIZE).
+
+        The full option list is stashed in the session (best-effort, 24h TTL)
+        keyed by the sent message_id, so Prev/Next taps can re-render pages
+        without touching the engine. If anything fails, we return False and the
+        caller falls back to a normal (non-paginated) send.
+        """
+        # Only the Telegram client supports paging; feature-detect to stay
+        # platform-agnostic (WhatsApp client lacks these methods).
+        if not (hasattr(client, "page_keyboard") and hasattr(client, "send_and_get_id")):
+            return False
+
+        try:
+            from services.telegram_client import PAGE_SIZE
+
+            options = []
+            has_description = False
+            for section in sections or []:
+                for row in section.get("rows", []):
+                    if row.get("description"):
+                        has_description = True
+                    options.append({"id": row.get("id", ""), "title": row.get("title", "")})
+
+            # Rich menus (with descriptions) and short lists keep normal rendering.
+            if has_description or len(options) <= PAGE_SIZE:
+                return False
+
+            # Build the message body text (header + body) for page 0.
+            text_lines = []
+            if header:
+                text_lines.append(f"*{header}*")
+            if body:
+                text_lines.append(body)
+            text = "\n".join(text_lines).strip() or "Choose an option:"
+
+            keyboard = client.page_keyboard(options, 0)
+            message_id = client.send_and_get_id(phone_number, text, keyboard=keyboard)
+            if not message_id:
+                # Send failed — let the caller fall back to a normal list.
+                return False
+
+            # Stash the full options + text so Prev/Next can re-page. Best-effort:
+            # a dedicated context key, merged without disturbing active flow.
+            # We keep only the LATEST paginated message (single entry) so the
+            # session doesn't grow unbounded — a user pages the list they just
+            # saw; older paginated lists don't need to stay navigable.
+            try:
+                page_store = {
+                    str(message_id): {
+                        "options": options,
+                        "text": text,
+                    }
+                }
+                self.router.session.update_context(
+                    phone_number, {"__tg_page": page_store}
+                )
+            except Exception as e:
+                # If the stash fails, paging just won't work (taps fall through
+                # to the engine); the page itself already displayed fine.
+                logger.warning(f"Pagination stash failed for {phone_number}: {e}")
+
+            return True
+        except Exception as e:
+            logger.warning(f"Paginated list render failed, falling back: {e}")
+            return False
+
+    def _send_response(self, phone_number: str, response: dict, client=None):
+        """Send a single response via the given platform client, based on type.
+
+        `client` is the active platform's MessagingClient. Defaults to the
+        WhatsApp client for backward compatibility.
+        """
+        if client is None:
+            client = self.whatsapp
+
         resp_type = response.get("type", "text")
         content = response.get("content", "")
 
         if resp_type == "text":
-            self.whatsapp.send_text(phone_number, content)
+            client.send_text(phone_number, content)
 
         elif resp_type == "buttons":
             body_text = content.get("body", "")
             buttons = content.get("buttons", [])
-            self.whatsapp.send_buttons(phone_number, body_text, buttons)
+            client.send_buttons(phone_number, body_text, buttons)
 
         elif resp_type == "list":
             header = content.get("header", "")
             body = content.get("body", "")
             button_text = content.get("button_text", "Select")
             sections = content.get("sections", [])
-            self.whatsapp.send_list(phone_number, header, body, button_text, sections)
+            # Telegram-only: long, description-less pickers render as a paginated
+            # inline keyboard (◀ Prev / Next ▶). Everything else — and all of
+            # WhatsApp — uses the normal send_list path unchanged.
+            if not self._maybe_send_paginated_list(
+                    phone_number, client, header, body, sections):
+                client.send_list(phone_number, header, body, button_text, sections)
 
         elif resp_type == "document":
             link = content.get("link", "")
             filename = content.get("filename", "")
             caption = content.get("caption", "")
-            self.whatsapp.send_document(phone_number, link, filename, caption)
+            client.send_document(phone_number, link, filename, caption)
 
         elif resp_type == "forward_prompt":
             # Invoice/receipt was generated — offer to forward the link to the customer
@@ -341,7 +477,7 @@ class KashiaBot:
             customer_name = content.get("customer_name", "") if isinstance(content, dict) else ""
             s3_url = content.get("s3_url", "") if isinstance(content, dict) else ""
             if customer_name and s3_url:
-                self.whatsapp.send_text(
+                client.send_text(
                     phone_number,
                     f"📤 *Forward to {customer_name}?*\n\n"
                     f"Share this link with them directly:\n{s3_url}\n\n"
@@ -351,6 +487,6 @@ class KashiaBot:
         else:
             # Unknown type — try sending as text
             if isinstance(content, str) and content:
-                self.whatsapp.send_text(phone_number, content)
+                client.send_text(phone_number, content)
             else:
                 logger.warning(f"Unknown response type: {resp_type}")

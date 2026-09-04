@@ -485,6 +485,72 @@ class Database:
         self.save_session(phone_number, "IDLE", {})
 
     # ==========================================
+    # ACCOUNT DELETION (right-to-erasure / compliance)
+    # ==========================================
+
+    def purge_user(self, phone_number):
+        """
+        Permanently delete ALL data for a user across every table.
+
+        Unlike the "reset" flow (which keeps the account record), this fully
+        erases the user — profile, session, transactions, contacts, ML feedback,
+        and merchant memory — so they are treated as brand new if they return.
+
+        Returns a dict of {table_label: rows_deleted} for logging/confirmation.
+        Best-effort per table: one table failing does not abort the rest.
+        """
+        results = {}
+
+        # Tables with a sort key → query all rows for the user, then batch-delete.
+        multi_row = [
+            ("transactions", self.transactions, "transaction_id"),
+            ("contacts", self.contacts, "contact_id"),
+            ("ml_feedback", self.feedback, "feedback_id"),
+            ("merchant_memory", self.merchants, "vendor_normalized"),
+        ]
+        for label, table, sort_key in multi_row:
+            try:
+                results[label] = self._delete_all_rows(table, phone_number, sort_key)
+            except Exception as e:
+                logger.error(f"purge_user: error deleting {label} for {phone_number}: {e}")
+                results[label] = -1
+
+        # Single-item tables (partition key only): user profile + session.
+        for label, table in (("session", self.sessions), ("user", self.users)):
+            try:
+                table.delete_item(Key={"phone_number": phone_number})
+                results[label] = 1
+            except Exception as e:
+                logger.error(f"purge_user: error deleting {label} for {phone_number}: {e}")
+                results[label] = -1
+
+        logger.info(f"purge_user completed for {phone_number}: {results}")
+        return results
+
+    def _delete_all_rows(self, table, phone_number, sort_key):
+        """Query every row for a phone_number and batch-delete. Returns count."""
+        items = []
+        response = table.query(KeyConditionExpression=Key("phone_number").eq(phone_number))
+        items.extend(response.get("Items", []))
+        while "LastEvaluatedKey" in response:
+            response = table.query(
+                KeyConditionExpression=Key("phone_number").eq(phone_number),
+                ExclusiveStartKey=response["LastEvaluatedKey"],
+            )
+            items.extend(response.get("Items", []))
+
+        if not items:
+            return 0
+
+        with table.batch_writer() as batch:
+            for item in items:
+                batch.delete_item(Key={
+                    "phone_number": phone_number,
+                    sort_key: item[sort_key],
+                })
+        return len(items)
+
+    # ==========================================
     # ML FEEDBACK OPERATIONS (AI Learning)
     # ==========================================
 
