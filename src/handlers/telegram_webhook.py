@@ -36,6 +36,8 @@ TG_USER_PREFIX = "tg:"
 # Reserved callback prefix for pagination nav (◀ Prev / Next ▶). Handled
 # locally by editing the message; never dispatched to the engine.
 from services.telegram_client import PAGE_NAV_PREFIX
+# Reserved prefix for Telegram fast-entry taps (app-like sale/purchase flow).
+from utils.tg_ui import TGFX_PREFIX
 
 # ── Update deduplication ──
 # Telegram re-delivers updates if we don't answer 200 quickly. Same in-memory
@@ -191,6 +193,13 @@ def _handle_callback_query(callback: dict):
     #    Handled locally so the placeholder button doesn't confuse the engine. ──
     if data == "scan_ok":
         _send_text(user_id, "👍 Great. For now, please record it the usual way — scan-to-record is coming soon.")
+        return
+
+    # ── Telegram fast-entry taps (app-like sale/purchase flow). These are
+    #    handled by the fast-entry flow (which edits its own message), and only
+    #    the final hand-off (confirmation card) flows back through the engine. ──
+    if data.startswith(TGFX_PREFIX):
+        _handle_fastentry(user_id, chat_id, data)
         return
 
     # Show "typing…" while the engine builds the response to the tap.
@@ -594,6 +603,35 @@ def _handle_page_nav(user_id: str, chat_id, message_id, data: str):
         client.edit_message_text(chat_id, message_id, text, keyboard=keyboard)
     except Exception as e:
         logger.warning(f"Page nav failed for {user_id} msg {message_id}: {e}")
+
+
+def _handle_fastentry(user_id: str, chat_id, data: str):
+    """Route a fast-entry tap ("__tgfx__:action:value") to the flow handler.
+
+    The flow edits its own single message and returns [] for intermediate steps;
+    at hand-off it returns the engine's confirmation-card response dicts, which
+    we send through the normal engine path so the confirm→save chain proceeds.
+    """
+    # Parse "__tgfx__:action:value" (value optional, may itself contain ':').
+    rest = data[len(TGFX_PREFIX):].lstrip(":")
+    parts = rest.split(":", 1)
+    action = parts[0] if parts else ""
+    value = parts[1] if len(parts) > 1 else ""
+
+    try:
+        from main import get_bot
+        bot = get_bot()
+        fastentry = getattr(bot.router, "tg_fastentry", None)
+        if fastentry is None:
+            return
+        responses = fastentry.handle_callback(user_id, action, value) or []
+        # Intermediate steps return [] (message edited in place). A hand-off
+        # returns the confirmation card — send it via the normal engine path so
+        # navigation footer + subsequent confirm/save routing behave normally.
+        if responses:
+            bot._deliver_engine_responses(user_id, responses, platform="telegram")
+    except Exception as e:
+        logger.error(f"Fast-entry handling error for {user_id}: {e}")
 
 
 def _show_typing(chat_id):

@@ -114,6 +114,11 @@ class KashiaBot:
         self.router.recurring = RecurringHandler(self.router.session, self.db)
         self.router.quotes = QuotesHandler(self.router.session, self.db)
 
+        # Telegram fast-entry (app-like tappable sale/purchase). Telegram-only;
+        # holds a router ref for engine access (catalog builders, confirm/save).
+        from features.tg_fastentry import TGFastEntry
+        self.router.tg_fastentry = TGFastEntry(self.router)
+
     def get_client(self, platform: str = "whatsapp"):
         """
         Return the MessagingClient for a platform.
@@ -157,18 +162,8 @@ class KashiaBot:
             # Route through the main router
             responses = self.router.process(phone_number, text, message_type)
 
-            # Handle special internal markers
-            responses = self._resolve_markers(phone_number, responses, client)
-
-            # Add navigation footer (Menu/Back) if missing from last response
-            # Re-fetch session after routing (state may have changed)
-            current_session = self.router.session.get(phone_number)
-            current_state = current_session.get("state", "")
-            responses = self._ensure_navigation(responses, current_state)
-
-            # Send all responses
-            for response in responses:
-                self._send_response(phone_number, response, client)
+            # Resolve markers, add navigation, and send.
+            self._deliver_engine_responses(phone_number, responses, platform=platform)
 
         except Exception as e:
             import traceback
@@ -177,6 +172,24 @@ class KashiaBot:
                 phone_number,
                 f"Sorry, something went wrong. Please try again.\n\n_Debug: {type(e).__name__}: {str(e)[:150]}_"
             )
+
+    def _deliver_engine_responses(self, phone_number: str, responses, platform: str = "whatsapp"):
+        """Run the standard output pipeline on a list of engine response dicts.
+
+        Resolves internal markers, adds the navigation footer, and sends each
+        response via the platform's client. Shared by handle_message and by
+        the Telegram fast-entry hand-off so both behave identically.
+        """
+        client = self.get_client(platform)
+        responses = self._resolve_markers(phone_number, responses, client)
+
+        # Navigation footer depends on the (possibly changed) current state.
+        current_session = self.router.session.get(phone_number)
+        current_state = current_session.get("state", "")
+        responses = self._ensure_navigation(responses, current_state)
+
+        for response in responses:
+            self._send_response(phone_number, response, client)
 
     def _resolve_markers(self, phone_number: str, responses: list, client=None) -> list:
         """Resolve internal markers (e.g. __SHOW_HOME_MENU__, __ROUTE_TO_DEBT__, __EXPORT_REPORT__).

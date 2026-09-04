@@ -51,6 +51,7 @@ class Router:
         self.production = None
         self.recurring = None
         self.quotes = None
+        self.tg_fastentry = None  # Telegram-only app-like sale/purchase flow
 
         # Industry handlers — set after construction by main.py
         self.industries = {}  # {"trading": TradingIndustry, ...}
@@ -192,6 +193,10 @@ class Router:
         # ── Recurring services flow (services) ──
         if state == states.RECURRING_SERVICES:
             return self.recurring.handle(phone_number, text_stripped, session)
+
+        # ── Telegram fast-entry: typed value (custom amount) while collecting ──
+        if state == states.TG_FASTENTRY and self.tg_fastentry is not None:
+            return self.tg_fastentry.handle_text(phone_number, text_stripped)
 
         # ═══════════════════════════════════════════════════════
         # 5. IDLE STATE — the default
@@ -396,6 +401,19 @@ class Router:
         is_service_job = button_id == "record_job"
 
         tx_type = type_map.get(button_id, "sale")
+
+        # ── Telegram fast-entry (app-like tappable flow) ──
+        # Telegram users get the streamlined sale/purchase flow; WhatsApp keeps
+        # the existing behavior untouched. Gated by the tg: user-id namespace.
+        from services.messaging_client import platform_for_user
+        if (self.tg_fastentry is not None
+                and tx_type in ("sale", "purchase")
+                and platform_for_user(phone_number) == "telegram"):
+            user = self.db.get_user(phone_number) or {}
+            catalog = user.get("product_catalog", {}) if user else {}
+            products = catalog.get("products", {}) if isinstance(catalog, dict) else {}
+            valid_products = {k: v for k, v in products.items() if isinstance(v, dict)}
+            return self.tg_fastentry.start(phone_number, tx_type, valid_products, is_service_job)
 
         # Production uses its own dedicated handler (manufacturing only)
         if tx_type == "production":
