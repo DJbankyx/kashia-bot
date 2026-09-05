@@ -72,12 +72,17 @@ def payment_keyboard(credit_label="💳 Credit (owes me)") -> list:
     ]
 
 
-def quantity_keyboard(presets=None, include_more=True, include_back=True) -> list:
+def quantity_keyboard(presets=None, include_more=True, include_back=True,
+                      include_no_qty=False) -> list:
     """Quick quantity grid + "type number" + Back.
 
     `presets` is a list of suggested quantities (learned from the item's recent
     sales / catalog). Falls back to a spread that isn't capped at 10, so items
     sold in large counts (e.g. 500, 1000, 2000 sachets) are one tap away.
+
+    `include_no_qty=True` adds a "Just a total (no quantity)" escape — used for
+    EXPENSES, where some items are countable (fuel, cartons) and some are lump
+    costs (rent, bills) with no quantity.
     """
     presets = presets or DEFAULT_QTY_PRESETS
     # De-dupe, keep order, drop non-positive.
@@ -95,13 +100,12 @@ def quantity_keyboard(presets=None, include_more=True, include_back=True) -> lis
             row = []
     if row:
         rows.append(row)
-    tail = []
     if include_more:
-        tail.append({"text": "🔢 Type number", "callback_data": _cb("qtymore")})
+        rows.append([{"text": "🔢 Type number", "callback_data": _cb("qtymore")}])
+    if include_no_qty:
+        rows.append([{"text": "💵 Just a total (no quantity)", "callback_data": _cb("noqty")}])
     if include_back:
-        tail.append({"text": "⬅️ Back", "callback_data": _cb("back")})
-    if tail:
-        rows.append(tail)
+        rows.append([{"text": "⬅️ Back", "callback_data": _cb("back")}])
     return rows
 
 

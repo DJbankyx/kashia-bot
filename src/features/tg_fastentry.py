@@ -241,12 +241,25 @@ class TGFastEntry:
 
         if action == "qty":
             n = int(value) if value.isdigit() else 1
+            # Choosing a quantity (incl. on an expense) means it's countable →
+            # ask price each next.
+            fx["counted_stock"] = True
             return self._set_quantity(phone_number, fx, n)
 
         if action == "qtymore":
             fx["step"] = "await_custom_qty"
             self._save_fx(phone_number, fx)
             self._edit_plain(phone_number, fx, "🔢 Type the quantity (e.g. 24):")
+            return []
+
+        if action == "noqty":
+            # Expense lump cost (rent/bills): no quantity → ask the total.
+            fx["counted_stock"] = False
+            fx.pop("quantity", None)
+            fx["step"] = "amount"
+            self._render(phone_number, fx,
+                         f"{self._header(fx)}\n💸 {fx.get('product_name','Expense')}\n\nHow much? (total)",
+                         tg_ui.amount_keyboard())
             return []
 
         if action == "amt":
@@ -309,6 +322,7 @@ class TGFastEntry:
             if n <= 0:
                 self._edit_plain(phone_number, fx, "🔢 That didn't look like a number. Type e.g. 24:")
                 return []
+            fx["counted_stock"] = True  # a typed quantity means it's countable
             return self._set_quantity(phone_number, fx, n)
 
         if step == "await_custom_amount":
@@ -327,11 +341,15 @@ class TGFastEntry:
                 return []
             fx["product_name"] = desc
             fx["product_key"] = ""
-            fx["counted_stock"] = False  # expenses never ask quantity
-            fx["step"] = "amount"
-            self._render(phone_number, fx,
-                         f"{self._header(fx)}\n💸 {desc}\n\nHow much? (total)",
-                         tg_ui.amount_keyboard())
+            # Expenses can be countable (fuel litres, cartons) or a lump cost
+            # (rent, bills). Ask "how many?" with a "just a total" escape.
+            fx["step"] = "expense_qty"
+            presets = self._qty_presets(phone_number, fx)
+            self._render(
+                phone_number, fx,
+                f"{self._header(fx)}\n💸 {desc}\n\n"
+                f"How many? _(or tap “Just a total” for rent, bills, etc.)_",
+                tg_ui.quantity_keyboard(presets=presets, include_no_qty=True))
             return []
 
         if step == "await_deposit":
@@ -675,7 +693,7 @@ class TGFastEntry:
     def _go_back(self, phone_number: str, fx: dict) -> list:
         """Step back one screen."""
         step = fx.get("step")
-        if step in ("amount", "quantity", "await_custom_qty", "await_custom_amount"):
+        if step in ("amount", "quantity", "expense_qty", "await_custom_qty", "await_custom_amount"):
             # expense → back to the "what for?" step; catalog flows → item picker;
             # otherwise nothing to go back to → cancel.
             if fx.get("tx_type") == "expense":
@@ -685,7 +703,16 @@ class TGFastEntry:
             self._cancel(phone_number, fx)
             return []
         if step == "price":
-            # back to quantity
+            # back to quantity (expense uses its own qty step with the total escape)
+            if fx.get("tx_type") == "expense":
+                fx["step"] = "expense_qty"
+                presets = self._qty_presets(phone_number, fx)
+                self._render(
+                    phone_number, fx,
+                    f"{self._header(fx)}\n💸 {fx.get('product_name','Expense')}\n\n"
+                    f"How many? _(or tap “Just a total”)_",
+                    tg_ui.quantity_keyboard(presets=presets, include_no_qty=True))
+                return []
             fx["step"] = "quantity"
             presets = self._qty_presets(phone_number, fx)
             self._render(phone_number, fx,

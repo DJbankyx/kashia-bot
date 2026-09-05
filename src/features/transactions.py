@@ -413,6 +413,7 @@ class TransactionHandler:
                     button_response("What's next?", [
                         {"id": "record_sale", "title": "💰 Record Sale"},
                         {"id": "record_purchase", "title": "📦 Record Purchase"},
+                        {"id": "record_expense", "title": "💸 Record Expense"},
                         {"id": "menu_home", "title": "☰ Menu"},
                     ])
                 ]
@@ -923,6 +924,7 @@ class TransactionHandler:
                     [
                         {"id": "record_sale", "title": "💰 Record Sale"},
                         {"id": "record_purchase", "title": "📦 Record Purchase"},
+                        {"id": "record_expense", "title": "💸 Record Expense"},
                         {"id": "menu_home", "title": "☰ Menu"},
                     ]
                 ))
