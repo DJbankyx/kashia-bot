@@ -963,7 +963,10 @@ class TransactionHandler:
             tx_id = result.get("transaction_id", "") if isinstance(result, dict) else ""
 
             # Determine direction: who owes whom?
-            is_buyer = any(sig in raw_text for sig in BUYER_SIGNALS) or tx_type == "purchase"
+            # Purchases AND expenses on credit mean *I* owe the other party.
+            # Only a credit sale means they owe me.
+            is_buyer = (any(sig in raw_text for sig in BUYER_SIGNALS)
+                        or tx_type in ("purchase", "expense"))
 
             if is_buyer:
                 # I owe them

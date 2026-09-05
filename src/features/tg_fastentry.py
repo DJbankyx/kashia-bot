@@ -130,16 +130,26 @@ class TGFastEntry:
         send loop must not emit anything extra).
         """
         spec = self._industry(phone_number).fastentry_spec(tx_type, is_service=is_service_job)
-        rows = self._product_rows(phone_number, tx_type)
         fx = {
             "step": "product",
             "tx_type": tx_type,
             "is_service": bool(spec.get("is_service")),
             "spec": spec,
             "page": 0,
-            "rows": rows,           # cached catalog rows for paging
+            "rows": [],
             "msg_id": None,
         }
+
+        # ── Expense: no catalog item, no quantity. Ask "what for?" (typed). ──
+        if tx_type == "expense":
+            fx["step"] = "await_expense_desc"
+            self._render(phone_number, fx,
+                         f"{self._header(fx)}\n{spec.get('item_prompt', 'What was it for?')}",
+                         [])
+            return []
+
+        rows = self._product_rows(phone_number, tx_type)
+        fx["rows"] = rows
 
         if not rows:
             # No catalog — go straight to price/total with a generic item.
@@ -308,6 +318,21 @@ class TGFastEntry:
                                  "💰 That didn't look like an amount. Type e.g. 4500 or 5k:")
                 return []
             return self._set_price(phone_number, fx, int(amount))
+
+        if step == "await_expense_desc":
+            desc = text.strip()
+            if not desc:
+                self._edit_plain(phone_number, fx,
+                                 "💸 What was the expense for? (e.g. transport, rent, airtime)")
+                return []
+            fx["product_name"] = desc
+            fx["product_key"] = ""
+            fx["counted_stock"] = False  # expenses never ask quantity
+            fx["step"] = "amount"
+            self._render(phone_number, fx,
+                         f"{self._header(fx)}\n💸 {desc}\n\nHow much? (total)",
+                         tg_ui.amount_keyboard())
+            return []
 
         if step == "await_deposit":
             return self._set_deposit(phone_number, fx, text)
@@ -543,8 +568,11 @@ class TGFastEntry:
         fx["who_required"] = bool(required)
         self._save_fx(phone_number, fx)
         recent = self._recent_contacts(phone_number)
-        if fx.get("tx_type") == "purchase":
+        tt = fx.get("tx_type")
+        if tt == "purchase":
             q = "👤 Who did you buy from?"
+        elif tt == "expense":
+            q = "👤 Who did you pay?"
         else:
             q = "👤 Who did you sell to?"
         if required:
@@ -628,6 +656,13 @@ class TGFastEntry:
                   "payment_method", "has_credit", "vendor", "deposit_amount",
                   "balance_owed", "counted_stock", "who_required"):
             fx.pop(k, None)
+        # Expense restarts at the typed "what for?" step (no catalog picker).
+        if fx.get("tx_type") == "expense":
+            fx["step"] = "await_expense_desc"
+            self._render(phone_number, fx,
+                         f"{self._header(fx)}\n{fx['spec'].get('item_prompt', 'What was it for?')}",
+                         [])
+            return []
         rows = fx.get("rows", [])
         if rows:
             self._render(phone_number, fx,
@@ -641,7 +676,10 @@ class TGFastEntry:
         """Step back one screen."""
         step = fx.get("step")
         if step in ("amount", "quantity", "await_custom_qty", "await_custom_amount"):
-            # back to product (if there was one) else cancel
+            # expense → back to the "what for?" step; catalog flows → item picker;
+            # otherwise nothing to go back to → cancel.
+            if fx.get("tx_type") == "expense":
+                return self._restart_item(phone_number, fx)
             if fx.get("rows"):
                 return self._restart_item(phone_number, fx)
             self._cancel(phone_number, fx)

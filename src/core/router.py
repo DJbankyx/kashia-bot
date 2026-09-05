@@ -407,7 +407,7 @@ class Router:
         # the existing behavior untouched. Gated by the tg: user-id namespace.
         from services.messaging_client import platform_for_user
         if (self.tg_fastentry is not None
-                and tx_type in ("sale", "purchase")
+                and tx_type in ("sale", "purchase", "expense")
                 and platform_for_user(phone_number) == "telegram"):
             user = self.db.get_user(phone_number) or {}
             catalog = user.get("product_catalog", {}) if user else {}
@@ -419,7 +419,8 @@ class Router:
         if tx_type == "production":
             return self.production.start_production(phone_number)
 
-        # Expenses don't use catalog — always free-text
+        # Expenses don't use catalog — always free-text (WhatsApp; Telegram uses
+        # the tidy-box flow above via the tg: guard).
         if tx_type == "expense":
             return self._start_freetext_guided(phone_number, tx_type, is_service_job)
 

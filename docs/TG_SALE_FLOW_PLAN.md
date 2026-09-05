@@ -196,6 +196,29 @@ Deferred (Stage 4 — Documents, NOT now):
 - [ ] Invoice/Receipt PDF CONTENTS are not correct yet (e.g. "Invoice for Walk-in
       ₦40,000" is thin). Real document layout/fields belong to the Documents stage.
 
+## Live-test log #3 (2026-09-05, purchase — manufacturing)
+WORKING WELL (manufacturing purchase, boxed end-to-end): Nylon ×5,000 → cost each
+→ supplier → part payment "paid ₦160,000, owes ₦40,000" → "Purchase saved! You
+still owe Akure Supplier ₦40,000". i_owe direction correct; debts show "You owe".
+
+Feedback / bugs captured (2026-09-05):
+- [ ] **Production "How many?" shows no unit.** User must see the unit they're
+      recording in. Production flow (separate from tidy box) + ties to Conversions.
+      Small near-term fix: show the item's unit label on the production qty prompt.
+- [ ] **Who? step lists ALL contacts mixed** (suppliers + customers). For a
+      PURCHASE prioritise suppliers; for a SALE prioritise customers. Improve
+      _recent_contacts filtering by contact type. (CRM-stage flavour; can do now.)
+- [ ] **Price doesn't feed from the recipe/landing cost** for manufacturing
+      cost-each. Ties to Conversions + recipe. (User: "not yet, just noting.")
+- [ ] **Trading not boxed (sale/purchase/expense).** NEEDS trading screenshots to
+      confirm — likely testing an OLDER deploy (expense boxing only just built and
+      not yet deployed). Routing is industry-agnostic (record_* → tidy box for all
+      on tg:), so if trading genuinely isn't boxed after deploy, investigate a
+      trading-path error causing fallback. AWAIT PICS.
+- [ ] **Expense (manufacturing "Production Cost") not boxed yet** — EXPECTED: the
+      expense tidy-box build is NOT deployed yet at time of these shots. Deploy to
+      test.
+
 ## The order we'll build it
 1. **Sale flow** (this plan) → I build it → you test it live on Telegram.
 2. Once sale feels right → copy the same tidy-box pattern to **Purchase**
