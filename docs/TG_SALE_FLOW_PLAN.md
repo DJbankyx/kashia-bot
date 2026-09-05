@@ -219,6 +219,31 @@ Feedback / bugs captured (2026-09-05):
       expense tidy-box build is NOT deployed yet at time of these shots. Deploy to
       test.
 
+## Expense quantity — DECISION UPDATED (2026-09-06)
+Earlier note said "expenses = total, no quantity". CORRECTED by the user: the
+no-quantity rule was only ever meant for SERVICES (jobs have nothing to count).
+Expenses often ARE countable — fuel (litres), Jacks, rollers, drawing boards,
+pallets — and the owner needs that history ("how many Jacks in 2 months?",
+"how much fuel?"). So:
+- Expense flow now: what-for → **How many? (with "💵 Just a total" escape)** →
+  price-each (if counted) OR total (if lump) → payment → who → confirm.
+- Countable expenses save quantity + unit_cost on the transaction (queryable later).
+- Applies to ALL industries incl. SERVICES. Built + pushed (03d3695).
+
+## Live-test log #4 (2026-09-06, SERVICES — barbing/braiding)
+- **Services SALE + PURCHASE were on the OLD free-text flow** (typed Braiding /
+  Blades / amount / client as text; old `━━━ SALE`/`PURCHASE` card; text-blob
+  payment). Old card also mislabels a braiding job as "SALE / Sales & Income".
+  ROOT CAUSE: stale deploy (tidy box + services wording exist in code; the test
+  ran old Lambda). Fresh `./deploy.sh dev` should box services like the others.
+- **Services EXPENSE (Fuel) was boxed but asked only "How much? (total)"** — the
+  expense-quantity build wasn't deployed at test time. After deploy, services
+  fuel will ask "How many?" too.
+- Direct/indirect classification after expense save works (Job Cost / Business
+  Expense) ✓.
+- Action: user to clean-deploy, then re-test all 4 industries × sale/purchase/
+  expense to confirm boxing + services wording + expense quantity.
+
 ## The order we'll build it
 1. **Sale flow** (this plan) → I build it → you test it live on Telegram.
 2. Once sale feels right → copy the same tidy-box pattern to **Purchase**
