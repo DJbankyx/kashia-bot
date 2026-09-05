@@ -1227,8 +1227,11 @@ class TransactionHandler:
             saved_cost = self._get_catalog_landing_cost(phone_number, catalog_key, description, brand)
 
         # Ensure quantity defaults to "1" if empty (so stock always decrements)
-        if not quantity or quantity.strip() == "":
+        if not quantity or str(quantity).strip() == "":
             quantity = "1"
+        # Numeric quantity for cost math / display (was referenced as an undefined
+        # `qty` before — caused "name 'qty' is not defined" on the sale path).
+        qty = self._parse_qty(quantity)
 
         # Build display name (include variant if selected)
         display_name = description
