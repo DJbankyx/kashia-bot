@@ -875,8 +875,13 @@ class TransactionHandler:
 
             self.session.reset(phone_number)
 
-            # Trigger CRM hint for large transactions without vendor
-            if not vendor and tx_data["amount"] >= 10000 and tx_data["type"] in ("sale", "purchase"):
+            # Trigger CRM hint for large transactions without vendor — UNLESS the
+            # caller already handled the name step (e.g. the Telegram tidy-box
+            # flow, which offers a boxed "Who?" with a Skip option). Avoids the
+            # old text prompt bleeding in after a clean flow.
+            if (not vendor and not tx_data.get("_name_handled")
+                    and tx_data["amount"] >= 10000
+                    and tx_data["type"] in ("sale", "purchase")):
                 return self._trigger_crm_hint(phone_number, tx_id, tx_data)
 
             responses = [
@@ -1009,9 +1014,11 @@ class TransactionHandler:
                     self.db.record_debt(phone_number, vendor, balance_owed, 'owed_to_me',
                                         f"Balance after deposit: {description}")
                     self.session.reset(phone_number)
+                    # "Job" only for a service; "Sale" for product/output sales.
+                    saved_label = "Job saved!" if tx_data.get("is_service_job") else "Sale saved!"
                     return [
                         text_response(
-                            f"✅ *Job saved!* {format_amount(amount)}\n\n"
+                            f"✅ *{saved_label}* {format_amount(amount)}\n\n"
                             f"💳 Deposit received: *{format_amount(deposit_amount)}*\n"
                             f"📝 Balance owed by *{vendor}*: *{format_amount(balance_owed)}*\n\n"
                             f"_Balance tracked in Debts. Settle when they pay the rest._"

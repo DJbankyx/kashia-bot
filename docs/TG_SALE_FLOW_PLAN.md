@@ -184,6 +184,18 @@ so the rule is "offer always, force only for debt":
 - (Corrects an earlier note that said "don't ask on cash sales" — that would
   starve the CRM of data.)
 
+## Live-test log #2 (2026-09-05, credit/part + reset)
+Working: boxed credit + part-payment, boxed Who? step (recent contacts + Walk-in),
+correct balance owed (₦30k paid / ₦10k owed), debts tracking, /reset in menu.
+Bugs found + FIXED this round:
+- `/sale` bled into a stale EXPENSE flow → slash commands now force a session
+  reset first (`_reset_stale_flow`), except during onboarding.
+- Manufacturing credit/part sale said "Job saved!" → now "Sale saved!" unless
+  it's a service job (uses is_service_job).
+Deferred (Stage 4 — Documents, NOT now):
+- [ ] Invoice/Receipt PDF CONTENTS are not correct yet (e.g. "Invoice for Walk-in
+      ₦40,000" is thin). Real document layout/fields belong to the Documents stage.
+
 ## The order we'll build it
 1. **Sale flow** (this plan) → I build it → you test it live on Telegram.
 2. Once sale feels right → copy the same tidy-box pattern to **Purchase**

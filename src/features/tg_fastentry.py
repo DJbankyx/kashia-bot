@@ -271,8 +271,7 @@ class TGFastEntry:
             return []
 
         if action == "walkin":
-            # No name — but a debt still needs an owner, so use a Walk-in bucket.
-            return self._set_customer(phone_number, fx, "Walk-in")
+            return self._skip_customer(phone_number, fx)
 
         if action == "save":
             return self._do_save(phone_number, fx)
@@ -451,10 +450,12 @@ class TGFastEntry:
             return []
 
         if method == "credit":
-            return self._ask_customer(phone_number, fx)
+            return self._ask_customer(phone_number, fx, required=True)
 
-        # cash / transfer → confirm immediately
-        return self._show_confirm(phone_number, fx)
+        # cash / transfer → still OFFER a name (feeds the CRM), but it's optional
+        # here (Walk-in / Skip is fine). This keeps every path boxed and avoids
+        # the old text "who?" prompt for paid-in-full transactions.
+        return self._ask_customer(phone_number, fx, required=False)
 
     def _pay_label(self, fx: dict) -> str:
         method = fx.get("payment_method", "cash")
@@ -511,7 +512,7 @@ class TGFastEntry:
             return self._show_confirm(phone_number, fx)
         fx["deposit_amount"] = deposit
         fx["balance_owed"] = total - deposit
-        return self._ask_customer(phone_number, fx)
+        return self._ask_customer(phone_number, fx, required=True)
 
     # ── step: who? (customer / supplier) ─────────────────────────────────
 
@@ -530,17 +531,26 @@ class TGFastEntry:
             logger.warning(f"tg_fastentry: contacts read failed: {e}")
             return []
 
-    def _ask_customer(self, phone_number: str, fx: dict) -> list:
-        """Boxed 'Who?' step. Required for credit/part (a debt needs an owner),
-        but always offers Walk-in/Skip and type-a-name."""
+    def _ask_customer(self, phone_number: str, fx: dict, required: bool = True) -> list:
+        """Boxed 'Who?' step.
+
+        `required=True` (credit/part): a debt needs an owner — but Walk-in is
+        still offered so the user is never stuck.
+        `required=False` (cash/transfer): naming is OPTIONAL (feeds the CRM), and
+        Skip records with no name. Either way it's boxed — never the old text step.
+        """
         fx["step"] = "who"
+        fx["who_required"] = bool(required)
         self._save_fx(phone_number, fx)
         recent = self._recent_contacts(phone_number)
         if fx.get("tx_type") == "purchase":
             q = "👤 Who did you buy from?"
         else:
             q = "👤 Who did you sell to?"
-        note = "_Needed to track the debt. Tap a name, type one, or choose Walk-in._"
+        if required:
+            note = "_Needed to track the debt. Tap a name, type one, or choose Walk-in._"
+        else:
+            note = "_Optional — tap a name to track this customer, or Skip._"
         text = f"{self._header(fx)}\n{self._summary_line(fx)}\n\n{q}\n{note}"
         self._render(phone_number, fx, text, tg_ui.customer_keyboard(recent=recent))
         return []
@@ -548,6 +558,20 @@ class TGFastEntry:
     def _set_customer(self, phone_number: str, fx: dict, name: str) -> list:
         """Name chosen/typed → store vendor, go to confirm."""
         fx["vendor"] = name.strip()
+        return self._show_confirm(phone_number, fx)
+
+    def _skip_customer(self, phone_number: str, fx: dict) -> list:
+        """Walk-in / Skip tapped.
+
+        - Debt path (credit/part, required): use a "Walk-in" bucket so the debt
+          still has an owner.
+        - Paid-in-full (optional): leave vendor empty → engine saves with no debt
+          and no CRM contact (no fake record).
+        """
+        if fx.get("who_required"):
+            fx["vendor"] = "Walk-in"
+        else:
+            fx["vendor"] = ""
         return self._show_confirm(phone_number, fx)
 
     # ── confirm → hand to the engine save chain ──────────────────────────
@@ -569,6 +593,9 @@ class TGFastEntry:
             "is_service_job": bool(fx.get("is_service")),
             "payment_method": pm,
             "has_credit": bool(fx.get("has_credit")),
+            # The tidy box always runs its own boxed "Who?" step, so the engine
+            # must NOT fall back to the old text CRM prompt.
+            "_name_handled": True,
         }
         if method == "part":
             tx_data["deposit_amount"] = int(fx.get("deposit_amount", 0))
@@ -599,7 +626,7 @@ class TGFastEntry:
         fx["step"] = "product"
         for k in ("product_key", "product_name", "quantity", "unit_cost", "amount",
                   "payment_method", "has_credit", "vendor", "deposit_amount",
-                  "balance_owed", "counted_stock"):
+                  "balance_owed", "counted_stock", "who_required"):
             fx.pop(k, None)
         rows = fx.get("rows", [])
         if rows:
@@ -627,7 +654,16 @@ class TGFastEntry:
                          f"{self._header(fx)}\n📦 {fx['product_name']}\n\nHow many?",
                          tg_ui.quantity_keyboard(presets=presets))
             return []
-        if step in ("payment", "await_deposit", "who", "await_customer_name"):
+        if step in ("who", "await_customer_name", "await_deposit"):
+            # back to the payment picker
+            fx["step"] = "payment"
+            credit_label = "💳 Credit (owes me)" if fx.get("tx_type") == "sale" else "💳 Credit (I owe)"
+            prompt = "How were you paid?" if fx.get("tx_type") == "sale" else "How did you pay?"
+            self._render(phone_number, fx,
+                         f"{self._header(fx)}\n{self._summary_line(fx)}\n\n{prompt}",
+                         tg_ui.payment_keyboard(credit_label=credit_label))
+            return []
+        if step == "payment":
             # back to price/amount
             presets = self._price_presets(phone_number, fx)
             if self._uses_quantity(fx):

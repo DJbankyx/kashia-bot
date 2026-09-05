@@ -129,6 +129,11 @@ def _handle_message(message: dict):
         # as "interactive"); others become plain text the engine word-matches.
         msg_type = "text"
         if text.startswith("/"):
+            # A slash command is an explicit "start this now" intent. Abandon any
+            # half-finished flow first so e.g. /sale never lands mid-expense (or
+            # any stale state). Onboarding is left alone — /start & /reset have
+            # their own handling and will re-enter it cleanly.
+            _reset_stale_flow(user_id)
             text, msg_type = _translate_command(text)
         logger.info(f"Telegram message from {user_id}: {text[:50]} ({msg_type})")
         _dispatch(user_id, text, msg_type)
@@ -249,6 +254,26 @@ COMMAND_MENU = [
     {"command": "start",  "description": "Restart / onboarding"},
     {"command": "reset",  "description": "Full reset — delete all data & start over"},
 ]
+
+
+def _reset_stale_flow(user_id: str):
+    """Abandon any half-finished flow before a slash command runs.
+
+    Prevents stale-state bleed (e.g. tapping /sale while mid-expense). Onboarding
+    is preserved — a slash command mid-onboarding shouldn't wipe that progress;
+    /start and /reset re-enter onboarding through their own handlers.
+    """
+    try:
+        from main import get_bot
+        from core import states
+        bot = get_bot()
+        session = bot.router.session.get(user_id)
+        state = session.get("state", "") if session else ""
+        if state in (states.ONBOARDING, states.NEW_USER):
+            return  # don't disturb onboarding
+        bot.router.session.reset(user_id)
+    except Exception as e:
+        logger.warning(f"_reset_stale_flow failed for {user_id}: {e}")
 
 
 def _dispatch(user_id: str, text: str, message_type: str):
