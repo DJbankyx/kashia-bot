@@ -223,6 +223,7 @@ _COMMAND_MAP = {
     "sale":  ("record_sale", "interactive"),
     "debts": ("menu_debts", "interactive"),
     "help":  ("help", "text"),
+    "reset": ("set_hardreset", "interactive"),  # full reset → re-onboard fresh
 }
 
 
@@ -246,6 +247,7 @@ COMMAND_MENU = [
     {"command": "debts",  "description": "Who owes you / who you owe"},
     {"command": "help",   "description": "How to use Kashia"},
     {"command": "start",  "description": "Restart / onboarding"},
+    {"command": "reset",  "description": "Full reset — delete all data & start over"},
 ]
 
 

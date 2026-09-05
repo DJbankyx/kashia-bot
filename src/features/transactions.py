@@ -630,19 +630,32 @@ class TransactionHandler:
                 )
                 tx_id = result.get("transaction_id", "") if isinstance(result, dict) else ""
 
-                # Ask who bought on credit — use CRM_HINT state
+                # Ask who bought on credit — use CRM_HINT state.
+                # For a deposit/part payment, only the UNPAID BALANCE is owed
+                # (not the full amount). Fall back to the full amount for a
+                # straight credit sale where nothing was paid.
+                owed_amount = tx_data.get("balance_owed", tx_data["amount"])
                 from core.states import CRM_HINT
                 self.session.save(phone_number, CRM_HINT, {
                     "crm_step": "ask_credit_name",
                     "transaction_id": tx_id,
                     "tx_type": tx_data["type"],
-                    "amount": tx_data["amount"],
+                    "amount": owed_amount,
                     "description": tx_data["description"],
                 })
 
                 tx_label = "buy from" if tx_data["type"] == "purchase" else "sell to"
+                # For a deposit, be explicit: X paid now, balance still owed.
+                if tx_data.get("deposit_amount") is not None:
+                    headline = (
+                        f"✅ *Deposit recorded.*\n"
+                        f"💵 Paid now: {format_amount(tx_data['deposit_amount'])}\n"
+                        f"💳 Balance owed: {format_amount(owed_amount)}"
+                    )
+                else:
+                    headline = f"✅ *{format_amount(owed_amount)} on credit recorded.*"
                 return [text_response(
-                    f"✅ *{format_amount(tx_data['amount'])} on credit recorded.*\n\n"
+                    f"{headline}\n\n"
                     f"👤 *Who did you {tx_label}?*\n\n"
                     f"_Type their name so I can track the debt._\n"
                     f"_Or type *skip* to record without a name._"

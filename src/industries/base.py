@@ -91,6 +91,49 @@ class BaseIndustry:
         # Default: handled by router._start_guided_recording
         return None
 
+    # ─────────────────────────────────────────────────────────
+    # Telegram "One Tidy Box" fast-entry spec (Telegram-only presentation).
+    # Returns the per-industry wording + defaults the tap-first flow needs, so
+    # the flow never hardcodes "sell"/"buy"/"Sales & Income". WhatsApp ignores
+    # this entirely (it uses GUIDED_PROMPTS via the existing guided flow).
+    # ─────────────────────────────────────────────────────────
+    def fastentry_spec(self, tx_type: str, is_service: bool = False) -> dict:
+        """
+        Describe how the tidy-box flow should present a sale/purchase for THIS
+        industry. `is_service` is only meaningful for hybrid (product vs service).
+
+        Keys:
+          title        — header shown at the top of the card (e.g. "Record sale")
+          item_prompt  — the "what?" question
+          person_label — who the counterparty is (customer / buyer / client)
+          category     — default ledger category for this tx_type
+          is_service   — True => a service/job (the flow skips quantity)
+        """
+        terms = self.get_terms()
+        if tx_type == "sale":
+            title = f"🧾 Record {terms.get('sale', 'sale')}"
+            item_prompt = self.get_guided_prompt("ask_item_sale")
+            person_label = "customer"
+            category = "Sales & Income"
+        elif tx_type == "purchase":
+            title = f"📦 Record {terms.get('purchase', 'purchase')}"
+            item_prompt = self.get_guided_prompt("ask_item_purchase")
+            person_label = "supplier"
+            category = "Goods & Stock"
+        else:
+            title = f"💸 Record {terms.get('expense', 'expense')}"
+            item_prompt = "💸 What was the expense for?"
+            person_label = "payee"
+            category = "Other Expenses"
+
+        return {
+            "title": title,
+            "item_prompt": item_prompt,
+            "person_label": person_label,
+            "category": category,
+            "is_service": is_service,
+        }
+
     def handle_button(self, phone_number: str, button_id: str, session: dict) -> list:
         """Handle industry-specific buttons not in shared map. Override if needed."""
         return None

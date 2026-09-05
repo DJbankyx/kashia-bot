@@ -55,15 +55,16 @@ def amount_keyboard(presets=None, include_custom=True, include_back=True) -> lis
     return rows
 
 
-def payment_keyboard() -> list:
-    """Cash / Transfer / Credit toggle as a single tappable row (+ back)."""
+def payment_keyboard(credit_label="💳 Credit (owes me)") -> list:
+    """Cash / Transfer / Part payment / Credit choice (+ back)."""
     return [
         [
             {"text": "💵 Cash", "callback_data": _cb("pay", "cash")},
             {"text": "🏦 Transfer", "callback_data": _cb("pay", "transfer")},
         ],
         [
-            {"text": "💳 Credit (owes me)", "callback_data": _cb("pay", "credit")},
+            {"text": "📝 Part payment", "callback_data": _cb("pay", "part")},
+            {"text": credit_label, "callback_data": _cb("pay", "credit")},
         ],
         [
             {"text": "⬅️ Back", "callback_data": _cb("back")},
@@ -71,11 +72,24 @@ def payment_keyboard() -> list:
     ]
 
 
-def quantity_keyboard(max_n: int = 10, include_more=True, include_back=True) -> list:
-    """Quick quantity grid 1..max_n (3 per row) + More (type) + Back."""
+def quantity_keyboard(presets=None, include_more=True, include_back=True) -> list:
+    """Quick quantity grid + "type number" + Back.
+
+    `presets` is a list of suggested quantities (learned from the item's recent
+    sales / catalog). Falls back to a spread that isn't capped at 10, so items
+    sold in large counts (e.g. 500, 1000, 2000 sachets) are one tap away.
+    """
+    presets = presets or DEFAULT_QTY_PRESETS
+    # De-dupe, keep order, drop non-positive.
+    seen, clean = set(), []
+    for n in presets:
+        n = int(n)
+        if n > 0 and n not in seen:
+            seen.add(n)
+            clean.append(n)
     rows, row = [], []
-    for n in range(1, max_n + 1):
-        row.append({"text": str(n), "callback_data": _cb("qty", str(n))})
+    for n in clean:
+        row.append({"text": _fmt_qty(n), "callback_data": _cb("qty", str(n))})
         if len(row) == 3:
             rows.append(row)
             row = []
@@ -83,11 +97,38 @@ def quantity_keyboard(max_n: int = 10, include_more=True, include_back=True) -> 
         rows.append(row)
     tail = []
     if include_more:
-        tail.append({"text": "🔢 More…", "callback_data": _cb("qtymore")})
+        tail.append({"text": "🔢 Type number", "callback_data": _cb("qtymore")})
     if include_back:
         tail.append({"text": "⬅️ Back", "callback_data": _cb("back")})
     if tail:
         rows.append(tail)
+    return rows
+
+
+# Fallback quantity spread (not capped at 10) for items with no sales history.
+DEFAULT_QTY_PRESETS = [1, 2, 5, 10, 20, 50, 100, 500, 1000]
+
+
+def _fmt_qty(n: int) -> str:
+    """Compact quantity label: 1000 -> '1,000'."""
+    return f"{n:,}"
+
+
+def customer_keyboard(recent=None, include_back=True) -> list:
+    """'Who?' step: recent/known customers as buttons + type-a-name + walk-in.
+
+    `recent` is a list of (contact_id, name) tuples (most recent/known first).
+    Always offers a "type a new name" option and a "Walk-in / Skip" escape so the
+    user is never forced to name a random buyer.
+    """
+    rows = []
+    for cid, name in (recent or [])[:6]:
+        label = f"👤 {name}"[:40]
+        rows.append([{"text": label, "callback_data": _cb("cust", str(cid))}])
+    rows.append([{"text": "✍️ Type a name", "callback_data": _cb("custtype")}])
+    rows.append([{"text": "🚶 Walk-in / Skip", "callback_data": _cb("walkin")}])
+    if include_back:
+        rows.append([{"text": "⬅️ Back", "callback_data": _cb("back")}])
     return rows
 
 

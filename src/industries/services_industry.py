@@ -346,3 +346,16 @@ class ServicesIndustry(BaseIndustry):
             {"id": "record_expense", "title": "💸 Record Expense",
              "description": "Transport, rent, utilities"},
         ]
+
+    # ── Telegram tidy-box wording (services) ──
+    def fastentry_spec(self, tx_type: str, is_service: bool = False) -> dict:
+        # A services "sale" is always a job/service → skip quantity, use client.
+        spec = super().fastentry_spec(tx_type, is_service=(tx_type == "sale"))
+        if tx_type == "sale":
+            spec["title"] = "🧾 Record job/service"
+            spec["person_label"] = "client"
+            spec["category"] = "Service Income"
+        elif tx_type == "purchase":
+            spec["person_label"] = "supplier"
+            spec["category"] = "Service Costs"
+        return spec

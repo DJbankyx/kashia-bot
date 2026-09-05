@@ -70,6 +70,21 @@ class SettingsHandler:
             self.session.reset(phone_number)
             return [text_response("👍 Your account data is safe.")]
 
+        # ── HARD reset: wipe everything AND re-run onboarding (re-pick industry) ──
+        if button_id in ("set_hardreset", "hard_reset"):
+            from core.pin_guard import requires_pin
+            pin_check = requires_pin(self.db, self.session, phone_number, "set_hardreset")
+            if pin_check:
+                return pin_check
+            return self._confirm_hard_reset(phone_number)
+
+        if button_id == "set_hardreset_yes":
+            return self._execute_hard_reset(phone_number)
+
+        if button_id == "set_hardreset_no":
+            self.session.reset(phone_number)
+            return [text_response("👍 Your account is safe. Nothing was deleted.")]
+
         if button_id == "set_notify_on":
             return self._set_notifications(phone_number, True)
 
@@ -397,6 +412,71 @@ class SettingsHandler:
 
         except Exception as e:
             logger.error(f"Reset error for {phone_number}: {e}")
+            self.session.reset(phone_number)
+            return [text_response(
+                "❌ Reset failed. Please try again or contact support."
+            )]
+
+    # ─────────────────────────────────────────────────────────
+    # HARD RESET — wipe data AND force fresh onboarding (re-pick industry)
+    # ─────────────────────────────────────────────────────────
+
+    def _confirm_hard_reset(self, phone_number: str) -> list:
+        """Show the hard-reset warning with confirmation buttons."""
+        return [button_response(
+            "⚠️ *Full Reset (start over)*\n\n"
+            "This permanently deletes *everything*:\n"
+            "  • All transactions\n"
+            "  • All contacts & debts\n"
+            "  • Your product catalog\n"
+            "  • Your business profile & industry\n\n"
+            "You'll start again from onboarding and pick your industry fresh.\n\n"
+            "This cannot be undone. Are you sure?",
+            [
+                {"id": "set_hardreset_yes", "title": "🗑️ Yes, Start Over"},
+                {"id": "set_hardreset_no",  "title": "← Keep My Data"},
+            ]
+        )]
+
+    def _execute_hard_reset(self, phone_number: str) -> list:
+        """Delete all data and clear onboarding so the user re-onboards fresh.
+
+        Unlike _execute_reset (which keeps the profile + industry), this clears
+        the fields the router uses to decide a user is 'known', so the next
+        message drops them into onboarding from step one (industry re-pick).
+        """
+        try:
+            self._delete_all_transactions(phone_number)
+            self._delete_all_contacts(phone_number)
+
+            # Clear the profile fields that mark the user as onboarded. The
+            # router's _user_exists() returns False when onboarding_complete is
+            # falsy, which routes the next message into onboarding.
+            self.db.update_user(phone_number, {
+                "onboarding_complete":  False,
+                "business_name":        "",
+                "industry_class":       "",
+                "business_type":        "",
+                "product_catalog":      {},
+                "transaction_count":    0,
+                "exports_this_month":   0,
+                "invoices_this_month":  0,
+                "recurring_services":   [],
+                "last_deleted_transaction": None,
+            })
+
+            # Fully clear the session so no stale state lingers.
+            self.session.reset(phone_number)
+
+            logger.info(f"HARD reset executed for {phone_number}")
+
+            return [text_response(
+                "🗑️ *Full reset complete.*\n\n"
+                "Everything has been cleared. Let's set you up fresh.\n\n"
+                "👉 Type *hi* (or tap /start) to begin onboarding."
+            )]
+        except Exception as e:
+            logger.error(f"Hard reset error for {phone_number}: {e}")
             self.session.reset(phone_number)
             return [text_response(
                 "❌ Reset failed. Please try again or contact support."

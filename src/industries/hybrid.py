@@ -348,3 +348,20 @@ class HybridIndustry(BaseIndustry):
             {"id": "record_expense", "title": "💸 Record Expense",
              "description": "Rent, transport, utilities"},
         ]
+
+    # ── Telegram tidy-box wording (hybrid: product vs service) ──
+    def fastentry_spec(self, tx_type: str, is_service: bool = False) -> dict:
+        spec = super().fastentry_spec(tx_type, is_service)
+        if tx_type == "sale":
+            spec["person_label"] = "customer/client"
+            if is_service:
+                # Service path → job wording, skip quantity, service category.
+                spec["title"] = "🧾 Record service"
+                spec["item_prompt"] = self.get_guided_prompt("ask_item_service")
+                spec["category"] = "Service Income"
+                spec["is_service"] = True
+            else:
+                spec["title"] = "🧾 Sell product"
+                spec["category"] = "Sales & Income"
+                spec["is_service"] = False
+        return spec

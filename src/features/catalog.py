@@ -2552,6 +2552,105 @@ class CatalogHandler:
             return catalog.get("products", {})
         return {}
 
+    # Item types that represent countable stock (ask "how many?" for these).
+    # A "service" is delivered, not counted, so it never gets a quantity step.
+    _COUNTED_STOCK_TYPES = ("finished_product", "product", "raw_material",
+                            "consumable", "supply", "")
+
+    def suggest_quantities(self, phone_number: str, item_name: str,
+                           tx_type: str = "sale", limit: int = 40) -> list:
+        """Suggest quantity buttons LEARNED from this item's recent history.
+
+        Returns up to 6 quantities the user has actually used for this item
+        (most frequent first). Empty list => caller uses a sensible default
+        spread. This is what makes the boxes adapt to how the user really sells
+        (e.g. 500 / 1000 / 2000 sachets) instead of a fixed 1–10.
+        """
+        return self._suggest_field(phone_number, item_name, "quantity", tx_type, limit)
+
+    def suggest_prices(self, phone_number: str, item_name: str, product_key: str = "",
+                       counted_stock: bool = True, tx_type: str = "sale",
+                       limit: int = 40) -> list:
+        """Suggest price buttons for an item.
+
+        For counted stock we want the PRICE EACH: prefer the item's set price
+        (landing_cost) + recent per-unit prices. For non-counted (services) we
+        want recent TOTAL amounts. Empty => caller uses defaults.
+        """
+        suggestions = []
+        # A set catalog price is the strongest signal for "price each".
+        if counted_stock and product_key:
+            info = self.get_item_info(phone_number, product_key)
+            if info.get("landing_cost"):
+                suggestions.append(int(info["landing_cost"]))
+        field = "unit_cost" if counted_stock else "amount"
+        suggestions += self._suggest_field(phone_number, item_name, field, tx_type, limit)
+        # De-dupe preserving order.
+        seen, out = set(), []
+        for v in suggestions:
+            v = int(v)
+            if v > 0 and v not in seen:
+                seen.add(v)
+                out.append(v)
+        return out[:6]
+
+    def _suggest_field(self, phone_number: str, item_name: str, field: str,
+                       tx_type: str, limit: int) -> list:
+        """Pull the most-used values of `field` for this item from recent history."""
+        try:
+            txns = self.db.get_transactions(phone_number, limit=limit) or []
+        except Exception as e:
+            logger.warning(f"suggest: history read failed: {e}")
+            return []
+        name_l = (item_name or "").strip().lower()
+        counts = {}
+        for t in txns:
+            if tx_type and t.get("type") != tx_type:
+                continue
+            tname = (t.get("item_name") or t.get("description") or "").strip().lower()
+            if name_l and name_l not in tname and tname not in name_l:
+                continue
+            val = t.get(field)
+            if val is None:
+                continue
+            try:
+                n = int(float(val))
+            except (ValueError, TypeError):
+                continue
+            if n > 0:
+                counts[n] = counts.get(n, 0) + 1
+        # Most frequent first, then larger values first as a tiebreak.
+        ordered = sorted(counts.items(), key=lambda kv: (-kv[1], -kv[0]))
+        return [n for n, _ in ordered[:6]]
+
+    def get_item_info(self, phone_number: str, product_key: str) -> dict:
+        """
+        Look up a catalog item by key for the Telegram tidy-box flow.
+
+        Returns a dict: {"key", "name", "item_type", "is_counted_stock",
+        "landing_cost"}. If the key isn't found, returns a safe default that
+        treats it as counted stock (so we don't wrongly skip quantity).
+        """
+        products = self._get_products(phone_number)
+        prod = products.get(product_key)
+        if not isinstance(prod, dict):
+            return {
+                "key": product_key,
+                "name": product_key,
+                "item_type": "",
+                "is_counted_stock": True,
+                "landing_cost": 0,
+            }
+        item_type = prod.get("item_type", "") or ""
+        return {
+            "key": product_key,
+            "name": prod.get("name", product_key),
+            "item_type": item_type,
+            "is_counted_stock": item_type in self._COUNTED_STOCK_TYPES
+                                and item_type != "service",
+            "landing_cost": int(prod.get("landing_cost", 0) or 0),
+        }
+
     def _apply_conversion(self, product: dict, quantity_str: str, raw_qty: int):
         """
         Check if quantity_str contains a unit that has a conversion defined.

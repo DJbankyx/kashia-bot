@@ -249,6 +249,16 @@ class ManufacturingIndustry(BaseIndustry):
              "description": "Labour, overhead, utilities"},
         ]
 
+    # ── Telegram tidy-box wording (manufacturing) ──
+    def fastentry_spec(self, tx_type: str, is_service: bool = False) -> dict:
+        spec = super().fastentry_spec(tx_type, is_service)
+        if tx_type == "sale":
+            spec["person_label"] = "buyer"      # sold finished goods TO a buyer
+        elif tx_type == "purchase":
+            spec["person_label"] = "supplier"
+            spec["category"] = "Goods & Stock"  # raw materials = inventory investment
+        return spec
+
     # ─────────────────────────────────────────────────────────
     # MANUFACTURING DASHBOARD
     # ─────────────────────────────────────────────────────────

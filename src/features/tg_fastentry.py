@@ -1,26 +1,35 @@
 # src/features/tg_fastentry.py
 """
-Telegram fast-entry — an app-like, tap-first sale/purchase recording flow.
+Telegram "One Tidy Box" fast-entry — an app-like, tap-first sale/purchase flow.
 
 Telegram ONLY. WhatsApp continues to use the existing guided/catalog flows
 unchanged; this is gated behind the `tg:` user-id namespace at the router seam.
 
-Design (see docs/TELEGRAM_FLEX_DESIGN.md):
-- Presentation only. All business logic (validation, catalog linkage, saving,
-  stock, CRM, landing cost) is REUSED from the engine — we assemble a `tx_data`
-  dict and converge on `TransactionHandler._build_confirmation()`, after which
-  the normal confirm → payment → save chain runs untouched.
-- One message, edited in place (Telegram editMessageText) as the user taps,
-  instead of a stream of new messages.
-- Flow state + the editable message_id live in the session context under
-  `__tgfx` (separate from engine state). While collecting, the session state is
-  TG_FASTENTRY so text (custom amount) routes back here.
+Design (see docs/TG_SALE_FLOW_PLAN.md):
+- ONE message, edited in place through the whole flow, instead of a stream of
+  new messages:
+      item → (quantity, counted stock only) → price-each / total → payment
+           → quick in-place confirm (Save/Edit/Cancel) → hand to engine save.
+- Presentation only. ALL business logic (validation, catalog linkage, saving,
+  stock, CRM, landing cost, credit/deposit, industry follow-ups) is REUSED from
+  the engine: we assemble a `tx_data` dict and call the engine's payment/save
+  path (`TransactionHandler._save_transaction`), after which the normal
+  side-effects + industry follow-up questions run untouched.
+- Industry wording/defaults come from the industry class' `fastentry_spec()`
+  (base.py + per-industry overrides), never hardcoded here.
+
+Pricing rule (consistency, no mixing):
+- If the flow asked "how many" (counted stock) → ask PRICE EACH; amount =
+  quantity × price_each; unit_cost = price_each.
+- If it did NOT ask "how many" (service/one-off job) → ask the TOTAL amount.
 
 Callback actions (from utils.tg_ui, prefix "__tgfx__"):
-  prod:<id>  ppage:<n>  other       (product step)
-  amt:<int>  custom                 (amount step)
-  pay:<m>                           (payment step)
-  back  cancel                      (navigation)
+  prod:<id>  ppage:<n>  other                (product step)
+  qty:<int>  qtymore                          (quantity step)
+  amt:<int>  custom                           (price/total step)
+  pay:<method>                                (payment step)
+  save  edit  cancel  undo  new               (confirm / receipt)
+  back                                        (navigation)
 """
 
 import logging
@@ -35,6 +44,9 @@ logger = logging.getLogger(__name__)
 # Session context key holding fast-entry progress.
 FX = "__tgfx"
 
+# Product-row id prefix used by the catalog list builders (id = "catrec_<key>").
+_CATREC_PREFIX = "catrec_"
+
 
 class TGFastEntry:
     """Tappable sale/purchase entry for Telegram. Holds a router ref for engine access."""
@@ -42,7 +54,7 @@ class TGFastEntry:
     def __init__(self, router):
         self.router = router
 
-    # ── helpers ──────────────────────────────────────────────────────────
+    # ── engine accessors ─────────────────────────────────────────────────
 
     @property
     def db(self):
@@ -56,6 +68,13 @@ class TGFastEntry:
     def tx(self):
         return self.router.transactions
 
+    @property
+    def catalog(self):
+        return self.router.catalog
+
+    def _industry(self, phone_number: str):
+        return self.router._get_industry_handler(phone_number)
+
     def _client(self):
         """The Telegram client (from the running bot)."""
         try:
@@ -68,6 +87,8 @@ class TGFastEntry:
     def _bare(self, phone_number: str) -> str:
         from services.messaging_client import bare_recipient_id
         return bare_recipient_id(phone_number)
+
+    # ── session helpers ──────────────────────────────────────────────────
 
     def _get_fx(self, phone_number: str) -> dict:
         return (self.session.get(phone_number).get("context", {}) or {}).get(FX, {}) or {}
@@ -93,6 +114,12 @@ class TGFastEntry:
             fx["msg_id"] = mid
         self._save_fx(phone_number, fx)
 
+    def _edit_plain(self, phone_number: str, fx: dict, text: str):
+        """Edit the single message to plain text (no keyboard)."""
+        client = self._client()
+        if client and fx.get("msg_id"):
+            client.edit_message_text(self._bare(phone_number), fx["msg_id"], text, keyboard=[])
+
     # ── entry ────────────────────────────────────────────────────────────
 
     def start(self, phone_number: str, tx_type: str, products: dict,
@@ -102,34 +129,33 @@ class TGFastEntry:
         Returns [] because this flow manages its own single message (the engine's
         send loop must not emit anything extra).
         """
+        spec = self._industry(phone_number).fastentry_spec(tx_type, is_service=is_service_job)
         rows = self._product_rows(phone_number, tx_type)
         fx = {
             "step": "product",
             "tx_type": tx_type,
-            "is_service_job": is_service_job,
+            "is_service": bool(spec.get("is_service")),
+            "spec": spec,
             "page": 0,
-            "rows": rows,           # cached catalog rows for paging (best-effort)
+            "rows": rows,           # cached catalog rows for paging
+            "msg_id": None,
         }
-        verb = "sell" if tx_type == "sale" else "buy"
-        if not rows:
-            # No catalog — jump straight to the amount step with a generic item.
-            fx["step"] = "amount"
-            fx["product_name"] = "Item"
-            self._render(phone_number, fx,
-                         f"💰 *Record {tx_type}*\n\nHow much?",
-                         tg_ui.amount_keyboard(include_back=False))
-            return []
 
-        keyboard = tg_ui.product_grid(rows, page=0)
+        if not rows:
+            # No catalog — go straight to price/total with a generic item.
+            fx["product_name"] = "Item"
+            fx["product_key"] = ""
+            return self._go_to_price_or_qty(phone_number, fx, first_screen=True)
+
         self._render(phone_number, fx,
-                     f"🧾 *Record {tx_type}*\n\nWhat did you {verb}?",
-                     keyboard)
+                     self._header(fx) + "\n" + spec.get("item_prompt", "What?"),
+                     tg_ui.product_grid(rows, page=0))
         return []
 
     def _product_rows(self, phone_number: str, tx_type: str) -> list:
         """Reuse the engine's catalog list builders (same data WhatsApp uses)."""
         try:
-            cat = self.router.catalog
+            cat = self.catalog
             user = self.db.get_user(phone_number) or {}
             industry = user.get("industry_class", user.get("business_type", "trading"))
             if tx_type == "purchase" and industry in ("manufacturing", "hybrid"):
@@ -141,21 +167,47 @@ class TGFastEntry:
             logger.warning(f"tg_fastentry: catalog rows failed: {e}")
             return []
 
+    # ── header / summary line ────────────────────────────────────────────
+
+    def _header(self, fx: dict) -> str:
+        """The persistent title line for the card."""
+        spec = fx.get("spec", {})
+        return f"*{spec.get('title', 'Record')}*"
+
+    def _summary_line(self, fx: dict) -> str:
+        """A one-line running summary of what's chosen so far (item ×qty · ₦amount)."""
+        name = fx.get("product_name", "")
+        parts = []
+        if name:
+            qty = fx.get("quantity")
+            if qty and not fx.get("is_service"):
+                parts.append(f"{name} ×{int(qty):,}")
+            else:
+                parts.append(name)
+        amount = fx.get("amount")
+        if amount:
+            parts.append(format_amount(amount))
+        return " · ".join(parts)
+
     # ── callback handling (__tgfx__:*) ──────────────────────────────────
 
     def handle_callback(self, phone_number: str, action: str, value: str = "") -> list:
-        """Handle a fast-entry inline tap. Returns [] (self-managed message)."""
+        """Handle a fast-entry inline tap. Returns [] (self-managed message) unless
+        handing back to the engine (Save)."""
         fx = self._get_fx(phone_number)
+
+        # Actions that don't need existing fx state.
+        if action == "cancel":
+            self._cancel(phone_number, fx)
+            return []
+        if action == "new":
+            # Start a fresh sale of the same tx_type.
+            self.session.reset(phone_number)
+            return self.router._start_guided_recording(
+                phone_number, "record_sale" if (fx.get("tx_type") == "sale") else "record_purchase")
+
         if not fx:
             # Stale tap (session expired) — silently ignore.
-            return []
-
-        if action == "cancel":
-            self.session.reset(phone_number)
-            client = self._client()
-            if client and fx.get("msg_id"):
-                client.edit_message_text(self._bare(phone_number), fx["msg_id"],
-                                         "❌ Cancelled.", keyboard=[])
             return []
 
         if action == "noop":
@@ -163,7 +215,8 @@ class TGFastEntry:
 
         if action == "ppage":
             fx["page"] = int(value) if value.isdigit() else 0
-            self._render(phone_number, fx, self._product_prompt(fx),
+            self._render(phone_number, fx,
+                         self._header(fx) + "\n" + fx["spec"].get("item_prompt", "What?"),
                          tg_ui.product_grid(fx.get("rows", []), page=fx["page"]))
             return []
 
@@ -171,28 +224,62 @@ class TGFastEntry:
             # Bail out to the existing free-text guided flow (engine-owned).
             self.session.reset(phone_number)
             return self.router._start_freetext_guided(
-                phone_number, fx.get("tx_type", "sale"), fx.get("is_service_job", False)
-            )
+                phone_number, fx.get("tx_type", "sale"), fx.get("is_service", False))
 
         if action == "prod":
             return self._pick_product(phone_number, fx, value)
 
+        if action == "qty":
+            n = int(value) if value.isdigit() else 1
+            return self._set_quantity(phone_number, fx, n)
+
+        if action == "qtymore":
+            fx["step"] = "await_custom_qty"
+            self._save_fx(phone_number, fx)
+            self._edit_plain(phone_number, fx, "🔢 Type the quantity (e.g. 24):")
+            return []
+
         if action == "amt":
             amount = int(value) if value.isdigit() else 0
-            return self._set_amount(phone_number, fx, amount)
+            return self._set_price(phone_number, fx, amount)
 
         if action == "custom":
             fx["step"] = "await_custom_amount"
             self._save_fx(phone_number, fx)
-            client = self._client()
-            if client and fx.get("msg_id"):
-                client.edit_message_text(
-                    self._bare(phone_number), fx["msg_id"],
-                    "✏️ Type the amount (e.g. 4500, 5k):", keyboard=[])
+            label = "price each" if self._uses_quantity(fx) else "amount"
+            self._edit_plain(phone_number, fx, f"✏️ Type the {label} (e.g. 4500, 5k):")
             return []
 
         if action == "pay":
             return self._set_payment(phone_number, fx, value)
+
+        # ── who? step (credit / part payment) ──
+        if action == "cust":
+            # value = contact_id; resolve its display name.
+            name = value
+            for cid, nm in self._recent_contacts(phone_number):
+                if str(cid) == value:
+                    name = nm
+                    break
+            return self._set_customer(phone_number, fx, name)
+
+        if action == "custtype":
+            fx["step"] = "await_customer_name"
+            self._save_fx(phone_number, fx)
+            who = "buyer" if fx.get("tx_type") == "purchase" else "customer"
+            self._edit_plain(phone_number, fx, f"✍️ Type the {who}'s name:")
+            return []
+
+        if action == "walkin":
+            # No name — but a debt still needs an owner, so use a Walk-in bucket.
+            return self._set_customer(phone_number, fx, "Walk-in")
+
+        if action == "save":
+            return self._do_save(phone_number, fx)
+
+        if action == "edit":
+            # Jump back to the first step (item) for a quick re-do.
+            return self._restart_item(phone_number, fx)
 
         if action == "back":
             return self._go_back(phone_number, fx)
@@ -200,113 +287,377 @@ class TGFastEntry:
         return []
 
     def handle_text(self, phone_number: str, text: str) -> list:
-        """Handle a typed value while in fast-entry (custom amount)."""
+        """Handle a typed value while in fast-entry (custom quantity or amount)."""
         fx = self._get_fx(phone_number)
         if not fx:
             self.session.reset(phone_number)
             return []
-        if fx.get("step") == "await_custom_amount":
+
+        step = fx.get("step")
+        if step == "await_custom_qty":
+            digits = "".join(c for c in text if c.isdigit())
+            n = int(digits) if digits else 0
+            if n <= 0:
+                self._edit_plain(phone_number, fx, "🔢 That didn't look like a number. Type e.g. 24:")
+                return []
+            return self._set_quantity(phone_number, fx, n)
+
+        if step == "await_custom_amount":
             amount = parse_amount(text)
             if not amount:
-                client = self._client()
-                if client and fx.get("msg_id"):
-                    client.edit_message_text(
-                        self._bare(phone_number), fx["msg_id"],
-                        "💰 That didn't look like an amount. Type e.g. 4500 or 5k:",
-                        keyboard=[])
+                self._edit_plain(phone_number, fx,
+                                 "💰 That didn't look like an amount. Type e.g. 4500 or 5k:")
                 return []
-            return self._set_amount(phone_number, fx, int(amount))
+            return self._set_price(phone_number, fx, int(amount))
+
+        if step == "await_deposit":
+            return self._set_deposit(phone_number, fx, text)
+
+        if step == "await_customer_name":
+            name = text.strip()
+            if not name:
+                self._edit_plain(phone_number, fx, "✍️ Please type a name:")
+                return []
+            return self._set_customer(phone_number, fx, name)
+
         # Unexpected text — ignore gracefully.
         return []
 
-    # ── step transitions ─────────────────────────────────────────────────
+    # ── step: product picked ─────────────────────────────────────────────
 
-    def _product_prompt(self, fx: dict) -> str:
-        verb = "sell" if fx.get("tx_type") == "sale" else "buy"
-        return f"🧾 *Record {fx.get('tx_type')}*\n\nWhat did you {verb}?"
+    def _pick_product(self, phone_number: str, fx: dict, row_id: str) -> list:
+        """Product chosen → resolve its real catalog key + name, decide next step."""
+        # Row ids are "catrec_<key>"; strip the prefix to get the catalog key.
+        product_key = row_id[len(_CATREC_PREFIX):] if row_id.startswith(_CATREC_PREFIX) else row_id
 
-    def _pick_product(self, phone_number: str, fx: dict, product_key: str) -> list:
-        """Product chosen → resolve its name, move to amount step."""
-        name = product_key
+        # Resolve a clean display name + counted-stock flag from the catalog.
+        info = {}
         try:
-            for r in fx.get("rows", []):
-                if r.get("id") == product_key:
-                    name = r.get("title", product_key)
-                    break
-        except Exception:
-            pass
-        # Strip a leading emoji/space from the display title for a clean description.
+            info = self.catalog.get_item_info(phone_number, product_key)
+        except Exception as e:
+            logger.warning(f"tg_fastentry: get_item_info failed: {e}")
+
+        name = info.get("name") or self._row_title(fx, row_id) or product_key
         fx["product_key"] = product_key
         fx["product_name"] = name.strip()
+        # Counted stock decides whether we ask quantity — UNLESS the industry
+        # spec already declares this a service (services / hybrid-service).
+        fx["counted_stock"] = bool(info.get("is_counted_stock", True)) and not fx.get("is_service")
+
+        return self._go_to_price_or_qty(phone_number, fx, first_screen=False)
+
+    def _row_title(self, fx: dict, row_id: str) -> str:
+        for r in fx.get("rows", []):
+            if r.get("id") == row_id:
+                # Strip a leading emoji + space for a clean name.
+                t = r.get("title", "")
+                return t.split(" ", 1)[1] if " " in t and not t[0].isalnum() else t
+        return ""
+
+    def _uses_quantity(self, fx: dict) -> bool:
+        """True if this entry asked/should ask quantity (counted stock, non-service)."""
+        return bool(fx.get("counted_stock")) and not fx.get("is_service")
+
+    def _qty_presets(self, phone_number: str, fx: dict) -> list:
+        """Quantity buttons learned from this item's recent sales/purchases."""
+        try:
+            return self.catalog.suggest_quantities(
+                phone_number, fx.get("product_name", ""), fx.get("tx_type", "sale"))
+        except Exception as e:
+            logger.warning(f"tg_fastentry: qty suggest failed: {e}")
+            return []
+
+    def _price_presets(self, phone_number: str, fx: dict) -> list:
+        """Price buttons learned from history + the item's set price."""
+        try:
+            return self.catalog.suggest_prices(
+                phone_number, fx.get("product_name", ""), fx.get("product_key", ""),
+                counted_stock=self._uses_quantity(fx), tx_type=fx.get("tx_type", "sale"))
+        except Exception as e:
+            logger.warning(f"tg_fastentry: price suggest failed: {e}")
+            return []
+
+    def _go_to_price_or_qty(self, phone_number: str, fx: dict, first_screen: bool) -> list:
+        """After an item is chosen, either ask quantity (counted stock) or go to
+        the amount step (services / no catalog)."""
+        if self._uses_quantity(fx):
+            fx["step"] = "quantity"
+            text = f"{self._header(fx)}\n📦 {fx['product_name']}\n\nHow many?"
+            presets = self._qty_presets(phone_number, fx)
+            self._render(phone_number, fx, text, tg_ui.quantity_keyboard(presets=presets))
+            return []
+        # No quantity → ask the total amount directly.
         fx["step"] = "amount"
-        self._render(phone_number, fx,
-                     f"📦 *{fx['product_name']}*\n\nHow much?",
-                     tg_ui.amount_keyboard())
+        text = f"{self._header(fx)}\n📦 {fx.get('product_name','Item')}\n\nHow much? (total)"
+        presets = self._price_presets(phone_number, fx)
+        self._render(phone_number, fx, text, tg_ui.amount_keyboard(presets=presets or None))
         return []
 
-    def _set_amount(self, phone_number: str, fx: dict, amount: int) -> list:
-        """Amount chosen → move to payment step."""
-        fx["amount"] = int(amount)
-        fx["step"] = "payment"
-        name = fx.get("product_name", "Item")
-        self._render(
-            phone_number, fx,
-            f"📦 *{name}*\n💰 {format_amount(amount)}\n\nHow was it paid?",
-            tg_ui.payment_keyboard(),
-        )
+    # ── step: quantity ───────────────────────────────────────────────────
+
+    def _set_quantity(self, phone_number: str, fx: dict, n: int) -> list:
+        fx["quantity"] = int(n)
+        fx["step"] = "price"
+        text = (f"{self._header(fx)}\n📦 {fx['product_name']} ×{n:,}\n\n"
+                f"Price each?")
+        presets = self._price_presets(phone_number, fx)
+        self._render(phone_number, fx, text, tg_ui.amount_keyboard(presets=presets or None))
         return []
+
+    # ── step: price (each) or total ──────────────────────────────────────
+
+    def _set_price(self, phone_number: str, fx: dict, value: int) -> list:
+        """Set the price. If quantity was asked, `value` = price each and we
+        multiply; otherwise `value` = total amount."""
+        if self._uses_quantity(fx):
+            qty = int(fx.get("quantity", 1) or 1)
+            fx["unit_cost"] = int(value)
+            fx["amount"] = int(value) * qty
+        else:
+            fx["unit_cost"] = None
+            fx["amount"] = int(value)
+        fx["step"] = "payment"
+
+        if fx.get("tx_type") == "sale":
+            text = f"{self._header(fx)}\n{self._summary_line(fx)}\n\nHow were you paid?"
+            credit_label = "💳 Credit (owes me)"
+        else:
+            text = f"{self._header(fx)}\n{self._summary_line(fx)}\n\nHow did you pay?"
+            credit_label = "💳 Credit (I owe)"
+        self._render(phone_number, fx, text, tg_ui.payment_keyboard(credit_label=credit_label))
+        return []
+
+    # ── step: payment ────────────────────────────────────────────────────
 
     def _set_payment(self, phone_number: str, fx: dict, method: str) -> list:
-        """Payment chosen → assemble tx_data and hand off to the engine confirm card."""
-        amount = fx.get("amount", 0)
-        tx_type = fx.get("tx_type", "sale")
-        name = fx.get("product_name", "Item")
-        has_credit = method == "credit"
+        """Payment chosen → branch by method.
 
+        - cash / transfer → straight to the in-place confirm (Option B).
+        - part            → ask the deposit amount (in-box), then Who?, then confirm.
+        - credit          → ask Who? (in-box), then confirm.
+        The customer name is collected IN THE BOX (no hand-off to the old text
+        step) so credit/part is boxed, confirms cleanly, and records the debt.
+        """
+        fx["payment_method"] = method
+        fx["has_credit"] = method in ("credit", "part")
+
+        if method == "part":
+            fx["step"] = "await_deposit"
+            self._save_fx(phone_number, fx)
+            self._edit_plain(
+                phone_number, fx,
+                f"{self._header(fx)}\n{self._summary_line(fx)}\n\n"
+                f"💰 How much was paid now? (deposit)\n_e.g. 25000, 50k, half_")
+            return []
+
+        if method == "credit":
+            return self._ask_customer(phone_number, fx)
+
+        # cash / transfer → confirm immediately
+        return self._show_confirm(phone_number, fx)
+
+    def _pay_label(self, fx: dict) -> str:
+        method = fx.get("payment_method", "cash")
+        base = {
+            "cash": "💵 Cash", "transfer": "🏦 Transfer",
+            "credit": "💳 On credit", "part": "📝 Part payment",
+        }.get(method, method)
+        if method == "part" and fx.get("deposit_amount") is not None:
+            base += (f" — paid {format_amount(fx['deposit_amount'])}, "
+                     f"owes {format_amount(fx.get('balance_owed', 0))}")
+        return base
+
+    def _show_confirm(self, phone_number: str, fx: dict) -> list:
+        """The single in-place confirm card (Option B)."""
+        fx["step"] = "confirm"
+        lines = [
+            f"{self._header(fx)}",
+            "",
+            f"{self._summary_line(fx)}",
+        ]
+        if self._uses_quantity(fx) and fx.get("unit_cost"):
+            lines.append(f"   ({fx['quantity']} × {format_amount(fx['unit_cost'])} each)")
+        lines.append(f"💳 {self._pay_label(fx)}")
+        if fx.get("vendor"):
+            who = "Customer" if fx.get("tx_type") == "sale" else "Supplier"
+            lines.append(f"👤 {who}: {fx['vendor']}")
+        lines += ["", "_Save this?_"]
+        self._render(phone_number, fx, "\n".join(lines), tg_ui.confirm_keyboard())
+        return []
+
+    # ── step: deposit amount (part payment) ──────────────────────────────
+
+    def _set_deposit(self, phone_number: str, fx: dict, text: str) -> list:
+        """Deposit amount entered → compute balance, then ask Who?."""
+        total = int(fx.get("amount", 0))
+        low = text.lower().strip()
+        if low in ("half", "50%"):
+            deposit = total // 2
+        else:
+            deposit = parse_amount(text)
+        if not deposit:
+            self._edit_plain(
+                phone_number, fx,
+                f"💰 Enter the deposit amount (e.g. 25000, 50k).\n"
+                f"_Total is {format_amount(total)}._")
+            return []
+        deposit = int(deposit)
+        if deposit >= total:
+            # Paid in full — treat as a normal cash sale (no debt).
+            fx["payment_method"] = "cash"
+            fx["has_credit"] = False
+            fx.pop("deposit_amount", None)
+            fx.pop("balance_owed", None)
+            return self._show_confirm(phone_number, fx)
+        fx["deposit_amount"] = deposit
+        fx["balance_owed"] = total - deposit
+        return self._ask_customer(phone_number, fx)
+
+    # ── step: who? (customer / supplier) ─────────────────────────────────
+
+    def _recent_contacts(self, phone_number: str) -> list:
+        """(contact_id, name) of recent/known contacts for quick tap."""
+        try:
+            contacts = self.db.get_contacts(phone_number, limit=20) or []
+            out = []
+            for c in contacts:
+                name = c.get("name") or ""
+                cid = c.get("contact_id") or name.lower().replace(" ", "_")
+                if name:
+                    out.append((cid, name))
+            return out
+        except Exception as e:
+            logger.warning(f"tg_fastentry: contacts read failed: {e}")
+            return []
+
+    def _ask_customer(self, phone_number: str, fx: dict) -> list:
+        """Boxed 'Who?' step. Required for credit/part (a debt needs an owner),
+        but always offers Walk-in/Skip and type-a-name."""
+        fx["step"] = "who"
+        self._save_fx(phone_number, fx)
+        recent = self._recent_contacts(phone_number)
+        if fx.get("tx_type") == "purchase":
+            q = "👤 Who did you buy from?"
+        else:
+            q = "👤 Who did you sell to?"
+        note = "_Needed to track the debt. Tap a name, type one, or choose Walk-in._"
+        text = f"{self._header(fx)}\n{self._summary_line(fx)}\n\n{q}\n{note}"
+        self._render(phone_number, fx, text, tg_ui.customer_keyboard(recent=recent))
+        return []
+
+    def _set_customer(self, phone_number: str, fx: dict, name: str) -> list:
+        """Name chosen/typed → store vendor, go to confirm."""
+        fx["vendor"] = name.strip()
+        return self._show_confirm(phone_number, fx)
+
+    # ── confirm → hand to the engine save chain ──────────────────────────
+
+    def _build_tx_data(self, fx: dict) -> dict:
+        spec = fx.get("spec", {})
+        method = fx.get("payment_method", "cash")
+        # For part payment, the engine's credit branch reads payment_method
+        # "deposit" + deposit_amount + balance_owed to record only the balance.
+        pm = "deposit" if method == "part" else method
         tx_data = {
-            "amount": int(amount),
-            "type": tx_type,
-            "description": name,
-            "category": "Sales & Income" if tx_type == "sale" else "Goods & Stock",
-            "vendor": "",
-            "quantity": "",
-            "is_service_job": fx.get("is_service_job", False),
-            "payment_method": method if method != "credit" else "credit",
-            "has_credit": has_credit,
+            "amount": int(fx.get("amount", 0)),
+            "type": fx.get("tx_type", "sale"),
+            "description": fx.get("product_name", "Item"),
+            "category": spec.get("category", "Uncategorized"),
+            "vendor": fx.get("vendor", ""),
+            "quantity": str(fx["quantity"]) if fx.get("quantity") else "",
+            "unit_cost": fx.get("unit_cost"),
+            "is_service_job": bool(fx.get("is_service")),
+            "payment_method": pm,
+            "has_credit": bool(fx.get("has_credit")),
         }
-        # Link the catalog product so stock/cost updates target the right entry.
-        if fx.get("product_key") and fx["product_key"] != "catrec___other__":
+        if method == "part":
+            tx_data["deposit_amount"] = int(fx.get("deposit_amount", 0))
+            tx_data["balance_owed"] = int(fx.get("balance_owed", 0))
+        if fx.get("product_key"):
             tx_data["catalog_product"] = fx["product_key"]
-            tx_data["catalog_product_name"] = name
+            tx_data["catalog_product_name"] = fx.get("product_name", "")
+        return tx_data
 
-        # Clear the editable card (the engine sends its own confirmation next).
-        client = self._client()
-        if client and fx.get("msg_id"):
-            client.edit_message_text(
-                self._bare(phone_number), fx["msg_id"],
-                f"📦 *{name}* — {format_amount(amount)}\n_Confirming…_", keyboard=[])
+    def _do_save(self, phone_number: str, fx: dict) -> list:
+        """Hand off to the engine. Reuses ALL money/stock/credit/follow-up logic.
 
-        # Hand off: _build_confirmation sets AWAITING_CONFIRMATION; from there the
-        # existing confirm → payment → _save_transaction chain runs unchanged.
-        # It also stores pending_transaction in the session context.
-        return self.tx._build_confirmation(tx_data, has_credit=has_credit)
+        Credit/part already collected the customer name in-box, so tx_data has a
+        vendor → _save_transaction routes to _save_credit_transaction, which
+        records the correct debt (balance for part, full for credit) and returns
+        a clean confirmation. Cash/transfer save straight through.
+        """
+        tx_data = self._build_tx_data(fx)
+        self._edit_plain(phone_number, fx,
+                         f"✅ *Saving…*\n{self._summary_line(fx)}")
+        self.session.reset(phone_number)
+        return self.tx._save_transaction(phone_number, tx_data)
+
+    # ── navigation / lifecycle ───────────────────────────────────────────
+
+    def _restart_item(self, phone_number: str, fx: dict) -> list:
+        """Edit → go back to the item picker (fresh choices, same message)."""
+        fx["step"] = "product"
+        for k in ("product_key", "product_name", "quantity", "unit_cost", "amount",
+                  "payment_method", "has_credit", "vendor", "deposit_amount",
+                  "balance_owed", "counted_stock"):
+            fx.pop(k, None)
+        rows = fx.get("rows", [])
+        if rows:
+            self._render(phone_number, fx,
+                         self._header(fx) + "\n" + fx["spec"].get("item_prompt", "What?"),
+                         tg_ui.product_grid(rows, page=0))
+        else:
+            self._go_to_price_or_qty(phone_number, fx, first_screen=True)
+        return []
 
     def _go_back(self, phone_number: str, fx: dict) -> list:
         """Step back one screen."""
         step = fx.get("step")
-        if step in ("amount", "await_custom_amount"):
-            # back to product (if we had a product step) else cancel
+        if step in ("amount", "quantity", "await_custom_qty", "await_custom_amount"):
+            # back to product (if there was one) else cancel
             if fx.get("rows"):
-                fx["step"] = "product"
-                self._render(phone_number, fx, self._product_prompt(fx),
-                             tg_ui.product_grid(fx.get("rows", []), page=fx.get("page", 0)))
-                return []
-            self.session.reset(phone_number)
+                return self._restart_item(phone_number, fx)
+            self._cancel(phone_number, fx)
             return []
-        if step == "payment":
-            fx["step"] = "amount"
-            name = fx.get("product_name", "Item")
-            self._render(phone_number, fx, f"📦 *{name}*\n\nHow much?",
-                         tg_ui.amount_keyboard())
+        if step == "price":
+            # back to quantity
+            fx["step"] = "quantity"
+            presets = self._qty_presets(phone_number, fx)
+            self._render(phone_number, fx,
+                         f"{self._header(fx)}\n📦 {fx['product_name']}\n\nHow many?",
+                         tg_ui.quantity_keyboard(presets=presets))
+            return []
+        if step in ("payment", "await_deposit", "who", "await_customer_name"):
+            # back to price/amount
+            presets = self._price_presets(phone_number, fx)
+            if self._uses_quantity(fx):
+                fx["step"] = "price"
+                self._render(phone_number, fx,
+                             f"{self._header(fx)}\n📦 {fx['product_name']} ×{int(fx.get('quantity',1)):,}\n\nPrice each?",
+                             tg_ui.amount_keyboard(presets=presets or None))
+            else:
+                fx["step"] = "amount"
+                self._render(phone_number, fx,
+                             f"{self._header(fx)}\n📦 {fx.get('product_name','Item')}\n\nHow much? (total)",
+                             tg_ui.amount_keyboard(presets=presets or None))
+            return []
+        if step == "confirm":
+            # back to the payment picker (re-choose method)
+            fx["step"] = "payment"
+            credit_label = "💳 Credit (owes me)" if fx.get("tx_type") == "sale" else "💳 Credit (I owe)"
+            prompt = "How were you paid?" if fx.get("tx_type") == "sale" else "How did you pay?"
+            self._render(phone_number, fx,
+                         f"{self._header(fx)}\n{self._summary_line(fx)}\n\n{prompt}",
+                         tg_ui.payment_keyboard(credit_label=credit_label))
             return []
         return []
+
+    def _cancel(self, phone_number: str, fx: dict):
+        self.session.reset(phone_number)
+        if fx.get("msg_id"):
+            self._edit_plain(phone_number, fx, "❌ Cancelled.")
+
+    # NOTE: Undo-after-save is a planned follow-up. Wiring it means capturing the
+    # saved tx_id and adding an Undo button onto the engine's post-save receipt,
+    # which touches the shared save path (WhatsApp too). Deferred so we don't
+    # destabilize the money path while validating the front-half tidy box.
