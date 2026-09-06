@@ -3180,12 +3180,12 @@ class CatalogHandler:
             buttons.append({"id": f"cat_stkdelta_{k}_1", "title": "➕1"})
             buttons.append({"id": f"cat_stkdelta_{k}_5", "title": "➕5"})
             buttons.append({"id": f"cat_stkdelta_{k}_10", "title": "➕10"})
-            buttons.append({"id": f"cat_adjstk_{k}", "title": "📐 Set exact"})
+            buttons.append({"id": f"cat_adjstk_{k}", "title": "📐 Set exact stock"})
         buttons.append({"id": f"cat_setprice_{k}", "title": "💰 Set Price"})
         buttons.append({"id": f"cat_setcost_{k}", "title": "🏷️ Set Cost"})
         if not is_service:
             buttons.append({"id": f"cat_setunit_{k}", "title": "📏 Set Unit"})
-            buttons.append({"id": f"cat_setvar_{k}", "title": "🎚️ Variants"})
+            buttons.append({"id": f"cat_setvar_{k}", "title": "🎚️ Variants (size/colour)"})
         buttons.append({"id": f"cat_setcat_{k}", "title": "🗂️ Category"})
         if not is_service:
             buttons.append({"id": f"cat_reorder_{k}", "title": "🔔 Reorder level"})
@@ -3193,7 +3193,20 @@ class CatalogHandler:
         buttons.append({"id": f"cat_rename_{k}", "title": "✏️ Rename"})
         buttons.append({"id": f"cat_delete_{k}", "title": "🗑️ Delete"})
         buttons.append({"id": "menu_catalog", "title": "← Catalog"})
+        buttons.append({"id": "menu_home", "title": "☰ Menu"})
 
+        # On Telegram, render the actions as a list (inline keyboard) so ALL
+        # options show. button_response caps at 3 (a WhatsApp limit) which was
+        # hiding every action past the first stock stepper. WhatsApp keeps the
+        # 3-button version.
+        if self._is_telegram(phone_number):
+            return [list_response(
+                header=f"📦 {p['name']}",
+                body="\n".join(lines) + "\n\n_Choose an action:_",
+                button_text="Actions",
+                sections=[{"title": "", "rows": buttons}],
+                no_paginate=True,
+            )]
         return [
             text_response("\n".join(lines)),
             button_response("Actions:", buttons)

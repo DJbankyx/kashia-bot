@@ -22,11 +22,17 @@ def button_response(body: str, buttons: list) -> dict:
     }
 
 
-def list_response(header: str, body: str, button_text: str, sections: list) -> dict:
+def list_response(header: str, body: str, button_text: str, sections: list,
+                  no_paginate: bool = False) -> dict:
     """
     Interactive list message.
     
     sections: list of {"title": "Section", "rows": [{"id": "...", "title": "...", "description": "..."}]}
+
+    no_paginate: Telegram-only hint. When True, a long description-less list is
+    rendered as a single inline keyboard (all buttons shown) instead of being
+    auto-paged. Used for rich action cards (e.g. the product card) where every
+    action must be visible at once. Ignored on WhatsApp.
     """
     return {
         "type": "list",
@@ -35,6 +41,7 @@ def list_response(header: str, body: str, button_text: str, sections: list) -> d
             "body": body,
             "button_text": button_text,
             "sections": sections,
+            "no_paginate": no_paginate,
         }
     }
 

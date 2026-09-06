@@ -475,7 +475,10 @@ class KashiaBot:
             # Telegram-only: long, description-less pickers render as a paginated
             # inline keyboard (◀ Prev / Next ▶). Everything else — and all of
             # WhatsApp — uses the normal send_list path unchanged.
-            if not self._maybe_send_paginated_list(
+            # `no_paginate` lets a rich action card (e.g. the product card) opt
+            # out so its buttons are never split into pages.
+            no_paginate = bool(content.get("no_paginate"))
+            if no_paginate or not self._maybe_send_paginated_list(
                     phone_number, client, header, body, sections):
                 client.send_list(phone_number, header, body, button_text, sections)
 
