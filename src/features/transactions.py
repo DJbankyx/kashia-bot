@@ -964,6 +964,18 @@ class TransactionHandler:
             )
             tx_id = result.get("transaction_id", "") if isinstance(result, dict) else ""
 
+            # Count this transaction against the contact (transaction_count,
+            # totals, analytics) — the same bookkeeping the non-credit save path
+            # does. Without this, credit/part sales left the contact showing
+            # "Transactions: 0" and never fed insights. The debt itself is still
+            # recorded separately below via record_debt.
+            if vendor:
+                try:
+                    self.db.update_contact_totals(
+                        phone_number, vendor, int(amount), tx_type)
+                except Exception as e:
+                    logger.warning(f"credit save: update_contact_totals failed: {e}")
+
             # Determine direction: who owes whom?
             # Purchases AND expenses on credit mean *I* owe the other party.
             # Only a credit sale means they owe me.
