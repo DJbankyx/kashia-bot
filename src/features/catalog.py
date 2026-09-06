@@ -182,6 +182,27 @@ class CatalogHandler:
             if key not in ("products", "materials", "services", "supplies"):
                 return self._show_product_card(phone_number, key)
 
+        # ── 2D: quick inline stock delta (cat_stkdelta_<key>_<delta>) ──
+        if button_id.startswith("cat_stkdelta_"):
+            rest = button_id[13:]
+            k, _, d = rest.rpartition("_")  # delta is after the LAST underscore
+            try:
+                delta = int(d)
+            except ValueError:
+                delta = 0
+            return self._quick_stock_delta(phone_number, k, delta)
+
+        # ── 2D: category actions ──
+        if button_id.startswith("cat_setcat_"):
+            return self._start_set_category(phone_number, button_id[11:])
+        if button_id.startswith("cat_newcat_"):
+            return self._start_new_category(phone_number, button_id[11:])
+        if button_id.startswith("cat_pickcat_"):
+            # cat_pickcat_<key>__<slug>
+            rest = button_id[12:]
+            k, sep, slug = rest.partition("__")
+            return self._apply_category(phone_number, k, slug.replace("_", " "))
+
         # ── 2C: product-card actions (per-product) ──
         if button_id.startswith("cat_adjstk_"):
             return self._handle_product_picked(phone_number, button_id[11:], "adjust_stock", {})
@@ -393,6 +414,9 @@ class CatalogHandler:
 
         if step == "renaming_product":
             return self._handle_rename(phone_number, text_s, context)
+
+        if step == "setting_category":
+            return self._handle_set_category(phone_number, text_s, context)
 
         if step == "adding_products":
             return self._handle_add_products(phone_number, text_s, context)
@@ -2948,17 +2972,24 @@ class CatalogHandler:
         if p.get("supplier"):
             lines.append(f"🏪 Supplier: {p['supplier']}")
 
-        # ── 2C: actionable card. Grid of edit actions for THIS product. ──
+        # ── 2C/2D: actionable card. Quick inline stock ± then edit actions. ──
         k = product_key
         is_service = p["item_type"] == "service"
         buttons = []
+        # 2D: inline quick stock adjust — apply immediately, re-render the card.
         if not is_service:
-            buttons.append({"id": f"cat_adjstk_{k}", "title": "📐 Adjust Stock"})
+            buttons.append({"id": f"cat_stkdelta_{k}_-5", "title": "➖5"})
+            buttons.append({"id": f"cat_stkdelta_{k}_-1", "title": "➖1"})
+            buttons.append({"id": f"cat_stkdelta_{k}_1", "title": "➕1"})
+            buttons.append({"id": f"cat_stkdelta_{k}_5", "title": "➕5"})
+            buttons.append({"id": f"cat_stkdelta_{k}_10", "title": "➕10"})
+            buttons.append({"id": f"cat_adjstk_{k}", "title": "📐 Set exact"})
         buttons.append({"id": f"cat_setprice_{k}", "title": "💰 Set Price"})
         buttons.append({"id": f"cat_setcost_{k}", "title": "🏷️ Set Cost"})
         if not is_service:
             buttons.append({"id": f"cat_setunit_{k}", "title": "📏 Set Unit"})
             buttons.append({"id": f"cat_setvar_{k}", "title": "🎚️ Variants"})
+        buttons.append({"id": f"cat_setcat_{k}", "title": "🗂️ Category"})
         buttons.append({"id": f"cat_rename_{k}", "title": "✏️ Rename"})
         buttons.append({"id": f"cat_delete_{k}", "title": "🗑️ Delete"})
         buttons.append({"id": "menu_catalog", "title": "← Catalog"})
@@ -2967,6 +2998,74 @@ class CatalogHandler:
             text_response("\n".join(lines)),
             button_response("Actions:", buttons)
         ]
+
+    def _quick_stock_delta(self, phone_number: str, product_key: str, delta: int) -> list:
+        """2D: apply an inline stock +/- immediately and re-render the card.
+        Stock can't go below 0. Logs a movement (2A) for history."""
+        products = self._get_products(phone_number)
+        prod = products.get(product_key)
+        if not isinstance(prod, dict):
+            return [text_response("❓ Product not found.")]
+        cur = self._as_int(prod.get("stock"), 0)
+        new = max(0, cur + int(delta))
+        prod["stock"] = new
+        products[product_key] = prod
+        self._save_products(phone_number, products)
+        try:
+            self.record_stock_movement(phone_number, product_key, new - cur,
+                                       reason="quick adjust")
+        except Exception:
+            pass
+        # Re-render the card so the user sees the new stock instantly.
+        return self._show_product_card(phone_number, product_key)
+
+    def _start_set_category(self, phone_number: str, product_key: str) -> list:
+        p = self.get_normalized_product(phone_number, product_key)
+        if not p["name"]:
+            return [text_response("❓ Product not found.")]
+        # Offer existing categories as quick taps + a "type new" option.
+        prods = self._normalized_products(phone_number)
+        cats = sorted({(x.get("category") or "").strip() for x in prods if (x.get("category") or "").strip()})
+        rows = []
+        for c in cats[:8]:
+            slug = c.lower().replace(" ", "_")[:24]
+            rows.append({"id": f"cat_pickcat_{product_key}__{slug}", "title": f"🗂️ {c}"})
+        rows.append({"id": f"cat_newcat_{product_key}", "title": "➕ New category"})
+        rows.append({"id": f"cat_view_{product_key}", "title": "← Back"})
+        cur = f"\nCurrent: *{p['category']}*" if p.get("category") else ""
+        return [list_response(
+            header="🗂️ Category",
+            body=f"*{p['name']}* — pick or add a category:{cur}",
+            button_text="Select",
+            sections=[{"title": "", "rows": rows}],
+        )]
+
+    def _apply_category(self, phone_number: str, product_key: str, category: str) -> list:
+        products = self._get_products(phone_number)
+        prod = products.get(product_key)
+        if isinstance(prod, dict):
+            prod["category"] = category.strip().title()
+            products[product_key] = prod
+            self._save_products(phone_number, products)
+        return self._show_product_card(phone_number, product_key)
+
+    def _start_new_category(self, phone_number: str, product_key: str) -> list:
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+            "cat_step": "setting_category",
+            "cat_product_key": product_key,
+        })
+        return [button_response(
+            "🗂️ Type the new category name:\n_e.g. Sedan, Drinks, Tools_",
+            [{"id": "cat_cancel", "title": "← Cancel"}]
+        )]
+
+    def _handle_set_category(self, phone_number: str, text: str, context: dict) -> list:
+        product_key = context.get("cat_product_key", "")
+        cat = text.strip().title()
+        self.session.reset(phone_number)
+        if len(cat) < 2:
+            return [text_response("Please type a valid category (2+ characters).")]
+        return self._apply_category(phone_number, product_key, cat)
 
     def _card_back_buttons(self, product_key: str) -> list:
         """Common footer to return to a product's card / catalog after an edit."""
