@@ -255,10 +255,12 @@ class OnboardingHandler:
                 "_or type *skip* to set it up in the Catalog later._"
             )]
 
-        # Take the comma list at face value as starting CATEGORIES (no prose
-        # auto-guessing beyond a light clean). These are placeholders only.
-        items = self._parse_category_list(description)
-        return self._complete_onboarding(phone_number, business_name, industry, description, items)
+        # Onboarding only DESCRIBES the business — it must NOT create catalog
+        # products. Previously the comma list was seeded as zero-stock
+        # placeholder products, which polluted the catalog with abstract items.
+        # We keep the description (shown back for reassurance) and hand off to a
+        # clear "set up your catalog now or later" step. items=[] → no seeding.
+        return self._complete_onboarding(phone_number, business_name, industry, description, [])
 
     def _parse_category_list(self, text: str) -> list:
         """Split a comma/'and' list into clean starting-category names.
@@ -317,15 +319,12 @@ class OnboardingHandler:
                 "_e.g. Liquid Soap 1L, Bar Soap, Dish Wash, Detergent 5L_"
             )]
 
-        # Deduplicate
-        seen = set()
-        unique_items = []
-        for item in items:
-            if item.lower() not in seen:
-                seen.add(item.lower())
-                unique_items.append(item)
-
-        return self._complete_onboarding(phone_number, business_name, industry, description, unique_items)
+        # Onboarding describes the business only — do NOT seed products here.
+        # Keep the listed names in the description so they're echoed back, but
+        # let the user build real products (with stock/price/variants) in the
+        # Catalog via the explicit set-up step. items=[] → no seeding.
+        combined_desc = description or product_text
+        return self._complete_onboarding(phone_number, business_name, industry, combined_desc, [])
 
     def _complete_onboarding(self, phone_number: str, business_name: str, industry: str, description: str, items: list) -> list:
         """Finalize onboarding: create user, seed catalog, show completion."""
@@ -372,44 +371,46 @@ class OnboardingHandler:
             "hybrid": "🔄 Hybrid",
         }
 
-        # ── Done card: tidy summary + hand off to the CATALOG ──
-        # Onboarding stays light. Real products (models/variants, prices, units,
-        # stock) are built in the Catalog — so we route there, not into a pile of
-        # per-industry price/recipe nudges. Consistent for all 4 industries.
+        # ── Done card: confirm the business, then a DISTINCT catalog step ──
+        # Onboarding only describes the business; it seeds NOTHING into the
+        # catalog. We echo what they told us for reassurance, then present a
+        # clear, separate choice: build the catalog now, or later. Real products
+        # (models/variants, prices, units, stock) are built ONLY in the Catalog.
+        setup_word = ("services and rates" if industry == "services"
+                      else "products, prices and stock")
+        noun = "offer" if industry == "services" else (
+            "make" if industry == "manufacturing" else "sell")
+
         lines = [
             f"✅ *You're all set, {business_name}!*",
             f"{industry_labels.get(industry, industry)}",
         ]
+        if description and description.lower() not in ("skip", "later", "not now"):
+            note = description.strip()
+            if len(note) > 90:
+                note = note[:90] + "…"
+            lines.append("")
+            lines.append(f"📝 Noted what you {noun}: _{note}_")
+        lines.append("")
+        lines.append("That's your profile done. 🎉")
 
-        if items:
-            noun = "services" if industry == "services" else "products"
-            shown = ", ".join(items[:6])
-            more = f" _+{len(items) - 6} more_" if len(items) > 6 else ""
-            lines.append("")
-            lines.append(f"📝 I've noted your {noun}: *{shown}*{more}")
-            lines.append("")
-            lines.append(
-                "Now let's set them up properly — add "
-                + ("rates" if industry == "services"
-                   else "models, prices and stock")
-                + " in your Catalog. 👇"
-            )
-            buttons = [
-                {"id": "menu_catalog", "title": "📋 Set Up Catalog"},
-                {"id": "menu_home", "title": "⏭️ Do It Later"},
-            ]
-        else:
-            lines.append("")
-            lines.append("Whenever you're ready, set up your products in the Catalog —")
-            lines.append("add prices and stock so every sale shows your profit. 👇")
-            buttons = [
-                {"id": "menu_catalog", "title": "📋 Set Up Catalog"},
-                {"id": "menu_home", "title": "⏭️ Do It Later"},
-            ]
+        # The catalog is a SEPARATE step now — nothing was added automatically.
+        catalog_lines = [
+            "📋 *Next: set up your Catalog*",
+            "",
+            f"Add your {setup_word} so every sale shows profit,",
+            "stock updates automatically, and reports stay accurate.",
+            "",
+            "_You can do this now, or anytime from the menu._",
+        ]
 
         return [
             text_response("\n".join(lines)),
-            button_response("What first?", buttons),
+            text_response("\n".join(catalog_lines)),
+            button_response("Set up your catalog?", [
+                {"id": "menu_catalog", "title": "📋 Set Up Catalog Now"},
+                {"id": "menu_home", "title": "⏭️ Skip for now"},
+            ]),
         ]
 
     def _extract_products_from_description(self, description: str, industry: str) -> list:
