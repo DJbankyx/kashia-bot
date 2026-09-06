@@ -182,6 +182,22 @@ class CatalogHandler:
             if key not in ("products", "materials", "services", "supplies"):
                 return self._show_product_card(phone_number, key)
 
+        # ── 2C: product-card actions (per-product) ──
+        if button_id.startswith("cat_adjstk_"):
+            return self._handle_product_picked(phone_number, button_id[11:], "adjust_stock", {})
+        if button_id.startswith("cat_setcost_"):
+            return self._handle_product_picked(phone_number, button_id[12:], "set_cost", {})
+        if button_id.startswith("cat_setunit_"):
+            return self._handle_product_picked(phone_number, button_id[12:], "set_unit", {})
+        if button_id.startswith("cat_setvar_"):
+            return self._handle_product_picked(phone_number, button_id[11:], "add_variants", {})
+        if button_id.startswith("cat_setprice_"):
+            return self._start_set_sale_price(phone_number, button_id[13:])
+        if button_id.startswith("cat_rename_"):
+            return self._start_rename(phone_number, button_id[11:])
+        if button_id.startswith("cat_delete_"):
+            return self._handle_product_picked(phone_number, button_id[11:], "remove_product", {})
+
         if button_id == "cat_stock":
             return self._show_stock_levels(phone_number)
 
@@ -371,6 +387,12 @@ class CatalogHandler:
         # Route by step
         if step == "shelf_search":
             return self._do_shelf_search(phone_number, text_s)
+
+        if step == "setting_sale_price":
+            return self._handle_set_sale_price(phone_number, text_s, context)
+
+        if step == "renaming_product":
+            return self._handle_rename(phone_number, text_s, context)
 
         if step == "adding_products":
             return self._handle_add_products(phone_number, text_s, context)
@@ -2925,11 +2947,103 @@ class CatalogHandler:
             lines.append(f"🔖 SKU: {p['sku']}")
         if p.get("supplier"):
             lines.append(f"🏪 Supplier: {p['supplier']}")
+
+        # ── 2C: actionable card. Grid of edit actions for THIS product. ──
+        k = product_key
+        is_service = p["item_type"] == "service"
+        buttons = []
+        if not is_service:
+            buttons.append({"id": f"cat_adjstk_{k}", "title": "📐 Adjust Stock"})
+        buttons.append({"id": f"cat_setprice_{k}", "title": "💰 Set Price"})
+        buttons.append({"id": f"cat_setcost_{k}", "title": "🏷️ Set Cost"})
+        if not is_service:
+            buttons.append({"id": f"cat_setunit_{k}", "title": "📏 Set Unit"})
+            buttons.append({"id": f"cat_setvar_{k}", "title": "🎚️ Variants"})
+        buttons.append({"id": f"cat_rename_{k}", "title": "✏️ Rename"})
+        buttons.append({"id": f"cat_delete_{k}", "title": "🗑️ Delete"})
+        buttons.append({"id": "menu_catalog", "title": "← Catalog"})
+
         return [
             text_response("\n".join(lines)),
-            button_response("Actions:", [
-                {"id": "menu_catalog", "title": "← Catalog"},
-            ])
+            button_response("Actions:", buttons)
+        ]
+
+    def _card_back_buttons(self, product_key: str) -> list:
+        """Common footer to return to a product's card / catalog after an edit."""
+        return [
+            {"id": f"cat_view_{product_key}", "title": "← Back to product"},
+            {"id": "menu_catalog", "title": "📋 Catalog"},
+        ]
+
+    def _start_set_sale_price(self, phone_number: str, product_key: str) -> list:
+        """Set the SALE price (what you charge) — a 2A field, product card action."""
+        p = self.get_normalized_product(phone_number, product_key)
+        if not p["name"]:
+            return [text_response("❓ Product not found.")]
+        cur = f"\nCurrent: *{format_amount(p['sale_price'])}*" if p["sale_price"] else ""
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+            "cat_step": "setting_sale_price",
+            "cat_product_key": product_key,
+        })
+        return [button_response(
+            f"💰 *{p['name']}* — Selling Price{cur}\n\n"
+            f"What do you *charge* per unit?\n_e.g. 5000, 150K, 12M_\n\n"
+            f"_This is your price to customers (not your cost)._",
+            [{"id": "cat_cancel", "title": "← Cancel"}]
+        )]
+
+    def _handle_set_sale_price(self, phone_number: str, text: str, context: dict) -> list:
+        """Save the typed sale price to the product."""
+        product_key = context.get("cat_product_key", "")
+        amount = parse_amount(text)
+        if not amount:
+            return [text_response("💰 Enter a valid price (e.g. 5000, 150K):")]
+        products = self._get_products(phone_number)
+        prod = products.get(product_key)
+        if not isinstance(prod, dict):
+            self.session.reset(phone_number)
+            return [text_response("❓ Product not found.")]
+        prod["sale_price"] = int(amount)
+        products[product_key] = prod
+        self._save_products(phone_number, products)
+        self.session.reset(phone_number)
+        name = prod.get("name", product_key)
+        return [
+            text_response(f"✅ *{name}* price set to {format_amount(int(amount))}."),
+            button_response("What's next?", self._card_back_buttons(product_key)),
+        ]
+
+    def _start_rename(self, phone_number: str, product_key: str) -> list:
+        p = self.get_normalized_product(phone_number, product_key)
+        if not p["name"]:
+            return [text_response("❓ Product not found.")]
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+            "cat_step": "renaming_product",
+            "cat_product_key": product_key,
+        })
+        return [button_response(
+            f"✏️ *{p['name']}* — new name?\n\nType the new product name:",
+            [{"id": "cat_cancel", "title": "← Cancel"}]
+        )]
+
+    def _handle_rename(self, phone_number: str, text: str, context: dict) -> list:
+        product_key = context.get("cat_product_key", "")
+        new_name = text.strip().title()
+        if len(new_name) < 2:
+            return [text_response("Please type a valid name (2+ characters):")]
+        products = self._get_products(phone_number)
+        prod = products.get(product_key)
+        if not isinstance(prod, dict):
+            self.session.reset(phone_number)
+            return [text_response("❓ Product not found.")]
+        # Rename in place (keep the same product_key so stock/history/links hold).
+        prod["name"] = new_name
+        products[product_key] = prod
+        self._save_products(phone_number, products)
+        self.session.reset(phone_number)
+        return [
+            text_response(f"✅ Renamed to *{new_name}*."),
+            button_response("What's next?", self._card_back_buttons(product_key)),
         ]
 
     # Item types that represent countable stock (ask "how many?" for these).
