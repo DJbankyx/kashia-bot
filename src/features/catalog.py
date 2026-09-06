@@ -192,6 +192,12 @@ class CatalogHandler:
                 delta = 0
             return self._quick_stock_delta(phone_number, k, delta)
 
+        # ── 2G: stock intelligence ──
+        if button_id.startswith("cat_reorder_"):
+            return self._start_set_reorder(phone_number, button_id[12:])
+        if button_id.startswith("cat_history_"):
+            return self._show_history(phone_number, button_id[12:])
+
         # ── 2D: category actions ──
         if button_id.startswith("cat_setcat_"):
             return self._start_set_category(phone_number, button_id[11:])
@@ -454,6 +460,9 @@ class CatalogHandler:
 
         if step == "setting_category":
             return self._handle_set_category(phone_number, text_s, context)
+
+        if step == "setting_reorder":
+            return self._handle_set_reorder(phone_number, text_s, context)
 
         if step == "adding_axis":
             return self._handle_add_axis(phone_number, text_s, context)
@@ -3069,6 +3078,9 @@ class CatalogHandler:
             buttons.append({"id": f"cat_setunit_{k}", "title": "📏 Set Unit"})
             buttons.append({"id": f"cat_setvar_{k}", "title": "🎚️ Variants"})
         buttons.append({"id": f"cat_setcat_{k}", "title": "🗂️ Category"})
+        if not is_service:
+            buttons.append({"id": f"cat_reorder_{k}", "title": "🔔 Reorder level"})
+            buttons.append({"id": f"cat_history_{k}", "title": "🧾 History"})
         buttons.append({"id": f"cat_rename_{k}", "title": "✏️ Rename"})
         buttons.append({"id": f"cat_delete_{k}", "title": "🗑️ Delete"})
         buttons.append({"id": "menu_catalog", "title": "← Catalog"})
@@ -3145,6 +3157,57 @@ class CatalogHandler:
         if len(cat) < 2:
             return [text_response("Please type a valid category (2+ characters).")]
         return self._apply_category(phone_number, product_key, cat)
+
+    # ═════════════════════════════════════════════════════════
+    # 2G — STOCK INTELLIGENCE (reorder level + movement history)
+    # ═════════════════════════════════════════════════════════
+
+    def _start_set_reorder(self, phone_number: str, product_key: str) -> list:
+        p = self.get_normalized_product(phone_number, product_key)
+        if not p["name"]:
+            return [text_response("❓ Product not found.")]
+        cur = f"\nCurrent: *{p['reorder_level']}*" if p["reorder_level"] else ""
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+            "cat_step": "setting_reorder", "cat_product_key": product_key})
+        return [button_response(
+            f"🔔 *{p['name']}* — Reorder level{cur}\n\n"
+            f"Alert me when stock falls to or below this number:\n_e.g. 5, 20, 100_\n\n"
+            f"_Type 0 to turn the alert off._",
+            [{"id": "cat_cancel", "title": "← Cancel"}])]
+
+    def _handle_set_reorder(self, phone_number: str, text: str, context: dict) -> list:
+        product_key = context.get("cat_product_key", "")
+        self.session.reset(phone_number)
+        digits = "".join(c for c in text if c.isdigit())
+        level = int(digits) if digits else 0
+        products = self._get_products(phone_number)
+        prod = products.get(product_key)
+        if not isinstance(prod, dict):
+            return [text_response("❓ Product not found.")]
+        prod["reorder_level"] = level
+        products[product_key] = prod
+        self._save_products(phone_number, products)
+        return self._show_product_card(phone_number, product_key)
+
+    def _show_history(self, phone_number: str, product_key: str) -> list:
+        """Show a product's recent stock movements (from the 2A append-only log)."""
+        p = self.get_normalized_product(phone_number, product_key)
+        if not p["name"]:
+            return [text_response("❓ Product not found.")]
+        moves = p.get("stock_movements") or []
+        lines = [f"🧾 *{p['name']}* — Stock History"]
+        if not moves:
+            lines.append("\n_No stock movements recorded yet._\n"
+                         "_Adjustments and sales will show here as you record them._")
+        else:
+            for m in reversed(moves[-15:]):  # newest first, last 15
+                d = (m.get("date", "") or "")[-5:]
+                delta = self._as_int(m.get("delta"), 0)
+                sign = "➕" if delta >= 0 else "➖"
+                reason = m.get("reason", "") or "adjust"
+                lines.append(f"{d}  {sign}{abs(delta)}  _{reason}_")
+        return [text_response("\n".join(lines)),
+                button_response("Back:", self._card_back_buttons(product_key))]
 
     # ═════════════════════════════════════════════════════════
     # 2E — VARIANTS / ATTRIBUTES (flexible user-named axes)
@@ -3321,10 +3384,21 @@ class CatalogHandler:
             return [text_response("❓ Product not found.")]
         if field == "stock":
             vs = prod.get("variant_stock") or {}
+            old_v = self._as_int(vs.get(combo), 0)
             vs[combo] = max(0, int(val))
             prod["variant_stock"] = vs
             # Keep the product total in sync with the sum of its combos.
             prod["stock"] = sum(self._as_int(x, 0) for x in vs.values())
+            # Log the movement for history (2G).
+            try:
+                moves = prod.get("stock_movements") or []
+                from datetime import datetime as _dt
+                moves.append({"delta": vs[combo] - old_v, "reason": f"set {combo}",
+                              "tx_id": "", "date": _dt.now().strftime("%Y-%m-%d"),
+                              "at": _dt.now().isoformat(timespec="seconds")})
+                prod["stock_movements"] = moves[-100:]
+            except Exception:
+                pass
         else:
             vc = prod.get("variant_costs") or {}
             vc[combo] = int(val)
