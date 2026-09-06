@@ -862,6 +862,42 @@ class Database:
             logger.error(f"Error updating contact note: {e}")
             return False
 
+    def delete_contact(self, phone_number, contact_name):
+        """Delete a contact by name."""
+        contact_id = contact_name.strip().lower().replace(' ', '_')
+        try:
+            self.contacts.delete_item(
+                Key={'phone_number': phone_number, 'contact_id': contact_id}
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting contact: {e}")
+            return False
+
+    def rename_contact(self, phone_number, old_name, new_name):
+        """Rename a contact. The contact_id (sort key) is derived from the name,
+        so a rename = copy the item under the new key + delete the old one."""
+        old_id = old_name.strip().lower().replace(' ', '_')
+        new_id = new_name.strip().lower().replace(' ', '_')
+        if old_id == new_id:
+            # Same key — just update the display name field.
+            return self.update_contact_profile(phone_number, old_name, {"name": new_name.strip()})
+        try:
+            existing = self.get_contact_by_name(phone_number, old_name)
+            if not existing:
+                return False
+            item = dict(existing)
+            item['contact_id'] = new_id
+            item['name'] = new_name.strip()
+            self.contacts.put_item(Item=item)
+            self.contacts.delete_item(
+                Key={'phone_number': phone_number, 'contact_id': old_id}
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error renaming contact: {e}")
+            return False
+
     def get_contact_transactions(self, phone_number, contact_name, limit=10):
         """Get recent transactions involving a specific contact"""
         try:

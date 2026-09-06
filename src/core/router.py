@@ -383,10 +383,14 @@ class Router:
     # Guided Recording
     # ─────────────────────────────────────────────────────────
 
-    def _start_guided_recording(self, phone_number: str, button_id: str) -> list:
+    def _start_guided_recording(self, phone_number: str, button_id: str,
+                                preset_vendor: str = "") -> list:
         """Start a button-driven guided recording flow.
         If user has a catalog with products, show product list first (catalog-aware).
         Otherwise fall back to free-text guided flow.
+
+        `preset_vendor` (Telegram tidy-box only) pre-fills the customer/supplier
+        so the "Who?" step is skipped — used by the CRM "record sale to X" shortcut.
         """
         # Map button IDs to transaction types
         type_map = {
@@ -413,7 +417,8 @@ class Router:
             catalog = user.get("product_catalog", {}) if user else {}
             products = catalog.get("products", {}) if isinstance(catalog, dict) else {}
             valid_products = {k: v for k, v in products.items() if isinstance(v, dict)}
-            return self.tg_fastentry.start(phone_number, tx_type, valid_products, is_service_job)
+            return self.tg_fastentry.start(phone_number, tx_type, valid_products,
+                                           is_service_job, preset_vendor=preset_vendor)
 
         # Production uses its own dedicated handler (manufacturing only)
         if tx_type == "production":

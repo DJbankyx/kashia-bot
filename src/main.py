@@ -99,6 +99,7 @@ class KashiaBot:
         self.router.debt = DebtHandler(self.router.session, self.db)
         self.router.catalog = CatalogHandler(self.router.session, self.db, self.categorizer)
         self.router.contacts = ContactsHandler(self.router.session, self.db)
+        self.router.contacts.router = self.router  # for record-sale-to-contact shortcut
         self.router.export = ExportHandler(
             self.router.session, self.db, self.export_service, self.pdf_generator
         )

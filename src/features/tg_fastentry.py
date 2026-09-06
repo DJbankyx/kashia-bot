@@ -123,7 +123,7 @@ class TGFastEntry:
     # ── entry ────────────────────────────────────────────────────────────
 
     def start(self, phone_number: str, tx_type: str, products: dict,
-              is_service_job: bool = False) -> list:
+              is_service_job: bool = False, preset_vendor: str = "") -> list:
         """Begin fast-entry. Sends the product screen and stashes state.
 
         Returns [] because this flow manages its own single message (the engine's
@@ -139,6 +139,11 @@ class TGFastEntry:
             "rows": [],
             "msg_id": None,
         }
+        # CRM "record sale/purchase to X" pre-fills the counterparty so the
+        # "Who?" step is skipped later.
+        if preset_vendor:
+            fx["vendor"] = preset_vendor
+            fx["vendor_preset"] = True
 
         # ── Expense: no catalog item, no quantity. Ask "what for?" (typed). ──
         if tx_type == "expense":
@@ -491,6 +496,10 @@ class TGFastEntry:
                 f"{self._header(fx)}\n{self._summary_line(fx)}\n\n"
                 f"💰 How much was paid now? (deposit)\n_e.g. 25000, 50k, half_")
             return []
+
+        # If the counterparty was pre-set (CRM "record to X"), skip the who-step.
+        if fx.get("vendor_preset") and fx.get("vendor"):
+            return self._show_confirm(phone_number, fx)
 
         if method == "credit":
             return self._ask_customer(phone_number, fx, required=True)

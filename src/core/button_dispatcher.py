@@ -94,6 +94,17 @@ class ButtonDispatcher:
                 r.session.reset(phone_number)
             return handler()
 
+        # ── Telegram: open the clean tap-first CRM home (sec_crm / menu_contacts) ──
+        # Must run BEFORE the industry handler so it doesn't return the old
+        # list-style CRM menu. WhatsApp keeps the industry menu.
+        if bid in ("sec_crm", "menu_contacts") and r.contacts is not None:
+            try:
+                from services.messaging_client import platform_for_user
+                if platform_for_user(phone_number) == "telegram":
+                    return r.contacts.crm_home(phone_number)
+            except Exception:
+                pass
+
         # ── Industry-specific buttons ──
         industry = r._get_industry_handler(phone_number)
         if industry:
