@@ -241,61 +241,31 @@ class CatalogHandler:
             return self._handle_product_picked(phone_number, button_id[12:], "set_unit", {})
         if button_id.startswith("cat_setvar_"):
             return self.variants_menu(phone_number, button_id[11:])
-        if button_id.startswith("cat_varaddaxis_"):
-            return self._start_add_axis(phone_number, button_id[15:])
-        if button_id.startswith("cat_varaddval_"):
-            k, sep, slug = button_id[14:].partition("__")
-            return self._start_add_axis_value(phone_number, k, slug)
-        # ── variant axis management (manage / rename / delete / remove value) ──
-        if button_id.startswith("cat_varmanage_"):
-            k, sep, slug = button_id[14:].partition("__")
-            return self._variant_axis_menu(phone_number, k, slug)
-        if button_id.startswith("cat_varrenax_"):
-            k, sep, slug = button_id[13:].partition("__")
-            return self._start_rename_axis(phone_number, k, slug)
-        if button_id.startswith("cat_vardelax_"):
-            k, sep, slug = button_id[13:].partition("__")
-            return self._delete_axis(phone_number, k, slug)
-        if button_id.startswith("cat_varrmval_"):
-            # cat_varrmval_<key>__<axisslug>__<valslug>
-            rest = button_id[13:]
-            k, _, tail = rest.partition("__")
-            axslug, _, valslug = tail.partition("__")
-            return self._remove_axis_value(phone_number, k, axslug, valslug)
-        if button_id.startswith("cat_vartotals_"):
-            return self._variant_totals(phone_number, button_id[14:])
-        if button_id.startswith("cat_varpick_"):
-            self.session.reset(phone_number)  # fresh drill
-            return self._variant_pick(phone_number, button_id[12:], chosen=[])
-        if button_id.startswith("cat_varval_"):
-            # cat_varval_<key>__<value_slug> — continue the drill
-            k, sep, vslug = button_id[11:].partition("__")
-            sess = self.session.get(phone_number)
-            chosen = list((sess.get("context", {}) or {}).get("cat_chosen", []))
-            # Resolve the slug back to the real value from the product's axes.
-            p = self.get_normalized_product(phone_number, k)
-            axes = list(p["attributes"].items())
-            depth = len(chosen)
-            real = vslug.replace("_", " ").title()
-            if depth < len(axes):
-                for v in axes[depth][1]:
-                    if v.lower().replace(" ", "_")[:16] == vslug:
-                        real = v
-                        break
-            chosen.append(real)
-            return self._variant_pick(phone_number, k, chosen=chosen)
-        if button_id.startswith("cat_vcstk_"):
-            self.session.save(phone_number, states.CATALOG_ADD_DATA, {
-                "cat_step": "variant_set_stock",
-                "cat_product_key": button_id[10:],
-                "cat_combo": (self.session.get(phone_number).get("context", {}) or {}).get("cat_combo", "")})
-            return [text_response("📐 Type the stock quantity for this variant:")]
-        if button_id.startswith("cat_vccost_"):
-            self.session.save(phone_number, states.CATALOG_ADD_DATA, {
-                "cat_step": "variant_set_cost",
-                "cat_product_key": button_id[11:],
-                "cat_combo": (self.session.get(phone_number).get("context", {}) or {}).get("cat_combo", "")})
-            return [text_response("🏷️ Type the cost for this variant (e.g. 5000, 150K):")]
+        # ── NESTED variant TREE (option 1). The current node PATH lives in the
+        #    session (cat_vt_key + cat_vt_path); callbacks carry only a short
+        #    index so callback_data stays tiny. ──
+        if button_id.startswith("cat_vtopen_"):
+            # Open the tree root for a product.
+            return self._vt_node_view(phone_number, button_id[11:], [])
+        if button_id.startswith("cat_vtinto_"):
+            # Descend into a child by its index at the current node.
+            return self._vt_descend(phone_number, button_id[11:])
+        if button_id.startswith("cat_vtup_"):
+            # Go up one level (index = how many to keep).
+            return self._vt_up(phone_number, button_id[9:])
+        if button_id.startswith("cat_vtadd_"):
+            # Add sub-variants under the current node (names its child axis).
+            return self._vt_start_add(phone_number, button_id[10:])
+        if button_id.startswith("cat_vtstk_"):
+            return self._vt_start_set(phone_number, button_id[10:], "stock")
+        if button_id.startswith("cat_vtcost_"):
+            return self._vt_start_set(phone_number, button_id[11:], "cost")
+        if button_id.startswith("cat_vtren_"):
+            return self._vt_start_rename(phone_number, button_id[10:])
+        if button_id.startswith("cat_vtdel_"):
+            return self._vt_delete_current(phone_number, button_id[10:])
+        if button_id.startswith("cat_vttotals_"):
+            return self._vt_totals(phone_number, button_id[13:])
         if button_id.startswith("cat_setprice_"):
             return self._start_set_sale_price(phone_number, button_id[13:])
         if button_id.startswith("cat_rename_"):
@@ -508,20 +478,21 @@ class CatalogHandler:
         if step == "setting_reorder":
             return self._handle_set_reorder(phone_number, text_s, context)
 
-        if step == "adding_axis":
-            return self._handle_add_axis(phone_number, text_s, context)
+        # ── NESTED variant TREE text steps (option 1) ──
+        if step == "vt_add_axis":
+            return self._vt_handle_add_axis(phone_number, text_s, context)
 
-        if step == "adding_axis_values":
-            return self._handle_add_axis_values(phone_number, text_s, context)
+        if step == "vt_add_values":
+            return self._vt_handle_add_values(phone_number, text_s, context)
 
-        if step == "renaming_axis":
-            return self._handle_rename_axis(phone_number, text_s, context)
+        if step == "vt_rename":
+            return self._vt_handle_rename(phone_number, text_s, context)
 
-        if step == "variant_set_stock":
-            return self._apply_variant_field(phone_number, text_s, context, "stock")
+        if step == "vt_set_stock":
+            return self._vt_handle_set(phone_number, text_s, context, "stock")
 
-        if step == "variant_set_cost":
-            return self._apply_variant_field(phone_number, text_s, context, "cost")
+        if step == "vt_set_cost":
+            return self._vt_handle_set(phone_number, text_s, context, "cost")
 
         if step == "adding_products":
             return self._handle_add_products(phone_number, text_s, context)
@@ -2762,6 +2733,13 @@ class CatalogHandler:
         "variants": [],           # legacy flat variant list (read as one axis)
         "variant_stock": {},      # per-variant stock, keyed by variant/combo
         "variant_costs": {},      # per-variant cost
+        # NESTED variant TREE (option 1). Root node for THIS product. Each node:
+        #   {"child_axis": "Model", "children": {"Sienna": <node>, ...},
+        #    "stock": 0, "cost": 0}
+        # A node with no children is a LEAF (its stock/cost count). A node WITH
+        # children rolls its total up from descendants. Independent per branch:
+        # Sienna can have child_axis "Year" while Hiace has "Colour".
+        "variant_tree": {},
         "recipe": [],             # manufacturing bill-of-materials (unchanged)
         "sku": "",
         "barcode": "",
@@ -2788,6 +2766,7 @@ class CatalogHandler:
         norm["variants"] = []
         norm["variant_stock"] = {}
         norm["variant_costs"] = {}
+        norm["variant_tree"] = {}
         norm["recipe"] = []
         norm["stock_movements"] = []
 
@@ -2809,7 +2788,8 @@ class CatalogHandler:
             norm["attributes"] = {"Variant": list(norm["variants"])}
 
         # Derived, read-only conveniences (not stored):
-        norm["_has_variants"] = bool(norm["attributes"])
+        norm["_has_tree"] = bool((norm.get("variant_tree") or {}).get("children"))
+        norm["_has_variants"] = bool(norm["attributes"]) or norm["_has_tree"]
         norm["_is_low_stock"] = (
             norm["reorder_level"] > 0 and norm["stock"] <= norm["reorder_level"]
         )
@@ -3520,48 +3500,386 @@ class CatalogHandler:
     _COMBO_SEP = " / "
 
     def _combo_key(self, values: list) -> str:
-        """Join chosen axis values into the single stock/cost key."""
+        """Join chosen axis values into the single stock/cost key (legacy)."""
         return self._COMBO_SEP.join(v for v in values if v)
 
-    def variants_menu(self, phone_number: str, product_key: str) -> list:
-        """Manage a product's variant axes + drill into a combination."""
-        p = self.get_normalized_product(phone_number, product_key)
-        if not p["name"]:
-            return [text_response("❓ Product not found.")]
-        axes = p["attributes"]  # {axis: [values]} (legacy variants bridged to 'Variant')
+    # ── tree helpers (option 1: nested independent variants) ──
 
-        lines = [f"🎚️ *{p['name']}* — Variants"]
+    def _vt_root(self, prod: dict) -> dict:
+        """Return the product's variant_tree root, migrating legacy flat data
+        (attributes + variant_stock combos) into a tree on first touch."""
+        tree = prod.get("variant_tree")
+        if isinstance(tree, dict) and tree:
+            return tree
+        tree = self._migrate_flat_to_tree(prod)
+        prod["variant_tree"] = tree
+        return tree
+
+    def _migrate_flat_to_tree(self, prod: dict) -> dict:
+        """Build a tree from legacy attributes{axis:[vals]} + variant_stock combos.
+        Axes become nested levels in order; each stored combo becomes a leaf path.
+        Products with no legacy variants start with an empty root."""
+        root = {"child_axis": "", "children": {}, "stock": 0, "cost": 0}
+        attrs = prod.get("attributes") or {}
+        if not attrs and prod.get("variants"):
+            attrs = {"Variant": list(prod["variants"])}
+        axes = [a for a in attrs.keys()]
         if not axes:
-            lines.append("\n_No variants yet. Add an axis like Colour, Size or Year._")
+            return root
+        vstock = prod.get("variant_stock") or {}
+        vcosts = prod.get("variant_costs") or {}
+        if vstock:
+            for combo, qty in vstock.items():
+                parts = [x.strip() for x in str(combo).split(self._COMBO_SEP) if x.strip()]
+                node = root
+                for depth, val in enumerate(parts):
+                    node["child_axis"] = axes[depth] if depth < len(axes) else (node.get("child_axis") or "Variant")
+                    node = node["children"].setdefault(
+                        val, {"child_axis": "", "children": {}, "stock": 0, "cost": 0})
+                node["stock"] = self._as_int(qty, 0)
+                if combo in vcosts:
+                    node["cost"] = self._as_int(vcosts[combo], 0)
         else:
-            for axis, vals in axes.items():
-                lines.append(f"• *{axis}*: {', '.join(vals) if vals else '_none_'}")
+            def build(node, depth):
+                if depth >= len(axes):
+                    return
+                node["child_axis"] = axes[depth]
+                for val in attrs[axes[depth]]:
+                    child = {"child_axis": "", "children": {}, "stock": 0, "cost": 0}
+                    node["children"][val] = child
+                    build(child, depth + 1)
+            build(root, 0)
+        return root
 
-        if axes:
-            lines.append("\n_Tap “Manage” on an axis to rename it, add/remove "
-                         "values, or delete it._")
+    def _vt_get_node(self, root: dict, path: list) -> dict:
+        """Walk `path` (list of child values) from root; return the node or None."""
+        node = root
+        for val in path:
+            node = (node.get("children") or {}).get(val)
+            if node is None:
+                return None
+        return node
 
-        rows = [{"id": f"cat_varaddaxis_{product_key}", "title": "➕ Add axis (e.g. Colour)"}]
-        # One "Manage <axis>" row per axis (rename / add value / remove value / delete).
-        for axis in list(axes.keys())[:5]:
-            slug = axis.lower().replace(" ", "_")[:20]
-            rows.append({"id": f"cat_varmanage_{product_key}__{slug}", "title": f"⚙️ Manage {axis}"})
-        if axes:
-            rows.append({"id": f"cat_varpick_{product_key}", "title": "📦 Set variant stock/cost"})
-            rows.append({"id": f"cat_vartotals_{product_key}", "title": "📊 Totals by variant"})
-        rows.append({"id": f"cat_view_{product_key}", "title": "← Back"})
+    def _vt_node_total(self, node: dict) -> int:
+        """Roll-up stock for a node: own stock if leaf, else sum of children."""
+        children = node.get("children") or {}
+        if not children:
+            return self._as_int(node.get("stock"), 0)
+        return sum(self._vt_node_total(c) for c in children.values())
 
-        # Telegram: render as a no-paginate list so every action shows.
-        if self._is_telegram(phone_number):
-            return [list_response(
-                header=f"🎚️ {p['name']} — Variants",
-                body="\n".join(lines),
-                button_text="Manage",
-                sections=[{"title": "", "rows": rows}],
-                no_paginate=True,
-            )]
-        return [text_response("\n".join(lines)),
-                button_response("Variants:", rows)]
+    def _vt_is_leaf(self, node: dict) -> bool:
+        return not (node.get("children") or {})
+
+    def _vt_ctx(self, phone_number: str) -> tuple:
+        ctx = (self.session.get(phone_number).get("context", {}) or {})
+        return ctx.get("cat_vt_key", ""), list(ctx.get("cat_vt_path", []))
+
+    def _vt_save_ctx(self, phone_number: str, key: str, path: list, step: str = "variant_tree"):
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+            "cat_step": step, "cat_vt_key": key, "cat_vt_path": list(path)})
+
+    # ── tree navigation UI ───────────────────────────────────
+
+    def variants_menu(self, phone_number: str, product_key: str) -> list:
+        """Entry point (from the product card): open the variant tree at root."""
+        return self._vt_node_view(phone_number, product_key, [])
+
+    def _vt_node_view(self, phone_number: str, product_key: str, path: list) -> list:
+        """Show the node at `path`: its children (browse/descend) OR, if it's a
+        leaf, its stock/cost with set actions. Every node can add sub-variants."""
+        products = self._get_products(phone_number)
+        prod = products.get(product_key)
+        if not isinstance(prod, dict):
+            return [text_response("❓ Product not found.")]
+        root = self._vt_root(prod)
+        products[product_key] = prod
+        self._save_products(phone_number, products)
+
+        node = self._vt_get_node(root, path)
+        if node is None:
+            path = []
+            node = root
+        self._vt_save_ctx(phone_number, product_key, path)
+
+        p = self.get_normalized_product(phone_number, product_key)
+        name = p["name"]
+        crumb = " › ".join([name] + path)
+        children = node.get("children") or {}
+        unit = p.get("primary_unit") or "unit"
+        total = self._vt_node_total(node) if children else self._as_int(node.get("stock"), 0)
+
+        lines = [f"🎚️ *{crumb}*"]
+        if children:
+            axis = node.get("child_axis") or "Variant"
+            lines.append(f"By *{axis}* — total here: *{total} {unit}*")
+        else:
+            lines.append(f"📐 Stock: *{self._as_int(node.get('stock'),0)} {unit}*")
+            if self._as_int(node.get("cost"), 0):
+                lines.append(f"🏷️ Cost: {format_amount(self._as_int(node.get('cost'),0))}")
+            lines.append("_This is a leaf. Add a sub-variant to split it further,_\n"
+                         "_or set its stock/cost._")
+
+        rows = []
+        child_vals = list(children.keys())
+        for i, val in enumerate(child_vals[:20]):
+            sub = children[val]
+            sub_total = self._vt_node_total(sub)
+            tag = "📁" if (sub.get("children") or {}) else "📦"
+            rows.append({"id": f"cat_vtinto_{product_key}__{i}"[:60],
+                         "title": f"{tag} {val} · {sub_total}"[:60]})
+        rows.append({"id": f"cat_vtadd_{product_key}", "title": "➕ Add sub-variant here"})
+        if self._vt_is_leaf(node) and path:
+            rows.append({"id": f"cat_vtstk_{product_key}", "title": "📐 Set stock"})
+            rows.append({"id": f"cat_vtcost_{product_key}", "title": "🏷️ Set cost"})
+        if children:
+            rows.append({"id": f"cat_vttotals_{product_key}", "title": "📊 Totals"})
+        if path:
+            rows.append({"id": f"cat_vtren_{product_key}", "title": "✏️ Rename this"})
+            rows.append({"id": f"cat_vtdel_{product_key}", "title": "🗑️ Delete this"})
+            rows.append({"id": f"cat_vtup_{len(path)-1}", "title": "⬆️ Up one level"})
+        rows.append({"id": f"cat_view_{product_key}", "title": "← Back to product"})
+
+        return [list_response(
+            header=f"🎚️ {crumb}",
+            body="\n".join(lines),
+            button_text="Open",
+            sections=[{"title": "", "rows": rows}],
+            no_paginate=True,
+        )]
+
+    def _vt_descend(self, phone_number: str, raw: str) -> list:
+        """cat_vtinto_<key>__<index> — descend into the child at that index."""
+        key, _, idx = raw.partition("__")
+        products = self._get_products(phone_number)
+        prod = products.get(key)
+        if not isinstance(prod, dict):
+            return [text_response("❓ Product not found.")]
+        _, path = self._vt_ctx(phone_number)
+        node = self._vt_get_node(self._vt_root(prod), path) or {}
+        child_vals = list((node.get("children") or {}).keys())
+        try:
+            val = child_vals[int(idx)]
+        except (ValueError, IndexError):
+            return self._vt_node_view(phone_number, key, path)
+        return self._vt_node_view(phone_number, key, path + [val])
+
+    def _vt_up(self, phone_number: str, keep: str) -> list:
+        key, path = self._vt_ctx(phone_number)
+        try:
+            n = max(0, int(keep))
+        except ValueError:
+            n = max(0, len(path) - 1)
+        return self._vt_node_view(phone_number, key, path[:n])
+
+    def _vt_start_add(self, phone_number: str, product_key: str) -> list:
+        key, path = self._vt_ctx(phone_number)
+        products = self._get_products(phone_number)
+        prod = products.get(product_key) or {}
+        node = self._vt_get_node(self._vt_root(prod), path) or {}
+        existing_axis = node.get("child_axis") or ""
+        if existing_axis:
+            self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+                "cat_step": "vt_add_values", "cat_vt_key": product_key,
+                "cat_vt_path": list(path), "cat_vt_axis": existing_axis})
+            return [button_response(
+                f"➕ Add *{existing_axis}* value(s) here.\n"
+                f"_Separate multiple with commas, e.g. Sienna, Hiace._",
+                [{"id": "cat_cancel", "title": "← Cancel"}])]
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+            "cat_step": "vt_add_axis", "cat_vt_key": product_key, "cat_vt_path": list(path)})
+        return [button_response(
+            "🎚️ What do these sub-variants vary by?\n"
+            "_Type ONE axis name, e.g. Model, Year, Colour._",
+            [{"id": "cat_cancel", "title": "← Cancel"}])]
+
+    def _vt_handle_add_axis(self, phone_number: str, text: str, context: dict) -> list:
+        key = context.get("cat_vt_key", "")
+        path = list(context.get("cat_vt_path", []))
+        axis = text.strip().title()
+        if len(axis) < 2:
+            return [text_response("Please type a valid axis name (2+ characters).")]
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+            "cat_step": "vt_add_values", "cat_vt_key": key,
+            "cat_vt_path": path, "cat_vt_axis": axis})
+        return [button_response(
+            f"🎚️ *{axis}* — type the value(s) to add here.\n"
+            f"_Separate multiple with commas, e.g. Sienna, Hiace, Coaster._",
+            [{"id": "cat_cancel", "title": "← Cancel"}])]
+
+    def _vt_handle_add_values(self, phone_number: str, text: str, context: dict) -> list:
+        key = context.get("cat_vt_key", "")
+        path = list(context.get("cat_vt_path", []))
+        axis = context.get("cat_vt_axis", "") or "Variant"
+        vals = [v.strip().title() for v in text.split(",") if v.strip()]
+        if not vals:
+            return [text_response("Please type at least one value (commas for multiple).")]
+        products = self._get_products(phone_number)
+        prod = products.get(key)
+        if not isinstance(prod, dict):
+            self.session.reset(phone_number)
+            return [text_response("❓ Product not found.")]
+        root = self._vt_root(prod)
+        node = self._vt_get_node(root, path)
+        if node is None:
+            self.session.reset(phone_number)
+            return [text_response("❓ That variant level no longer exists.")]
+        node["child_axis"] = axis
+        node.setdefault("children", {})
+        for v in vals:
+            if v not in node["children"]:
+                node["children"][v] = {"child_axis": "", "children": {}, "stock": 0, "cost": 0}
+        node["stock"] = 0  # a node with children no longer counts its own stock
+        prod["variant_tree"] = root
+        prod["stock"] = self._vt_node_total(root)
+        products[key] = prod
+        self._save_products(phone_number, products)
+        return self._vt_node_view(phone_number, key, path)
+
+    def _vt_start_set(self, phone_number: str, product_key: str, field: str) -> list:
+        key, path = self._vt_ctx(phone_number)
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+            "cat_step": f"vt_set_{field}", "cat_vt_key": product_key,
+            "cat_vt_path": list(path)})
+        label = "stock quantity" if field == "stock" else "cost (e.g. 5000, 150K)"
+        crumb = " › ".join(path) if path else "this variant"
+        return [text_response(f"{'📐' if field=='stock' else '🏷️'} *{crumb}* — type the {label}:")]
+
+    def _vt_handle_set(self, phone_number: str, text: str, context: dict, field: str) -> list:
+        key = context.get("cat_vt_key", "")
+        path = list(context.get("cat_vt_path", []))
+        if field == "cost":
+            val = parse_amount(text)
+        else:
+            digits = "".join(c for c in text if c.isdigit())
+            val = int(digits) if digits else None
+        if val is None:
+            return [text_response("Please type a valid number.")]
+        products = self._get_products(phone_number)
+        prod = products.get(key)
+        if not isinstance(prod, dict):
+            self.session.reset(phone_number)
+            return [text_response("❓ Product not found.")]
+        root = self._vt_root(prod)
+        node = self._vt_get_node(root, path)
+        if node is None:
+            self.session.reset(phone_number)
+            return [text_response("❓ That variant no longer exists.")]
+        if field == "stock":
+            old = self._as_int(node.get("stock"), 0)
+            node["stock"] = max(0, int(val))
+            try:
+                moves = prod.get("stock_movements") or []
+                from datetime import datetime as _dt
+                moves.append({"delta": node["stock"] - old, "reason": f"set {' / '.join(path)}",
+                              "tx_id": "", "date": _dt.now().strftime("%Y-%m-%d"),
+                              "at": _dt.now().isoformat(timespec="seconds")})
+                prod["stock_movements"] = moves[-100:]
+            except Exception:
+                pass
+        else:
+            node["cost"] = int(val)
+        prod["variant_tree"] = root
+        prod["stock"] = self._vt_node_total(root)
+        products[key] = prod
+        self._save_products(phone_number, products)
+        return self._vt_node_view(phone_number, key, path)
+
+    def _vt_start_rename(self, phone_number: str, product_key: str) -> list:
+        key, path = self._vt_ctx(phone_number)
+        if not path:
+            return self._vt_node_view(phone_number, product_key, path)
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+            "cat_step": "vt_rename", "cat_vt_key": product_key, "cat_vt_path": list(path)})
+        return [button_response(
+            f"✏️ Rename *{path[-1]}* — type the new name (ONE word/phrase):",
+            [{"id": "cat_cancel", "title": "← Cancel"}])]
+
+    def _vt_handle_rename(self, phone_number: str, text: str, context: dict) -> list:
+        key = context.get("cat_vt_key", "")
+        path = list(context.get("cat_vt_path", []))
+        new_name = text.strip().title()
+        if len(new_name) < 1 or not path:
+            self.session.reset(phone_number)
+            return [text_response("Please type a valid name.")]
+        products = self._get_products(phone_number)
+        prod = products.get(key)
+        if not isinstance(prod, dict):
+            self.session.reset(phone_number)
+            return [text_response("❓ Product not found.")]
+        root = self._vt_root(prod)
+        parent = self._vt_get_node(root, path[:-1])
+        old = path[-1]
+        if parent and old in (parent.get("children") or {}) and new_name != old:
+            children = parent["children"]
+            parent["children"] = {(new_name if k == old else k): v for k, v in children.items()}
+            prod["variant_tree"] = root
+            products[key] = prod
+            self._save_products(phone_number, products)
+            path = path[:-1] + [new_name]
+        return self._vt_node_view(phone_number, key, path)
+
+    def _vt_delete_current(self, phone_number: str, product_key: str) -> list:
+        key, path = self._vt_ctx(phone_number)
+        if not path:
+            return self._vt_node_view(phone_number, product_key, path)
+        products = self._get_products(phone_number)
+        prod = products.get(product_key)
+        if not isinstance(prod, dict):
+            return [text_response("❓ Product not found.")]
+        root = self._vt_root(prod)
+        parent = self._vt_get_node(root, path[:-1])
+        if parent and path[-1] in (parent.get("children") or {}):
+            parent["children"].pop(path[-1], None)
+            if not parent["children"]:
+                parent["child_axis"] = ""
+            prod["variant_tree"] = root
+            prod["stock"] = self._vt_node_total(root)
+            products[product_key] = prod
+            self._save_products(phone_number, products)
+        return self._vt_node_view(phone_number, product_key, path[:-1])
+
+    def _vt_totals(self, phone_number: str, product_key: str) -> list:
+        """Total at the current node + a breakdown of each descendant value,
+        rolled up from the leaves (e.g. total Sienna, total white Sienna)."""
+        products = self._get_products(phone_number)
+        prod = products.get(product_key)
+        if not isinstance(prod, dict):
+            return [text_response("❓ Product not found.")]
+        root = self._vt_root(prod)
+        _, path = self._vt_ctx(phone_number)
+        node = self._vt_get_node(root, path) or root
+        p = self.get_normalized_product(phone_number, product_key)
+        unit = p.get("primary_unit") or "unit"
+        crumb = " › ".join([p["name"]] + path)
+
+        lines = [f"📊 *{crumb}* — Totals",
+                 f"📦 Total here: *{self._vt_node_total(node)} {unit}*", ""]
+
+        def walk(n, depth):
+            axis = n.get("child_axis") or ""
+            children = n.get("children") or {}
+            if not children:
+                return
+            if axis:
+                lines.append(("  " * depth) + f"*{axis}:*")
+            for val, child in children.items():
+                lines.append(("  " * depth) + f"  • {val}: *{self._vt_node_total(child)}*")
+                walk(child, depth + 1)
+
+        walk(node, 0)
+        if len(lines) <= 3:
+            lines.append("_No sub-variants here yet._")
+
+        return [text_response("\n".join(lines).rstrip()),
+                button_response("Back:", [
+                    {"id": f"cat_vtopen_{product_key}", "title": "← Variants"},
+                    {"id": f"cat_view_{product_key}", "title": "📦 Product"},
+                ])]
+
+    def _vt_dead_marker(self, *a, **k):
+        """(unused) marks the end of the tree block; legacy flat helpers below
+        are no longer wired and remain only for reference."""
+        return None
 
     def _axis_by_slug(self, p: dict, axis_slug: str) -> str:
         """Resolve an axis slug back to its real axis name."""
