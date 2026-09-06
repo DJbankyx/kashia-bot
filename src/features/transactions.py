@@ -1233,13 +1233,19 @@ class TransactionHandler:
         catalog_key = tx_data.get("catalog_product", "")
         amount      = tx_data.get("amount", 0)
         quantity    = tx_data.get("quantity", "1")
-        selected_variant = tx_data.get("selected_variant", "")
+        # The tidy-box carries the chosen variant-tree leaf path in tx_data["variant"];
+        # the legacy flat variant flow uses "selected_variant". Accept either.
+        selected_variant = tx_data.get("selected_variant", "") or tx_data.get("variant", "")
 
-        # Try variant-specific cost first, then fall back to general lookup
+        # Cost lookup order:
+        #  1) exact variant-tree LEAF cost (nested variants),
+        #  2) legacy flat variant_costs,
+        #  3) product-level landing_cost.
         saved_cost = 0
         if selected_variant:
+            saved_cost = self._get_tree_leaf_cost(phone_number, catalog_key, selected_variant)
+        if not saved_cost and selected_variant:
             saved_cost = self._get_variant_landing_cost(phone_number, description, brand, selected_variant)
-
         if not saved_cost:
             saved_cost = self._get_catalog_landing_cost(phone_number, catalog_key, description, brand)
 
@@ -1268,17 +1274,20 @@ class TransactionHandler:
         })
 
         if saved_cost:
-            # Catalog has a saved cost — offer as suggestion (show total)
+            # Catalog has a cost on file — ask whether to USE it or enter a
+            # different cost for this sale. (Never silently re-ask when we
+            # already know the cost.)
             total_saved = int(saved_cost) * qty
+            breakdown = (f" ({qty} × {format_amount(saved_cost)} = {format_amount(total_saved)})"
+                         if qty > 1 else "")
             return [button_response(
                 f"✅ *Sale saved!* {format_amount(amount)}\n\n"
-                f"🏷️ *What did you pay for this?*\n"
-                f"_{display_name}_\n\n"
-                f"Last cost: *{format_amount(saved_cost)}/unit*"
-                + (f" (×{qty} = {format_amount(total_saved)})" if qty > 1 else "") +
-                f"\n\n_Use this or type the total cost:_",
+                f"🏷️ *Cost on file for {display_name}:*\n"
+                f"*{format_amount(saved_cost)}/unit*{breakdown}\n\n"
+                f"_Use this cost, or enter a different one for this sale?_",
                 [
                     {"id": "lc_use_saved", "title": f"✅ Use {format_amount(total_saved)}"},
+                    {"id": "lc_different", "title": "✏️ Different cost"},
                     {"id": "lc_skip",      "title": "⏭️ Skip"},
                 ]
             )]
@@ -1347,6 +1356,15 @@ class TransactionHandler:
                     ]
                 )
             ]
+
+        # ── "Different cost" tapped → prompt for a new total (stay in this state) ──
+        if text_low == "lc_different":
+            qty_hint = f"\n_({qty} units sold — enter the TOTAL you paid)_" if qty > 1 else ""
+            return [button_response(
+                f"✏️ *New cost for {desc}*{qty_hint}\n\n"
+                f"Type the total cost you paid for this sale:",
+                [{"id": "lc_skip", "title": "⏭️ Skip"}]
+            )]
 
         # ── Use saved cost from catalog ──
         if text_low == "lc_use_saved" and saved_cost:
@@ -1633,6 +1651,24 @@ class TransactionHandler:
             product = products[matched_key]
             variant_costs = product.get("variant_costs", {})
             return int(variant_costs.get(variant, 0))
+        except Exception:
+            return 0
+
+    def _get_tree_leaf_cost(self, phone_number: str, catalog_key: str, leaf_path: str) -> int:
+        """Look up the per-unit cost stored on a nested variant-tree LEAF.
+        leaf_path is 'Sienna / 1992 / White'. Returns 0 if not found."""
+        try:
+            from features.catalog import CatalogHandler
+            cat = CatalogHandler(self.session, self.db)
+            prod = cat._get_products(phone_number).get(catalog_key)
+            if not isinstance(prod, dict):
+                return 0
+            tree = prod.get("variant_tree") or {}
+            if not tree.get("children"):
+                return 0
+            parts = [p.strip() for p in str(leaf_path).split(" / ") if p.strip()]
+            node = cat._vt_get_node(tree, parts)
+            return int((node or {}).get("cost", 0) or 0)
         except Exception:
             return 0
 
