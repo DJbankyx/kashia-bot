@@ -2552,6 +2552,141 @@ class CatalogHandler:
             return catalog.get("products", {})
         return {}
 
+    # ═════════════════════════════════════════════════════════
+    # 2A — RICH PRODUCT MODEL (additive, backward-compatible)
+    #
+    # Old products are a FLAT dict: {name, stock, landing_cost, item_type,
+    # category, variants[list], variant_stock{}, variant_costs{}, recipe,
+    # conversions, primary_unit}. The redesign layers on OPTIONAL fields:
+    #   attributes{}      — user-named variant axes, e.g. {"Colour":[...], "Year":[...]}
+    #   sku, barcode      — optional codes for type-to-find at sale time
+    #   reorder_level     — low-stock threshold (0 = not set)
+    #   supplier          — default supplier name
+    #   stock_movements[] — append-only history (+/- qty, reason, date, tx_id)
+    #
+    # NOTHING is bulk-rewritten. `normalize_product` reads ANY product (old flat
+    # or new rich) into ONE consistent shape with safe defaults, so all higher
+    # layers (browse, card, units) can rely on the same fields. Absence of a new
+    # field just means its default (e.g. no attributes → simple product).
+    # ═════════════════════════════════════════════════════════
+
+    # The canonical rich shape + its safe defaults. Reading a product NEVER
+    # crashes on a missing field because we always start from these defaults.
+    _PRODUCT_DEFAULTS = {
+        "name": "",
+        "item_type": "",          # "" is treated as a sellable product
+        "category": "",
+        "stock": 0,
+        "landing_cost": 0,        # what you PAY per unit (cost)
+        "sale_price": 0,          # what you CHARGE per unit (0 = not set)
+        "primary_unit": "",       # master/base unit (e.g. "piece", "kg")
+        "conversions": {},        # e.g. {"1 bag": "20 pieces"}
+        "attributes": {},         # user-named axes: {"Colour": ["Black","White"], ...}
+        "variants": [],           # legacy flat variant list (read as one axis)
+        "variant_stock": {},      # per-variant stock, keyed by variant/combo
+        "variant_costs": {},      # per-variant cost
+        "recipe": [],             # manufacturing bill-of-materials (unchanged)
+        "sku": "",
+        "barcode": "",
+        "reorder_level": 0,       # 0 = no reorder threshold set
+        "supplier": "",
+        "stock_movements": [],    # append-only log
+    }
+
+    def normalize_product(self, product: dict, key: str = "") -> dict:
+        """Return a product in the canonical rich shape (safe defaults filled).
+
+        Works for BOTH old flat products and new rich ones. Purely a READ helper
+        — it does not persist anything. Legacy `variants` (a flat list) is
+        surfaced as a single implicit attribute axis named 'Variant' when no
+        explicit `attributes` exist, so old products render in the new UI without
+        migration.
+        """
+        if not isinstance(product, dict):
+            product = {}
+        norm = dict(self._PRODUCT_DEFAULTS)
+        # Deep-copy the mutable defaults so callers can't mutate the class dict.
+        norm["conversions"] = {}
+        norm["attributes"] = {}
+        norm["variants"] = []
+        norm["variant_stock"] = {}
+        norm["variant_costs"] = {}
+        norm["recipe"] = []
+        norm["stock_movements"] = []
+
+        for k, default in self._PRODUCT_DEFAULTS.items():
+            if k in product and product[k] is not None:
+                norm[k] = product[k]
+
+        # Coerce numerics safely (stored values are sometimes strings/Decimals).
+        for num_key in ("stock", "landing_cost", "sale_price", "reorder_level"):
+            norm[num_key] = self._as_int(norm.get(num_key), 0)
+
+        # If no display name, fall back to the key (slug → Title Case).
+        if not norm["name"]:
+            norm["name"] = (key or "").replace("_", " ").title()
+
+        # Legacy bridge: a flat `variants` list with no explicit `attributes`
+        # becomes one implicit axis so the drill-down UI has something to show.
+        if norm["variants"] and not norm["attributes"]:
+            norm["attributes"] = {"Variant": list(norm["variants"])}
+
+        # Derived, read-only conveniences (not stored):
+        norm["_has_variants"] = bool(norm["attributes"])
+        norm["_is_low_stock"] = (
+            norm["reorder_level"] > 0 and norm["stock"] <= norm["reorder_level"]
+        )
+        norm["_stock_value"] = norm["stock"] * norm["landing_cost"]
+        norm["_key"] = key
+        return norm
+
+    def _as_int(self, value, default: int = 0) -> int:
+        """Coerce a possibly-string/Decimal/float value to int, safely."""
+        try:
+            if value is None or value == "":
+                return default
+            return int(float(value))
+        except (ValueError, TypeError):
+            return default
+
+    def get_normalized_product(self, phone_number: str, key: str) -> dict:
+        """Fetch one product by key and return it in the canonical rich shape."""
+        products = self._get_products(phone_number)
+        return self.normalize_product(products.get(key, {}), key=key)
+
+    def record_stock_movement(self, phone_number: str, key: str, delta: int,
+                              reason: str = "", tx_id: str = "") -> bool:
+        """Append an entry to a product's stock_movements log (additive history).
+
+        Data layer only — no UX yet (2G surfaces it). Best-effort: never blocks a
+        sale. Does NOT change `stock` itself (the existing update_stock owns that);
+        this is purely the audit trail. Absence of the log = "no history yet".
+        """
+        from datetime import datetime
+        try:
+            products = self._get_products(phone_number)
+            prod = products.get(key)
+            if not isinstance(prod, dict):
+                return False
+            movements = prod.get("stock_movements")
+            if not isinstance(movements, list):
+                movements = []
+            movements.append({
+                "delta": self._as_int(delta, 0),
+                "reason": (reason or "")[:60],
+                "tx_id": tx_id or "",
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "at": datetime.now().isoformat(timespec="seconds"),
+            })
+            # Cap the log so the item doesn't grow unbounded (keep last 100).
+            prod["stock_movements"] = movements[-100:]
+            products[key] = prod
+            self._save_products(phone_number, products)
+            return True
+        except Exception as e:
+            logger.warning(f"record_stock_movement failed for {key}: {e}")
+            return False
+
     # Item types that represent countable stock (ask "how many?" for these).
     # A "service" is delivered, not counted, so it never gets a quantity step.
     _COUNTED_STOCK_TYPES = ("finished_product", "product", "raw_material",
