@@ -3196,9 +3196,18 @@ class CatalogHandler:
         if p.get("category"):
             lines.append(f"🗂️ {p['category']}")
         unit = p.get("primary_unit") or "unit"
-        lines.append(f"📐 Stock: *{p['stock']} {unit}*"
-                     + (" 🔴 low" if p["_is_low_stock"] else ""))
-        if p["landing_cost"]:
+        has_tree = p.get("_has_tree")
+        if has_tree:
+            # Tree products count stock across their leaves; the product-level
+            # number is the roll-up. Make that explicit and don't invite direct
+            # editing here (that would corrupt the per-leaf arrangement).
+            lines.append(f"📐 Stock: *{p['stock']} {unit}* (across variants)"
+                         + (" 🔴 low" if p["_is_low_stock"] else ""))
+            lines.append("🎚️ _This product is tracked by variants._")
+        else:
+            lines.append(f"📐 Stock: *{p['stock']} {unit}*"
+                         + (" 🔴 low" if p["_is_low_stock"] else ""))
+        if p["landing_cost"] and not has_tree:
             lines.append(f"🏷️ Cost: {format_amount(p['landing_cost'])}/{unit}")
         if p["sale_price"]:
             lines.append(f"💰 Price: {format_amount(p['sale_price'])}/{unit}")
@@ -3219,19 +3228,26 @@ class CatalogHandler:
         k = product_key
         is_service = p["item_type"] == "service"
         buttons = []
-        # 2D: inline quick stock adjust — apply immediately, re-render the card.
-        if not is_service:
+        # Direct stock controls (steppers / Set-exact / Set-cost) ONLY when the
+        # product is NOT split into a variant tree. For a tree product the stock
+        # + cost live on the leaves, so we route to Variants instead — editing
+        # the product total directly would break the roll-up.
+        if not is_service and not has_tree:
             buttons.append({"id": f"cat_stkdelta_{k}_-5", "title": "➖5"})
             buttons.append({"id": f"cat_stkdelta_{k}_-1", "title": "➖1"})
             buttons.append({"id": f"cat_stkdelta_{k}_1", "title": "➕1"})
             buttons.append({"id": f"cat_stkdelta_{k}_5", "title": "➕5"})
             buttons.append({"id": f"cat_stkdelta_{k}_10", "title": "➕10"})
             buttons.append({"id": f"cat_adjstk_{k}", "title": "📐 Set exact stock"})
+        if not is_service:
+            # Variants button leads and is emphasised when the product uses a tree.
+            var_title = "🎚️ Manage Variants (stock/cost here)" if has_tree else "🎚️ Variants (size/colour)"
+            buttons.append({"id": f"cat_setvar_{k}", "title": var_title})
         buttons.append({"id": f"cat_setprice_{k}", "title": "💰 Set Price"})
-        buttons.append({"id": f"cat_setcost_{k}", "title": "🏷️ Set Cost"})
+        if not has_tree:
+            buttons.append({"id": f"cat_setcost_{k}", "title": "🏷️ Set Cost"})
         if not is_service:
             buttons.append({"id": f"cat_setunit_{k}", "title": "📏 Set Unit"})
-            buttons.append({"id": f"cat_setvar_{k}", "title": "🎚️ Variants (size/colour)"})
         buttons.append({"id": f"cat_setcat_{k}", "title": "🗂️ Category"})
         if not is_service:
             buttons.append({"id": f"cat_reorder_{k}", "title": "🔔 Reorder level"})
