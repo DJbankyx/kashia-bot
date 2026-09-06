@@ -84,6 +84,9 @@ class ContactsHandler:
         if button_id == "crm_reminders":
             return self._show_reminders(phone_number)
 
+        if button_id == "crm_creditors":
+            return self._show_creditors(phone_number)
+
         if button_id == "crm_insights":
             return self._show_insights(phone_number)
 
@@ -247,7 +250,8 @@ class ContactsHandler:
                 {"id": "crm_suppliers", "title": "🏪 Suppliers"},
                 {"id": "crm_search", "title": "🔍 Search"},
                 {"id": "crm_add", "title": "➕ Add Contact"},
-                {"id": "crm_reminders", "title": "⏰ Who Owes Me"},
+                {"id": "crm_reminders", "title": "🔴 Who Owes Me"},
+                {"id": "crm_creditors", "title": "📝 Who I Owe"},
                 {"id": "crm_insights", "title": "📊 Insights"},
             ]}]
         )]
@@ -905,8 +909,75 @@ class ContactsHandler:
 
         lines.append("")
         lines.append("━━━━━━━━━━━━━━━━━━━━")
-        lines.append("_To send a reminder, tap a contact from All Contacts._")
+        lines.append("_Tap a name below to open them and send a reminder._")
+
+        # Telegram: make each debtor tappable (opens their card → Remind).
+        if self._is_telegram(phone_number):
+            rows = []
+            for d in debtors[:10]:
+                name = d.get("name", "Unknown")
+                cid = d.get("contact_id") or name.lower().replace(" ", "_")
+                rows.append({"id": f"crm_view_{cid}"[:60],
+                             "title": f"🔴 {name} · {format_amount(d.get('amount', 0))}"[:60]})
+            rows.append({"id": "crm_all", "title": "← Contacts"})
+            return [list_response(
+                header="🔴 Who Owes Me",
+                body="\n".join(lines),
+                button_text="Open",
+                sections=[{"title": "", "rows": rows}],
+            )]
+
         lines.append("_Or type: remind [name]_")
+        return [text_response("\n".join(lines))]
+
+    def _show_creditors(self, phone_number: str) -> list:
+        """Show everyone the USER owes money to (payables / 'Who I Owe')."""
+        creditors = self.db.get_all_creditors(phone_number) or []
+
+        if not creditors:
+            return [text_response(
+                "📝 *Who I Owe*\n\n"
+                "✅ You're all settled — you don't owe anyone right now.\n\n"
+                "_When you buy on credit or part-pay a supplier, they'll appear here._"
+            )]
+
+        total = sum(c["amount"] for c in creditors)
+
+        lines = [
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"📝  *Who I Owe*",
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"",
+            f"*Total you owe: {format_amount(total)}*",
+            f"",
+        ]
+        for i, c in enumerate(creditors[:10], 1):
+            name   = c.get("name", "Unknown")
+            amount = c.get("amount", 0)
+            date   = c.get("last_date", "")
+            lines.append(f"{i}. *{name}* — {format_amount(amount)}")
+            if date:
+                lines.append(f"   Since: {date}")
+        if len(creditors) > 10:
+            lines.append(f"\n_...and {len(creditors) - 10} more_")
+        lines.append("")
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+
+        if self._is_telegram(phone_number):
+            lines.append("_Tap a supplier to open them (record a payment / statement)._")
+            rows = []
+            for c in creditors[:10]:
+                name = c.get("name", "Unknown")
+                cid = c.get("contact_id") or name.lower().replace(" ", "_")
+                rows.append({"id": f"crm_view_{cid}"[:60],
+                             "title": f"📝 {name} · {format_amount(c.get('amount', 0))}"[:60]})
+            rows.append({"id": "crm_all", "title": "← Contacts"})
+            return [list_response(
+                header="📝 Who I Owe",
+                body="\n".join(lines),
+                button_text="Open",
+                sections=[{"title": "", "rows": rows}],
+            )]
 
         return [text_response("\n".join(lines))]
 

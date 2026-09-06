@@ -28,11 +28,16 @@ def _cb(action: str, value: str = "") -> str:
 DEFAULT_AMOUNT_PRESETS = [500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
 
 
-def amount_keyboard(presets=None, include_custom=True, include_back=True) -> list:
+def amount_keyboard(presets=None, include_custom=True, include_back=True,
+                    include_total=False) -> list:
     """Grid of amount presets + Custom + Back.
 
     Presets are laid out 3 per row (short chips). "Custom" lets the user type an
     exact amount; "Back" returns to the previous step.
+
+    `include_total=True` (shown on the price-EACH step when qty > 1) adds an
+    "Enter total instead" escape: when the units sold at different/mixed prices,
+    the user types the full total for all units rather than one price each.
     """
     presets = presets or DEFAULT_AMOUNT_PRESETS
     rows, row = [], []
@@ -44,6 +49,9 @@ def amount_keyboard(presets=None, include_custom=True, include_back=True) -> lis
             row = []
     if row:
         rows.append(row)
+
+    if include_total:
+        rows.append([{"text": "🧾 Enter total instead", "callback_data": _cb("tot")}])
 
     tail = []
     if include_custom:
@@ -158,6 +166,26 @@ def confirm_keyboard() -> list:
         {"text": "✏️ Edit", "callback_data": _cb("edit")},
         {"text": "❌ Cancel", "callback_data": _cb("cancel")},
     ]]
+
+
+def edit_menu_keyboard(fields) -> list:
+    """Field-picker shown when the user taps ✏️ Edit on the confirm card.
+
+    `fields` is an ordered list of (field_key, label) tuples — only the fields
+    that actually apply to this transaction (e.g. no Quantity for a lump
+    expense). Each becomes `__tgfx__:editf:<field_key>` which jumps straight to
+    that step. A Back button returns to the confirm card unchanged.
+    """
+    rows, row = [], []
+    for key, label in fields:
+        row.append({"text": label, "callback_data": _cb("editf", key)})
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([{"text": "⬅️ Back", "callback_data": _cb("editback")}])
+    return rows
 
 
 def product_grid(rows, page: int = 0, page_size: int = 8, other_label="📝 Other") -> list:

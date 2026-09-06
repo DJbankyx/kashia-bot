@@ -294,6 +294,18 @@ class TGFastEntry:
             self._edit_plain(phone_number, fx, f"✏️ Type the {label} (e.g. 4500, 5k):")
             return []
 
+        if action == "tot":
+            # "Enter total instead" — capture the full total for all units
+            # (handles mixed/different per-unit prices without a full basket).
+            fx["step"] = "await_total"
+            self._save_fx(phone_number, fx)
+            n = int(fx.get("quantity", 1) or 1)
+            self._edit_plain(
+                phone_number, fx,
+                f"🧾 Type the *total* for all {n:,} "
+                f"(e.g. if they went for different prices):")
+            return []
+
         if action == "pay":
             return self._set_payment(phone_number, fx, value)
 
@@ -321,8 +333,17 @@ class TGFastEntry:
             return self._do_save(phone_number, fx)
 
         if action == "edit":
-            # Jump back to the first step (item) for a quick re-do.
-            return self._restart_item(phone_number, fx)
+            # Show a field-picker so the user edits exactly what's wrong
+            # (item / qty / price / payment / who) instead of restarting.
+            return self._show_edit_menu(phone_number, fx)
+
+        if action == "editf":
+            # Jump straight to the chosen field's step.
+            return self._edit_field(phone_number, fx, value)
+
+        if action == "editback":
+            # Cancel the edit-menu → back to the confirm card, unchanged.
+            return self._show_confirm(phone_number, fx)
 
         if action == "back":
             return self._go_back(phone_number, fx)
@@ -353,6 +374,16 @@ class TGFastEntry:
                                  "💰 That didn't look like an amount. Type e.g. 4500 or 5k:")
                 return []
             return self._set_price(phone_number, fx, int(amount))
+
+        if step == "await_total":
+            # A total for all units (mixed prices). Set amount directly; keep a
+            # derived per-unit cost for stock/landing-cost math.
+            total = parse_amount(text)
+            if not total:
+                self._edit_plain(phone_number, fx,
+                                 "🧾 That didn't look like an amount. Type the total, e.g. 12000 or 12k:")
+                return []
+            return self._set_total(phone_number, fx, int(total))
 
         if step == "await_expense_desc":
             desc = text.strip()
@@ -493,11 +524,18 @@ class TGFastEntry:
         n = int(fx.get("quantity", 1) or 1)
         unit = fx.get("unit", "")
         qty_disp = f"{n:,} {unit}" if unit else f"×{n:,}"
-        text = (f"{self._header(fx)}\n📦 {fx['product_name']} {qty_disp}\n\n"
-                f"Price per {unit}?" if unit else
-                f"{self._header(fx)}\n📦 {fx['product_name']} ×{n:,}\n\nPrice each?")
+        # When more than one unit is involved, offer "Enter total instead" so
+        # mixed/different per-unit prices can still be captured (as one total).
+        multi = n > 1
+        if unit:
+            text = f"{self._header(fx)}\n📦 {fx['product_name']} {qty_disp}\n\nPrice per {unit}?"
+        else:
+            text = f"{self._header(fx)}\n📦 {fx['product_name']} ×{n:,}\n\nPrice each?"
+        if multi:
+            text += "\n_Different prices? Tap “Enter total instead”._"
         presets = self._price_presets(phone_number, fx)
-        self._render(phone_number, fx, text, tg_ui.amount_keyboard(presets=presets or None))
+        self._render(phone_number, fx, text,
+                     tg_ui.amount_keyboard(presets=presets or None, include_total=multi))
         return []
 
     # ── step: price (each) or total ──────────────────────────────────────
@@ -514,6 +552,24 @@ class TGFastEntry:
             fx["amount"] = int(value)
         fx["step"] = "payment"
 
+        if fx.get("tx_type") == "sale":
+            text = f"{self._header(fx)}\n{self._summary_line(fx)}\n\nHow were you paid?"
+            credit_label = "💳 Credit (owes me)"
+        else:
+            text = f"{self._header(fx)}\n{self._summary_line(fx)}\n\nHow did you pay?"
+            credit_label = "💳 Credit (I owe)"
+        self._render(phone_number, fx, text, tg_ui.payment_keyboard(credit_label=credit_label))
+        return []
+
+    def _set_total(self, phone_number: str, fx: dict, total: int) -> list:
+        """Set the FULL total for all units (used when units went at mixed/
+        different prices). amount = total; unit_cost = total / qty (derived, for
+        stock/landing-cost math)."""
+        qty = int(fx.get("quantity", 1) or 1)
+        fx["amount"] = int(total)
+        fx["unit_cost"] = int(total // qty) if qty > 0 else int(total)
+        fx["mixed_price"] = True
+        fx["step"] = "payment"
         if fx.get("tx_type") == "sale":
             text = f"{self._header(fx)}\n{self._summary_line(fx)}\n\nHow were you paid?"
             credit_label = "💳 Credit (owes me)"
@@ -577,7 +633,9 @@ class TGFastEntry:
             "",
             f"{self._summary_line(fx)}",
         ]
-        if self._uses_quantity(fx) and fx.get("unit_cost"):
+        if self._uses_quantity(fx) and fx.get("mixed_price"):
+            lines.append(f"   ({fx['quantity']} units · mixed prices → {format_amount(fx.get('amount', 0))} total)")
+        elif self._uses_quantity(fx) and fx.get("unit_cost"):
             lines.append(f"   ({fx['quantity']} × {format_amount(fx['unit_cost'])} each)")
         lines.append(f"💳 {self._pay_label(fx)}")
         if fx.get("vendor"):
@@ -727,12 +785,102 @@ class TGFastEntry:
 
     # ── navigation / lifecycle ───────────────────────────────────────────
 
+    def _show_edit_menu(self, phone_number: str, fx: dict) -> list:
+        """Field-picker for the confirm card. Lists only the fields that apply
+        to this transaction, each jumping straight to its step."""
+        fx["step"] = "edit_menu"
+        self._save_fx(phone_number, fx)
+        tt = fx.get("tx_type")
+        fields = []
+        # Item / description
+        if tt == "expense":
+            fields.append(("item", "📝 What for"))
+        else:
+            fields.append(("item", "📦 Item"))
+        # Quantity (only when this tx uses a quantity)
+        if self._uses_quantity(fx):
+            fields.append(("qty", "🔢 Quantity"))
+            fields.append(("price", "💰 Price each"))
+        else:
+            fields.append(("price", "💰 Amount"))
+        fields.append(("pay", "💳 Payment"))
+        # Who — customer/supplier
+        who_label = "🏪 Supplier" if tt in ("purchase", "expense") else "👤 Customer"
+        fields.append(("who", who_label))
+
+        lines = [
+            self._header(fx), "",
+            self._summary_line(fx),
+            f"💳 {self._pay_label(fx)}",
+        ]
+        if fx.get("vendor"):
+            who = "Customer" if tt == "sale" else "Supplier"
+            lines.append(f"👤 {who}: {fx['vendor']}")
+        lines += ["", "_What do you want to change?_"]
+        self._render(phone_number, fx, "\n".join(lines),
+                     tg_ui.edit_menu_keyboard(fields))
+        return []
+
+    def _edit_field(self, phone_number: str, fx: dict, field: str) -> list:
+        """Jump to the step for the chosen field. After the user re-enters that
+        value the flow continues forward as normal and returns to confirm."""
+        if field == "item":
+            # Re-pick the item / re-type the expense description.
+            return self._restart_item(phone_number, fx)
+
+        if field == "qty":
+            fx["step"] = "quantity"
+            fx.pop("mixed_price", None)
+            self._save_fx(phone_number, fx)
+            presets = self._qty_presets(phone_number, fx)
+            self._render(phone_number, fx,
+                         f"{self._header(fx)}\n📦 {fx.get('product_name','Item')}\n\nHow many?",
+                         tg_ui.quantity_keyboard(presets=presets))
+            return []
+
+        if field == "price":
+            fx.pop("mixed_price", None)
+            if self._uses_quantity(fx):
+                # Reuse the normal price-each renderer (includes the
+                # "Enter total instead" escape when qty > 1).
+                return self._go_to_price(phone_number, fx)
+            fx["step"] = "amount"
+            self._save_fx(phone_number, fx)
+            presets = self._price_presets(phone_number, fx)
+            text = f"{self._header(fx)}\n📦 {fx.get('product_name','Item')}\n\nHow much? (total)"
+            self._render(phone_number, fx, text,
+                         tg_ui.amount_keyboard(presets=presets or None))
+            return []
+
+        if field == "pay":
+            fx["step"] = "payment"
+            self._save_fx(phone_number, fx)
+            credit_label = ("💳 Credit (owes me)" if fx.get("tx_type") == "sale"
+                            else "💳 Credit (I owe)")
+            prompt = ("How were you paid?" if fx.get("tx_type") == "sale"
+                      else "How did you pay?")
+            self._render(phone_number, fx,
+                         f"{self._header(fx)}\n{self._summary_line(fx)}\n\n{prompt}",
+                         tg_ui.payment_keyboard(credit_label=credit_label))
+            return []
+
+        if field == "who":
+            # Re-ask the counterparty. Keep the same required-ness as the
+            # current payment method (credit/part need an owner).
+            required = fx.get("payment_method") in ("credit", "part")
+            fx.pop("vendor_preset", None)  # allow changing a pre-filled name
+            return self._ask_customer(phone_number, fx, required=required)
+
+        # Unknown field → just go back to confirm.
+        return self._show_confirm(phone_number, fx)
+
     def _restart_item(self, phone_number: str, fx: dict) -> list:
         """Edit → go back to the item picker (fresh choices, same message)."""
         fx["step"] = "product"
         for k in ("product_key", "product_name", "quantity", "unit_cost", "amount",
                   "payment_method", "has_credit", "vendor", "deposit_amount",
-                  "balance_owed", "counted_stock", "who_required", "unit", "_units"):
+                  "balance_owed", "counted_stock", "who_required", "unit", "_units",
+                  "mixed_price"):
             fx.pop(k, None)
         # Expense restarts at the typed "what for?" step (no catalog picker).
         if fx.get("tx_type") == "expense":
@@ -753,6 +901,9 @@ class TGFastEntry:
     def _go_back(self, phone_number: str, fx: dict) -> list:
         """Step back one screen."""
         step = fx.get("step")
+        if step == "await_total":
+            # Back from the "enter total" prompt → the price-each step.
+            return self._go_to_price(phone_number, fx)
         if step in ("amount", "quantity", "expense_qty", "await_custom_qty", "await_custom_amount"):
             # expense → back to the "what for?" step; catalog flows → item picker;
             # otherwise nothing to go back to → cancel.

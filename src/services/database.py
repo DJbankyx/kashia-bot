@@ -692,8 +692,12 @@ class Database:
         Also saves name and type if contact doesn't exist yet."""
         amount = int(amount)  # Ensure no floats
         contact_id = contact_name.strip().lower().replace(" ", "_")
-        contact_type = 'supplier' if tx_type == 'expense' else 'customer'
-        field = 'total_paid' if tx_type == 'expense' else 'total_received'
+        # Money OUT (you paid them) = supplier; money IN (they paid you) = customer.
+        # Purchases and expenses both mean YOU paid a supplier — only sales create
+        # a customer. (Previously purchases were mis-tagged as customers.)
+        is_outgoing = tx_type in ('expense', 'purchase')
+        contact_type = 'supplier' if is_outgoing else 'customer'
+        field = 'total_paid' if is_outgoing else 'total_received'
         try:
             self.contacts.update_item(
                 Key={
@@ -963,7 +967,9 @@ class Database:
 
             # Calculate new analytics
             tx_count = int(contact.get('transaction_count', 0))
-            total = int(contact.get('total_received', 0)) if tx_type != 'expense' else int(contact.get('total_paid', 0))
+            # Purchases + expenses are money OUT (total_paid); sales are money IN.
+            is_outgoing = tx_type in ('expense', 'purchase')
+            total = int(contact.get('total_paid', 0)) if is_outgoing else int(contact.get('total_received', 0))
             new_total = total + amount
             new_count = tx_count + 1
             new_avg = new_total // new_count if new_count > 0 else amount
@@ -988,7 +994,7 @@ class Database:
             else:
                 new_freq = old_freq
 
-            field = 'total_received' if tx_type != 'expense' else 'total_paid'
+            field = 'total_paid' if is_outgoing else 'total_received'
 
             self.contacts.update_item(
                 Key={'phone_number': phone_number, 'contact_id': contact_id},
