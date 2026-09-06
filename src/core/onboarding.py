@@ -181,95 +181,112 @@ class OnboardingHandler:
             "industry": industry,
         })
 
-        # Industry-specific natural question
-        _skip_hint = "\n\n_Or type *skip* to set this up later._"
+        # Step 3: general list of what they sell/make/offer, comma-separated.
+        # These become STARTING CATEGORIES to expand in the Catalog — not priced
+        # products. So we ask for the broad things, not specific SKUs.
+        _skip_hint = "\n\n_Separate with commas. Or type *skip* — you can set up your products in the Catalog anytime._"
         prompts = {
             "trading": (
                 "*Step 3 of 3*\n"
-                "🛍️ Great! *What does your business sell?*\n\n"
-                "Just describe it naturally:\n\n"
-                "_e.g. \"I sell new and second hand Honda cars\"_\n"
-                "_e.g. \"We sell shoes, bags and accessories\"_\n"
-                "_e.g. \"I sell rice, oil and provisions\"_" + _skip_hint
+                "🛍️ Great! *What do you sell?*\n\n"
+                "List the main things (we'll set up details like models, prices "
+                "and stock next):\n\n"
+                "_e.g. Cars, Trucks, Buses_\n"
+                "_e.g. Shoes, Bags, Accessories_\n"
+                "_e.g. Rice, Oil, Provisions_" + _skip_hint
             ),
             "manufacturing": (
-                "*Step 3 of 4*\n"
-                "🏭 Great! *What does your business make?*\n\n"
-                "Just describe it naturally:\n\n"
-                "_e.g. \"We produce soap, detergent and cleaning products\"_\n"
-                "_e.g. \"I make furniture — tables, chairs, cabinets\"_\n"
-                "_e.g. \"We bake bread, cakes and pastries\"_" + _skip_hint
+                "*Step 3 of 3*\n"
+                "🏭 Great! *What do you make?*\n\n"
+                "List your main products (details come next):\n\n"
+                "_e.g. Soap, Detergent, Bleach_\n"
+                "_e.g. Bread, Cakes, Pastries_\n"
+                "_e.g. Tables, Chairs, Cabinets_" + _skip_hint
             ),
             "services": (
                 "*Step 3 of 3*\n"
                 "💼 Great! *What services do you offer?*\n\n"
-                "Just describe it naturally:\n\n"
-                "_e.g. \"I do hair braiding, nails and makeup\"_\n"
-                "_e.g. \"We offer cleaning and fumigation services\"_\n"
-                "_e.g. \"I do web design and digital marketing\"_" + _skip_hint
+                "List them (you'll set rates next):\n\n"
+                "_e.g. Braiding, Nails, Makeup_\n"
+                "_e.g. Cleaning, Fumigation_\n"
+                "_e.g. Web Design, Marketing_" + _skip_hint
             ),
             "hybrid": (
                 "*Step 3 of 3*\n"
-                "🔄 Great! *What do you sell or offer?*\n\n"
-                "Just describe it naturally:\n\n"
-                "_e.g. \"I sell phones and also do phone repairs\"_\n"
-                "_e.g. \"We do catering and also sell food items\"_" + _skip_hint
+                "🔄 Great! *What do you sell and/or offer?*\n\n"
+                "List the main things (details come next):\n\n"
+                "_e.g. Phones, Phone Repairs_\n"
+                "_e.g. Food Items, Catering_" + _skip_hint
             ),
         }
 
         return [text_response(prompts.get(industry, prompts["trading"]))]
 
     def _save_what_you_do(self, phone_number: str, text: str) -> list:
-        """Parse natural description. For manufacturing: ask for product list next. Others: seed catalog and complete."""
-        import re
+        """Step 3 (final): take the general 'what do you sell/make/offer' as a
+        comma-separated list of GENERAL terms, seed them as category placeholders
+        (name + item_type only — NO price/stock/unit), then complete and hand off
+        to the Catalog where real products get built.
 
+        Design (docs/TG_ONBOARDING_PLAN.md): "I sell cars, trucks, buses" means
+        the LINE OF BUSINESS, not 3 priced SKUs. We store them as starting
+        categories to expand in the Catalog — never as priced products here.
+        """
         context = self.session.get_context(phone_number)
         business_name = context.get("business_name", "My Business")
         industry = context.get("industry", "trading")
         description = text.strip()
 
-        # Let users skip if they'd rather add products later.
+        # Let users skip if they'd rather build the catalog later.
         if description.lower() in ("skip", "later", "not now"):
             return self._complete_onboarding(phone_number, business_name, industry, "", [])
 
-        # Reject stray button taps / commands that would otherwise be saved as
-        # the business description verbatim (e.g. "menu_home").
+        # Reject stray button taps / commands saved verbatim (e.g. "menu_home").
         if _looks_like_button_or_command(description):
             return [text_response(
-                f"Just describe what your business does in a few words.\n\n"
+                f"Just list what you {self._sell_verb(industry)} (separate with commas).\n\n"
                 f"_e.g. \"{self._what_you_do_example(industry)}\"_\n\n"
-                f"_Or type *skip* to set this up later._"
+                f"_Or type *skip* to set this up in the Catalog later._"
             )]
 
-        if len(description) < 3:
+        if len(description) < 2:
             return [text_response(
-                "Please describe what your business does (even one sentence is fine),\n"
-                "_or type *skip* to add products later._"
+                f"Please list what you {self._sell_verb(industry)} (even one is fine),\n"
+                "_or type *skip* to set it up in the Catalog later._"
             )]
 
-        # For manufacturing: save description but DON'T seed catalog yet
-        # Ask them to list their actual products in the next step
-        if industry == "manufacturing":
-            self.session.save(phone_number, ONBOARDING, {
-                "onboarding_step": STEP_LIST_PRODUCTS,
-                "business_name": business_name,
-                "industry": industry,
-                "business_description": description,
-            })
-
-            return [text_response(
-                f"*Step 4 of 4*\n"
-                f"🏭 Got it! You make *{description}*.\n\n"
-                f"Now, *list the specific products* you manufacture.\n\n"
-                f"_Separate each product with a comma:_\n\n"
-                f"Example: _Liquid Soap 1L, Bar Soap, Dish Wash 500ml, Detergent 1L, Detergent 5L_\n\n"
-                f"_These will become your product catalog._\n\n"
-                f"_Or type *skip* to add them later._"
-            )]
-
-        # For trading/services/hybrid: extract products from description and complete
-        items = self._extract_products_from_description(description, industry)
+        # Take the comma list at face value as starting CATEGORIES (no prose
+        # auto-guessing beyond a light clean). These are placeholders only.
+        items = self._parse_category_list(description)
         return self._complete_onboarding(phone_number, business_name, industry, description, items)
+
+    def _parse_category_list(self, text: str) -> list:
+        """Split a comma/'and' list into clean starting-category names.
+
+        Deliberately simple: no prose extraction, no location stripping games —
+        the user is listing general terms. Just split, tidy, de-dupe.
+        """
+        import re
+        parts = re.split(r'[,&]|\band\b', text)
+        seen, items = set(), []
+        for part in parts:
+            item = part.strip().strip('.').strip()
+            # Drop obvious lead-ins if the user still typed "I sell ..."
+            item = re.sub(r'^\s*(i|we)\s+(sell|make|produce|offer|do|provide)\s+', '',
+                          item, flags=re.IGNORECASE).strip()
+            if len(item) < 2 or len(item) > 40:
+                continue
+            if item.lower() in seen:
+                continue
+            seen.add(item.lower())
+            items.append(item.title())
+        return items
+
+    def _sell_verb(self, industry: str) -> str:
+        return {
+            "trading": "sell", "manufacturing": "make",
+            "services": "offer", "hybrid": "sell or offer",
+        }.get(industry, "sell")
 
     def _save_product_list(self, phone_number: str, text: str) -> list:
         """Manufacturing-specific: save the explicit product list to catalog."""
@@ -346,6 +363,8 @@ class OnboardingHandler:
         # Reset to IDLE
         self.session.reset(phone_number)
 
+        from utils.whatsapp_ui import button_response
+
         industry_labels = {
             "trading": "🛍️ Trading & Retail",
             "manufacturing": "🏭 Manufacturing",
@@ -353,113 +372,44 @@ class OnboardingHandler:
             "hybrid": "🔄 Hybrid",
         }
 
-        # Build completion message
+        # ── Done card: tidy summary + hand off to the CATALOG ──
+        # Onboarding stays light. Real products (models/variants, prices, units,
+        # stock) are built in the Catalog — so we route there, not into a pile of
+        # per-industry price/recipe nudges. Consistent for all 4 industries.
         lines = [
-            f"✅ *All set!*\n",
-            f"*{business_name}*",
+            f"✅ *You're all set, {business_name}!*",
             f"{industry_labels.get(industry, industry)}",
         ]
+
         if items:
-            lines.append(f"📦 Catalog: {', '.join(items[:5])}")
-            if len(items) > 5:
-                lines.append(f"   _+{len(items) - 5} more_")
-        lines.append("")
-
-        # Manufacturing-specific: guide user to set up their first recipe
-        if industry == "manufacturing" and items:
-            lines.append("🏭 *Next step:* Set a recipe for your products!")
+            noun = "services" if industry == "services" else "products"
+            shown = ", ".join(items[:6])
+            more = f" _+{len(items) - 6} more_" if len(items) > 6 else ""
             lines.append("")
-            lines.append("A recipe tells me what raw materials you use to make each product.")
-            lines.append("When you record production, I'll auto-calculate costs and deduct materials.")
+            lines.append(f"📝 I've noted your {noun}: *{shown}*{more}")
             lines.append("")
-            lines.append("_Tap below to set up your first recipe, or skip for now._")
-
-            from utils.whatsapp_ui import button_response
-            return [
-                text_response("\n".join(lines)),
-                button_response(
-                    "Set up production?",
-                    [
-                        {"id": "cat_recipe", "title": "📋 Set Recipe Now"},
-                        {"id": "menu_home", "title": "⏭️ Skip for Now"},
-                    ]
-                )
+            lines.append(
+                "Now let's set them up properly — add "
+                + ("rates" if industry == "services"
+                   else "models, prices and stock")
+                + " in your Catalog. 👇"
+            )
+            buttons = [
+                {"id": "menu_catalog", "title": "📋 Set Up Catalog"},
+                {"id": "menu_home", "title": "⏭️ Do It Later"},
             ]
-
-        # Services-specific: guide user to set prices and add recurring clients
-        if industry == "services":
-            lines.append("💼 *Next steps:*")
+        else:
             lines.append("")
-            if items:
-                lines.append("1️⃣ *Set your prices* — tap below to set what you charge for each service")
-                lines.append("2️⃣ *Add recurring clients* — regular jobs that repeat weekly/monthly")
-            else:
-                lines.append("1️⃣ *Add your services* — what you offer and your rates")
-                lines.append("2️⃣ *Add recurring clients* — regular jobs that repeat weekly/monthly")
-            lines.append("")
-            lines.append("_Set up now or skip and start recording jobs._")
-
-            from utils.whatsapp_ui import button_response
-            if items:
-                return [
-                    text_response("\n".join(lines)),
-                    button_response(
-                        "What first?",
-                        [
-                            {"id": "cat_set_price", "title": "💰 Set Prices"},
-                            {"id": "rec_add", "title": "🔁 Add Recurring"},
-                            {"id": "menu_home", "title": "⏭️ Skip for Now"},
-                        ]
-                    )
-                ]
-            else:
-                return [
-                    text_response("\n".join(lines)),
-                    button_response(
-                        "What first?",
-                        [
-                            {"id": "cat_add_service", "title": "➕ Add Service"},
-                            {"id": "rec_add", "title": "🔁 Add Recurring"},
-                            {"id": "menu_home", "title": "⏭️ Skip for Now"},
-                        ]
-                    )
-                ]
-
-        # Trading / hybrid: nudge toward catalog + prices, matching the guidance
-        # manufacturing and services already get.
-        if industry in ("trading", "hybrid"):
-            from utils.whatsapp_ui import button_response
-            lines.append(f"💬 *Type what you bought or sold* and I'll record it.")
-            lines.append(f"Example: \"{self._get_example(industry)}\"")
-            lines.append("")
-            if items:
-                lines.append("💡 *Tip:* Set cost prices on your products to see")
-                lines.append("true profit margins on every sale.")
-                buttons = [
-                    {"id": "cat_set_price", "title": "💰 Set Prices"},
-                    {"id": "menu_home", "title": "⏭️ Skip for Now"},
-                ]
-            else:
-                lines.append("💡 *Tip:* Add your products to track stock and")
-                lines.append("see profit on every sale.")
-                buttons = [
-                    {"id": "menu_catalog", "title": "📋 Add Products"},
-                    {"id": "menu_home", "title": "⏭️ Skip for Now"},
-                ]
-            return [
-                text_response("\n".join(lines)),
-                button_response("What first?", buttons),
+            lines.append("Whenever you're ready, set up your products in the Catalog —")
+            lines.append("add prices and stock so every sale shows your profit. 👇")
+            buttons = [
+                {"id": "menu_catalog", "title": "📋 Set Up Catalog"},
+                {"id": "menu_home", "title": "⏭️ Do It Later"},
             ]
-
-        # Standard completion (fallback for any other industry)
-        lines.append("Here's how I work:\n")
-        lines.append(f"💬 *Type what you bought or sold* and I'll record it.")
-        lines.append(f"Example: \"{self._get_example(industry)}\"")
-        lines.append("\nOr tap the menu below to explore features. 👇")
 
         return [
             text_response("\n".join(lines)),
-            self._trigger_home_menu(phone_number, industry)
+            button_response("What first?", buttons),
         ]
 
     def _extract_products_from_description(self, description: str, industry: str) -> list:
