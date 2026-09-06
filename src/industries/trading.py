@@ -208,7 +208,8 @@ class TradingIndustry(BaseIndustry):
                     {"id": "set_industry", "title": "🔄 Change Industry", "description": "Switch business type"},
                     {"id": "set_notify", "title": "🔔 Notifications", "description": "Daily reports on/off"},
                     {"id": "set_bug", "title": "🐛 Report a Problem", "description": "Send feedback"},
-                    {"id": "set_reset", "title": "🗑️ Reset Account", "description": "Clear all data"},
+                    {"id": "set_reset", "title": "🧹 Clear My Data", "description": "Wipe transactions, contacts & catalog (keep account)"},
+                    {"id": "set_hardreset", "title": "🗑️ Full Reset", "description": "Delete everything & start onboarding over"},
                 ]
             }]
         )]

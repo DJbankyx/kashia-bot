@@ -367,7 +367,7 @@ class SettingsHandler:
     def _confirm_reset(self, phone_number: str) -> list:
         """Show reset warning with confirmation buttons."""
         return [button_response(
-            "⚠️ *Reset Account*\n\n"
+            "🧹 *Clear My Data*\n\n"
             "This will permanently delete:\n"
             "  • All your transactions\n"
             "  • All contacts & debts\n"
