@@ -103,8 +103,17 @@ class TelegramClient(MessagingClient):
         if body_text:
             lines.append(self._prepare_text(body_text))
 
-        # Collect every row across sections into a flat button list, folding
-        # descriptions into the body so no information is lost.
+        # A MULTI-SECTION list is a home/nav menu (e.g. Quick Actions + Sections).
+        # These read best CLEAN: short header + section titles + grid-packed
+        # buttons, WITHOUT repeating each row's description as a text line (the
+        # button labels already carry the meaning — dropping the description
+        # block removes the WhatsApp-era "text blob beside buttons" clutter).
+        #
+        # A SINGLE-SECTION rich list (e.g. the payment picker) KEEPS its
+        # descriptions folded into the text, since those genuinely explain the
+        # choice and there's no clutter.
+        is_menu = len(sections or []) > 1
+
         flat_buttons = []
         any_description = False
         for section in sections or []:
@@ -116,15 +125,14 @@ class TelegramClient(MessagingClient):
                 title = row.get("title", "")
                 desc = row.get("description", "")
                 rid = row.get("id", "")
-                if desc:
+                # Only fold descriptions into the text for non-menu rich lists.
+                if desc and not is_menu:
                     any_description = True
                     lines.append(f"• *{self._strip_markup(title)}* — {self._strip_markup(desc)}")
                 flat_buttons.append({"id": rid, "title": title})
 
-        # Rich menus (rows carry descriptions) read best as one button per row,
-        # aligned under the description lines. Pure pickers (short chips, no
-        # descriptions — categories, quantities, yes/no) grid-pack for a
-        # compact, tappable layout that WhatsApp's fixed list can't match.
+        # Menus and pure pickers grid-pack (compact, app-like). A single-section
+        # rich list (descriptions shown) stays one-button-per-row under its text.
         if any_description:
             keyboard = [[self._make_button(b["title"], b["id"])] for b in flat_buttons]
         else:

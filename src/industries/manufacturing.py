@@ -64,7 +64,7 @@ class ManufacturingIndustry(BaseIndustry):
                          "description": "Produced/manufactured items"},
                         {"id": "record_purchase", "title": "🧱 Buy Raw Materials",
                          "description": "Purchased inputs/supplies"},
-                        {"id": "record_expense", "title": "💸 Production Cost",
+                        {"id": "record_expense", "title": "💸 Record Expense",
                          "description": "Labour, overhead, utilities"},
                     ]
                 },
@@ -77,7 +77,7 @@ class ManufacturingIndustry(BaseIndustry):
                          "description": "History, materials, batches"},
                         {"id": "sec_business", "title": "💼 Business",
                          "description": "Reports, debts, docs, export"},
-                        {"id": "sec_crm", "title": "👥 CRM",
+                        {"id": "sec_crm", "title": "👥 Customers",
                          "description": "Buyers, suppliers, contacts"},
                         {"id": "sec_settings", "title": "⚙️ Help & Settings",
                          "description": "Tutorial, upgrade, PIN"},
@@ -245,7 +245,7 @@ class ManufacturingIndustry(BaseIndustry):
              "description": "Sold finished goods to buyer"},
             {"id": "record_purchase", "title": "🧱 Buy Raw Materials",
              "description": "Purchased inputs/supplies"},
-            {"id": "record_expense", "title": "💸 Production Cost",
+            {"id": "record_expense", "title": "💸 Record Expense",
              "description": "Labour, overhead, utilities"},
         ]
 

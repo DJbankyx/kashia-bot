@@ -60,7 +60,7 @@ class TradingIndustry(BaseIndustry):
                         {"id": "sec_personal", "title": "👤 Personal Info", "description": "Profile, bank, address"},
                         {"id": "sec_business", "title": "💼 Business", "description": "Reports, debts, docs, export"},
                         {"id": "sec_inventory", "title": "📊 Inventory", "description": "Stock levels, products, costs"},
-                        {"id": "sec_crm", "title": "👥 CRM", "description": "Contacts, customers, suppliers"},
+                        {"id": "sec_crm", "title": "👥 Customers", "description": "Contacts, customers, suppliers"},
                         {"id": "sec_settings", "title": "⚙️ Help & Settings", "description": "Tutorial, upgrade, PIN"},
                     ]
                 }

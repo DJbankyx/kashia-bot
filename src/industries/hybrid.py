@@ -79,7 +79,7 @@ class HybridIndustry(BaseIndustry):
                          "description": "Dashboard, reports, debts, docs"},
                         {"id": "sec_inventory", "title": "📊 Products & Supplies",
                          "description": "Stock levels, costs, catalog"},
-                        {"id": "sec_crm", "title": "👥 Clients & Contacts",
+                        {"id": "sec_crm", "title": "👥 Customers",
                          "description": "Customers, suppliers, history"},
                         {"id": "sec_settings", "title": "⚙️ Help & Settings",
                          "description": "Tutorial, upgrade, PIN"},
