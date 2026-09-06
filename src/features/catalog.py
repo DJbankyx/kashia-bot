@@ -246,6 +246,24 @@ class CatalogHandler:
         if button_id.startswith("cat_varaddval_"):
             k, sep, slug = button_id[14:].partition("__")
             return self._start_add_axis_value(phone_number, k, slug)
+        # ── variant axis management (manage / rename / delete / remove value) ──
+        if button_id.startswith("cat_varmanage_"):
+            k, sep, slug = button_id[14:].partition("__")
+            return self._variant_axis_menu(phone_number, k, slug)
+        if button_id.startswith("cat_varrenax_"):
+            k, sep, slug = button_id[13:].partition("__")
+            return self._start_rename_axis(phone_number, k, slug)
+        if button_id.startswith("cat_vardelax_"):
+            k, sep, slug = button_id[13:].partition("__")
+            return self._delete_axis(phone_number, k, slug)
+        if button_id.startswith("cat_varrmval_"):
+            # cat_varrmval_<key>__<axisslug>__<valslug>
+            rest = button_id[13:]
+            k, _, tail = rest.partition("__")
+            axslug, _, valslug = tail.partition("__")
+            return self._remove_axis_value(phone_number, k, axslug, valslug)
+        if button_id.startswith("cat_vartotals_"):
+            return self._variant_totals(phone_number, button_id[14:])
         if button_id.startswith("cat_varpick_"):
             self.session.reset(phone_number)  # fresh drill
             return self._variant_pick(phone_number, button_id[12:], chosen=[])
@@ -495,6 +513,9 @@ class CatalogHandler:
 
         if step == "adding_axis_values":
             return self._handle_add_axis_values(phone_number, text_s, context)
+
+        if step == "renaming_axis":
+            return self._handle_rename_axis(phone_number, text_s, context)
 
         if step == "variant_set_stock":
             return self._apply_variant_field(phone_number, text_s, context, "stock")
@@ -1439,7 +1460,8 @@ class CatalogHandler:
         })
         return [button_response(
             "➕ *Add Products*\n\n"
-            "Type product names (comma-separated for multiple):\n\n"
+            "Type product names. *Separate multiple with commas* — "
+            "or add one at a time.\n\n"
             "_e.g. Toyota Prado, Honda Civic, Kia Sportage_\n"
             "_e.g. Detergent 1L, Soap Bar, Hand Wash_",
             [
@@ -1603,7 +1625,7 @@ class CatalogHandler:
 
         variants = [v.strip().title() for v in text.split(",") if v.strip()]
         if not variants:
-            return [text_response("Type variants separated by commas (e.g. Black, White, 2019, 2024):")]
+            return [text_response("Type variants, separated by commas (e.g. Black, White, 2019, 2024):")]
 
         product = products[product_key]
         name = product.get("name", product_key)
@@ -1852,7 +1874,8 @@ class CatalogHandler:
             return [text_response(
                 f"📋 *Set supply template for: {service_name}*\n\n"
                 f"What supply is used per job?\n\n"
-                f"Type the *supply name*:\n\n"
+                f"Type the *supply name* — *one at a time* (you'll add its "
+                f"quantity next, then can add more):\n\n"
                 f"_e.g. Blade, Chemical, Nylon, Thread_\n\n"
                 f"_Type *done* when finished._"
             )]
@@ -2290,7 +2313,7 @@ class CatalogHandler:
             })
             return [text_response(
                 f"🏷️ *{name}* — Variants{existing_str}\n\n"
-                f"Type variants (comma-separated):\n"
+                f"Type variants. *Separate multiple with commas:*\n"
                 f"_e.g. Black, White, Red_\n"
                 f"_e.g. 2019, 2020, 2024_\n"
                 f"_e.g. 1L, 2L, 4L_"
@@ -3514,23 +3537,186 @@ class CatalogHandler:
             for axis, vals in axes.items():
                 lines.append(f"• *{axis}*: {', '.join(vals) if vals else '_none_'}")
 
+        if axes:
+            lines.append("\n_Tap “Manage” on an axis to rename it, add/remove "
+                         "values, or delete it._")
+
         rows = [{"id": f"cat_varaddaxis_{product_key}", "title": "➕ Add axis (e.g. Colour)"}]
-        # Let the user add values to an existing axis.
-        for axis in list(axes.keys())[:4]:
+        # One "Manage <axis>" row per axis (rename / add value / remove value / delete).
+        for axis in list(axes.keys())[:5]:
             slug = axis.lower().replace(" ", "_")[:20]
-            rows.append({"id": f"cat_varaddval_{product_key}__{slug}", "title": f"➕ Add {axis} value"})
+            rows.append({"id": f"cat_varmanage_{product_key}__{slug}", "title": f"⚙️ Manage {axis}"})
         if axes:
             rows.append({"id": f"cat_varpick_{product_key}", "title": "📦 Set variant stock/cost"})
+            rows.append({"id": f"cat_vartotals_{product_key}", "title": "📊 Totals by variant"})
         rows.append({"id": f"cat_view_{product_key}", "title": "← Back"})
 
+        # Telegram: render as a no-paginate list so every action shows.
+        if self._is_telegram(phone_number):
+            return [list_response(
+                header=f"🎚️ {p['name']} — Variants",
+                body="\n".join(lines),
+                button_text="Manage",
+                sections=[{"title": "", "rows": rows}],
+                no_paginate=True,
+            )]
         return [text_response("\n".join(lines)),
                 button_response("Variants:", rows)]
+
+    def _axis_by_slug(self, p: dict, axis_slug: str) -> str:
+        """Resolve an axis slug back to its real axis name."""
+        for a in p["attributes"]:
+            if a.lower().replace(" ", "_")[:20] == axis_slug:
+                return a
+        return axis_slug.replace("_", " ").title()
+
+    def _variant_axis_menu(self, phone_number: str, product_key: str, axis_slug: str) -> list:
+        """Manage a single axis: rename, add value, remove a value, delete axis."""
+        p = self.get_normalized_product(phone_number, product_key)
+        if not p["name"]:
+            return [text_response("❓ Product not found.")]
+        axis = self._axis_by_slug(p, axis_slug)
+        vals = p["attributes"].get(axis, [])
+        slug = axis.lower().replace(" ", "_")[:20]
+
+        lines = [f"⚙️ *{p['name']}* — {axis}",
+                 f"Values: {', '.join(vals) if vals else '_none yet_'}"]
+
+        rows = [{"id": f"cat_varaddval_{product_key}__{slug}", "title": f"➕ Add {axis} value"}]
+        # Remove-value rows (one per value, capped for tidiness).
+        for v in vals[:8]:
+            vslug = v.lower().replace(" ", "_")[:16]
+            rows.append({"id": f"cat_varrmval_{product_key}__{slug}__{vslug}"[:60],
+                         "title": f"🗑️ Remove “{v}”"[:60]})
+        rows.append({"id": f"cat_varrenax_{product_key}__{slug}", "title": f"✏️ Rename axis"})
+        rows.append({"id": f"cat_vardelax_{product_key}__{slug}", "title": f"🗑️ Delete axis"})
+        rows.append({"id": f"cat_setvar_{product_key}", "title": "← Variants"})
+        return [list_response(
+            header=f"⚙️ {axis}",
+            body="\n".join(lines),
+            button_text="Select",
+            sections=[{"title": "", "rows": rows}],
+            no_paginate=True,
+        )]
+
+    def _start_rename_axis(self, phone_number: str, product_key: str, axis_slug: str) -> list:
+        p = self.get_normalized_product(phone_number, product_key)
+        axis = self._axis_by_slug(p, axis_slug)
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+            "cat_step": "renaming_axis", "cat_product_key": product_key, "cat_axis": axis})
+        return [button_response(
+            f"✏️ Rename axis *{axis}* — type the new name (ONE word/phrase):",
+            [{"id": "cat_cancel", "title": "← Cancel"}])]
+
+    def _handle_rename_axis(self, phone_number: str, text: str, context: dict) -> list:
+        product_key = context.get("cat_product_key", "")
+        old_axis = context.get("cat_axis", "")
+        new_axis = text.strip().title()
+        self.session.reset(phone_number)
+        if len(new_axis) < 2:
+            return [text_response("Please type a valid axis name (2+ characters).")]
+        products = self._get_products(phone_number)
+        prod = products.get(product_key)
+        if not isinstance(prod, dict):
+            return [text_response("❓ Product not found.")]
+        attrs = prod.get("attributes") or {}
+        if old_axis in attrs and new_axis != old_axis:
+            # Rebuild dict preserving order, renaming the key.
+            attrs = {(new_axis if k == old_axis else k): v for k, v in attrs.items()}
+            prod["attributes"] = attrs
+            products[product_key] = prod
+            self._save_products(phone_number, products)
+        return self._variant_axis_menu(phone_number, product_key,
+                                       new_axis.lower().replace(" ", "_")[:20])
+
+    def _delete_axis(self, phone_number: str, product_key: str, axis_slug: str) -> list:
+        """Remove an axis entirely. Combination stock/costs are left intact
+        (they still sum into the total) but the axis no longer appears."""
+        products = self._get_products(phone_number)
+        prod = products.get(product_key)
+        if not isinstance(prod, dict):
+            return [text_response("❓ Product not found.")]
+        p = self.get_normalized_product(phone_number, product_key)
+        axis = self._axis_by_slug(p, axis_slug)
+        attrs = prod.get("attributes") or {}
+        if axis in attrs:
+            attrs.pop(axis, None)
+            prod["attributes"] = attrs
+            products[product_key] = prod
+            self._save_products(phone_number, products)
+        return self.variants_menu(phone_number, product_key)
+
+    def _remove_axis_value(self, phone_number: str, product_key: str,
+                           axis_slug: str, val_slug: str) -> list:
+        """Remove one value from an axis."""
+        products = self._get_products(phone_number)
+        prod = products.get(product_key)
+        if not isinstance(prod, dict):
+            return [text_response("❓ Product not found.")]
+        p = self.get_normalized_product(phone_number, product_key)
+        axis = self._axis_by_slug(p, axis_slug)
+        attrs = prod.get("attributes") or {}
+        vals = attrs.get(axis, [])
+        new_vals = [v for v in vals if v.lower().replace(" ", "_")[:16] != val_slug]
+        attrs[axis] = new_vals
+        prod["attributes"] = attrs
+        products[product_key] = prod
+        self._save_products(phone_number, products)
+        return self._variant_axis_menu(phone_number, product_key, axis_slug)
+
+    def _variant_totals(self, phone_number: str, product_key: str) -> list:
+        """Roll-up totals: total stock per axis-value (e.g. total Sienna, total
+        White) computed from the flat combination stock. Combination keys are
+        'v1 / v2 / …' so a value appears in every combo it's part of."""
+        p = self.get_normalized_product(phone_number, product_key)
+        if not p["name"]:
+            return [text_response("❓ Product not found.")]
+        axes = p["attributes"]
+        vstock = p["variant_stock"] or {}
+        unit = p.get("primary_unit") or "unit"
+
+        # Grand total = sum of all combinations (falls back to product stock).
+        grand = sum(self._as_int(v, 0) for v in vstock.values()) or self._as_int(p["stock"], 0)
+
+        lines = [f"📊 *{p['name']}* — Totals",
+                 f"📦 Total {p['name']}: *{grand} {unit}*", ""]
+
+        # For each axis value, sum every combination that contains that value.
+        # Combination keys are the joined values; membership = value is one of
+        # the combo's parts (split on the separator).
+        def combo_parts(key):
+            return [x.strip() for x in key.split(self._COMBO_SEP)]
+
+        any_rows = False
+        for axis, values in axes.items():
+            if not values:
+                continue
+            lines.append(f"*{axis}:*")
+            for v in values:
+                total_v = 0
+                for combo, qty in vstock.items():
+                    if v in combo_parts(combo):
+                        total_v += self._as_int(qty, 0)
+                lines.append(f"  • {v}: *{total_v}*")
+                any_rows = True
+            lines.append("")
+
+        if not any_rows:
+            lines.append("_No per-variant stock recorded yet._\n"
+                         "_Set stock per combination first (📦 Set variant stock/cost)._")
+
+        return [text_response("\n".join(lines).strip()),
+                button_response("Variants:", [
+                    {"id": f"cat_setvar_{product_key}", "title": "← Variants"},
+                    {"id": f"cat_view_{product_key}", "title": "📦 Product"},
+                ])]
 
     def _start_add_axis(self, phone_number: str, product_key: str) -> list:
         self.session.save(phone_number, states.CATALOG_ADD_DATA, {
             "cat_step": "adding_axis", "cat_product_key": product_key})
         return [button_response(
-            "🎚️ Name the axis (what varies?):\n_e.g. Colour, Size, Year, Model_",
+            "🎚️ Name the axis (what varies?):\n"
+            "_Type ONE name, e.g. Colour, Size, Year, or Model._",
             [{"id": "cat_cancel", "title": "← Cancel"}])]
 
     def _handle_add_axis(self, phone_number: str, text: str, context: dict) -> list:
@@ -3554,7 +3740,8 @@ class CatalogHandler:
         self.session.save(phone_number, states.CATALOG_ADD_DATA, {
             "cat_step": "adding_axis_values", "cat_product_key": product_key, "cat_axis": axis})
         return [button_response(
-            f"🎚️ *{axis}* — type its values (comma-separated):\n_e.g. Black, White, Red_",
+            f"🎚️ *{axis}* — type its values.\n"
+            f"_Separate multiple with commas, e.g. Black, White, Red._",
             [{"id": "cat_cancel", "title": "← Cancel"}])]
 
     def _start_add_axis_value(self, phone_number: str, product_key: str, axis_slug: str) -> list:
@@ -3563,7 +3750,8 @@ class CatalogHandler:
         self.session.save(phone_number, states.CATALOG_ADD_DATA, {
             "cat_step": "adding_axis_values", "cat_product_key": product_key, "cat_axis": axis})
         return [button_response(
-            f"🎚️ *{axis}* — type value(s) to add (comma-separated):",
+            f"🎚️ *{axis}* — type value(s) to add.\n"
+            f"_Separate multiple with commas, e.g. Blue, Green._",
             [{"id": "cat_cancel", "title": "← Cancel"}])]
 
     def _handle_add_axis_values(self, phone_number: str, text: str, context: dict) -> list:
