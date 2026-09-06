@@ -696,19 +696,44 @@ class Database:
         # Purchases and expenses both mean YOU paid a supplier — only sales create
         # a customer. (Previously purchases were mis-tagged as customers.)
         is_outgoing = tx_type in ('expense', 'purchase')
-        contact_type = 'supplier' if is_outgoing else 'customer'
+        this_role = 'supplier' if is_outgoing else 'customer'
         field = 'total_paid' if is_outgoing else 'total_received'
+
+        # Reconcile the stored type with what this transaction implies, so an
+        # earlier mis-tag self-corrects and mixed relationships become "both":
+        #   no type yet            → this transaction's role
+        #   already this role/both → unchanged
+        #   the OTHER role         → upgrade to "both" (buys AND sells)
+        resolved_type = this_role
+        try:
+            existing = self.contacts.get_item(
+                Key={'phone_number': phone_number, 'contact_id': contact_id}
+            ).get('Item') or {}
+            current = (existing.get('type') or '').lower().strip()
+            if current in ('both',):
+                resolved_type = 'both'
+            elif current in ('customer', 'supplier'):
+                resolved_type = current if current == this_role else 'both'
+            # 'client' (legacy customer alias) or blank → treat as this_role,
+            # unless this_role is supplier, in which case they now do both.
+            elif current == 'client':
+                resolved_type = 'client' if not is_outgoing else 'both'
+        except Exception as e:
+            logger.warning(f"contact type reconcile read failed: {e}")
+
         try:
             self.contacts.update_item(
                 Key={
                     'phone_number': phone_number,
                     'contact_id': contact_id
                 },
+                # NOTE: #t is now set explicitly (not if_not_exists) so the type
+                # reconciles on every transaction.
                 UpdateExpression=f"SET {field} = if_not_exists({field}, :zero) + :amount, "
                                  f"transaction_count = if_not_exists(transaction_count, :zero) + :one, "
                                  f"last_transaction_date = :date, "
                                  f"#n = if_not_exists(#n, :name), "
-                                 f"#t = if_not_exists(#t, :type)",
+                                 f"#t = :type",
                 ExpressionAttributeNames={
                     '#n': 'name',
                     '#t': 'type'
@@ -719,7 +744,7 @@ class Database:
                     ':zero': 0,
                     ':date': datetime.now().strftime('%Y-%m-%d'),
                     ':name': contact_name.strip(),
-                    ':type': contact_type
+                    ':type': resolved_type
                 }
             )
         except Exception as e:
