@@ -211,7 +211,44 @@ class CatalogHandler:
         if button_id.startswith("cat_setunit_"):
             return self._handle_product_picked(phone_number, button_id[12:], "set_unit", {})
         if button_id.startswith("cat_setvar_"):
-            return self._handle_product_picked(phone_number, button_id[11:], "add_variants", {})
+            return self.variants_menu(phone_number, button_id[11:])
+        if button_id.startswith("cat_varaddaxis_"):
+            return self._start_add_axis(phone_number, button_id[15:])
+        if button_id.startswith("cat_varaddval_"):
+            k, sep, slug = button_id[14:].partition("__")
+            return self._start_add_axis_value(phone_number, k, slug)
+        if button_id.startswith("cat_varpick_"):
+            self.session.reset(phone_number)  # fresh drill
+            return self._variant_pick(phone_number, button_id[12:], chosen=[])
+        if button_id.startswith("cat_varval_"):
+            # cat_varval_<key>__<value_slug> — continue the drill
+            k, sep, vslug = button_id[11:].partition("__")
+            sess = self.session.get(phone_number)
+            chosen = list((sess.get("context", {}) or {}).get("cat_chosen", []))
+            # Resolve the slug back to the real value from the product's axes.
+            p = self.get_normalized_product(phone_number, k)
+            axes = list(p["attributes"].items())
+            depth = len(chosen)
+            real = vslug.replace("_", " ").title()
+            if depth < len(axes):
+                for v in axes[depth][1]:
+                    if v.lower().replace(" ", "_")[:16] == vslug:
+                        real = v
+                        break
+            chosen.append(real)
+            return self._variant_pick(phone_number, k, chosen=chosen)
+        if button_id.startswith("cat_vcstk_"):
+            self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+                "cat_step": "variant_set_stock",
+                "cat_product_key": button_id[10:],
+                "cat_combo": (self.session.get(phone_number).get("context", {}) or {}).get("cat_combo", "")})
+            return [text_response("📐 Type the stock quantity for this variant:")]
+        if button_id.startswith("cat_vccost_"):
+            self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+                "cat_step": "variant_set_cost",
+                "cat_product_key": button_id[11:],
+                "cat_combo": (self.session.get(phone_number).get("context", {}) or {}).get("cat_combo", "")})
+            return [text_response("🏷️ Type the cost for this variant (e.g. 5000, 150K):")]
         if button_id.startswith("cat_setprice_"):
             return self._start_set_sale_price(phone_number, button_id[13:])
         if button_id.startswith("cat_rename_"):
@@ -417,6 +454,18 @@ class CatalogHandler:
 
         if step == "setting_category":
             return self._handle_set_category(phone_number, text_s, context)
+
+        if step == "adding_axis":
+            return self._handle_add_axis(phone_number, text_s, context)
+
+        if step == "adding_axis_values":
+            return self._handle_add_axis_values(phone_number, text_s, context)
+
+        if step == "variant_set_stock":
+            return self._apply_variant_field(phone_number, text_s, context, "stock")
+
+        if step == "variant_set_cost":
+            return self._apply_variant_field(phone_number, text_s, context, "cost")
 
         if step == "adding_products":
             return self._handle_add_products(phone_number, text_s, context)
@@ -3066,6 +3115,193 @@ class CatalogHandler:
         if len(cat) < 2:
             return [text_response("Please type a valid category (2+ characters).")]
         return self._apply_category(phone_number, product_key, cat)
+
+    # ═════════════════════════════════════════════════════════
+    # 2E — VARIANTS / ATTRIBUTES (flexible user-named axes)
+    #
+    # DESIGN (backward-compatible): `attributes` = {axis_name: [values]} drives
+    # the UI (e.g. {"Colour": ["Black","White"], "Year": ["2019","2020"]}). The
+    # STOCKABLE combination is stored as a single joined string key
+    # (e.g. "Black / 2020") in the EXISTING variant_stock{} / variant_costs{},
+    # so all existing per-variant sale-deduction + cost logic keeps working.
+    # A legacy 1-axis product (flat variants[]) still works: its values are the
+    # combo keys directly. Total stock = sum of the combos (existing behaviour).
+    # ═════════════════════════════════════════════════════════
+
+    _COMBO_SEP = " / "
+
+    def _combo_key(self, values: list) -> str:
+        """Join chosen axis values into the single stock/cost key."""
+        return self._COMBO_SEP.join(v for v in values if v)
+
+    def variants_menu(self, phone_number: str, product_key: str) -> list:
+        """Manage a product's variant axes + drill into a combination."""
+        p = self.get_normalized_product(phone_number, product_key)
+        if not p["name"]:
+            return [text_response("❓ Product not found.")]
+        axes = p["attributes"]  # {axis: [values]} (legacy variants bridged to 'Variant')
+
+        lines = [f"🎚️ *{p['name']}* — Variants"]
+        if not axes:
+            lines.append("\n_No variants yet. Add an axis like Colour, Size or Year._")
+        else:
+            for axis, vals in axes.items():
+                lines.append(f"• *{axis}*: {', '.join(vals) if vals else '_none_'}")
+
+        rows = [{"id": f"cat_varaddaxis_{product_key}", "title": "➕ Add axis (e.g. Colour)"}]
+        # Let the user add values to an existing axis.
+        for axis in list(axes.keys())[:4]:
+            slug = axis.lower().replace(" ", "_")[:20]
+            rows.append({"id": f"cat_varaddval_{product_key}__{slug}", "title": f"➕ Add {axis} value"})
+        if axes:
+            rows.append({"id": f"cat_varpick_{product_key}", "title": "📦 Set variant stock/cost"})
+        rows.append({"id": f"cat_view_{product_key}", "title": "← Back"})
+
+        return [text_response("\n".join(lines)),
+                button_response("Variants:", rows)]
+
+    def _start_add_axis(self, phone_number: str, product_key: str) -> list:
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+            "cat_step": "adding_axis", "cat_product_key": product_key})
+        return [button_response(
+            "🎚️ Name the axis (what varies?):\n_e.g. Colour, Size, Year, Model_",
+            [{"id": "cat_cancel", "title": "← Cancel"}])]
+
+    def _handle_add_axis(self, phone_number: str, text: str, context: dict) -> list:
+        product_key = context.get("cat_product_key", "")
+        axis = text.strip().title()
+        if len(axis) < 2:
+            return [text_response("Please type a valid axis name (2+ characters).")]
+        products = self._get_products(phone_number)
+        prod = products.get(product_key)
+        if not isinstance(prod, dict):
+            self.session.reset(phone_number); return [text_response("❓ Product not found.")]
+        attrs = prod.get("attributes") or {}
+        # If the product only had legacy flat variants, migrate them into an axis now.
+        if not attrs and prod.get("variants"):
+            attrs = {"Variant": list(prod["variants"])}
+        attrs.setdefault(axis, [])
+        prod["attributes"] = attrs
+        products[product_key] = prod
+        self._save_products(phone_number, products)
+        # Now ask for its values.
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+            "cat_step": "adding_axis_values", "cat_product_key": product_key, "cat_axis": axis})
+        return [button_response(
+            f"🎚️ *{axis}* — type its values (comma-separated):\n_e.g. Black, White, Red_",
+            [{"id": "cat_cancel", "title": "← Cancel"}])]
+
+    def _start_add_axis_value(self, phone_number: str, product_key: str, axis_slug: str) -> list:
+        p = self.get_normalized_product(phone_number, product_key)
+        axis = next((a for a in p["attributes"] if a.lower().replace(" ", "_")[:20] == axis_slug), axis_slug.title())
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+            "cat_step": "adding_axis_values", "cat_product_key": product_key, "cat_axis": axis})
+        return [button_response(
+            f"🎚️ *{axis}* — type value(s) to add (comma-separated):",
+            [{"id": "cat_cancel", "title": "← Cancel"}])]
+
+    def _handle_add_axis_values(self, phone_number: str, text: str, context: dict) -> list:
+        product_key = context.get("cat_product_key", "")
+        axis = context.get("cat_axis", "")
+        vals = [v.strip().title() for v in text.split(",") if v.strip()]
+        self.session.reset(phone_number)
+        if not vals:
+            return [text_response("Please type at least one value.")]
+        products = self._get_products(phone_number)
+        prod = products.get(product_key)
+        if not isinstance(prod, dict):
+            return [text_response("❓ Product not found.")]
+        attrs = prod.get("attributes") or {}
+        existing = attrs.get(axis, [])
+        for v in vals:
+            if v not in existing:
+                existing.append(v)
+        attrs[axis] = existing
+        prod["attributes"] = attrs
+        products[product_key] = prod
+        self._save_products(phone_number, products)
+        return self.variants_menu(phone_number, product_key)
+
+    def _variant_pick(self, phone_number: str, product_key: str, chosen: list = None) -> list:
+        """Drill through axes one at a time to reach a combination, then set its
+        stock/cost. `chosen` accumulates picked values (via session)."""
+        p = self.get_normalized_product(phone_number, product_key)
+        axes = list(p["attributes"].items())  # [(axis, [values]), ...]
+        chosen = chosen or []
+        depth = len(chosen)
+
+        if depth < len(axes):
+            axis, values = axes[depth]
+            if not values:
+                # Axis has no values yet — skip to combo with what we have.
+                return self._variant_combo(phone_number, product_key, chosen)
+            # Stash progress so the next tap continues the drill.
+            self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+                "cat_step": "variant_drill", "cat_product_key": product_key,
+                "cat_chosen": chosen})
+            crumb = self._COMBO_SEP.join(chosen) if chosen else "—"
+            rows = []
+            for v in values[:20]:
+                vslug = v.lower().replace(" ", "_")[:16]
+                rows.append({"id": f"cat_varval_{product_key}__{vslug}", "title": v})
+            rows.append({"id": f"cat_setvar_{product_key}", "title": "← Variants"})
+            return [list_response(
+                header=f"🎚️ {axis}",
+                body=f"*{p['name']}* — pick {axis}\nSo far: {crumb}",
+                button_text="Pick",
+                sections=[{"title": "", "rows": rows}],
+            )]
+        # All axes chosen → the combination.
+        return self._variant_combo(phone_number, product_key, chosen)
+
+    def _variant_combo(self, phone_number: str, product_key: str, chosen: list) -> list:
+        """Show one combination's stock + cost with edit actions."""
+        p = self.get_normalized_product(phone_number, product_key)
+        combo = self._combo_key(chosen)
+        vstock = self._as_int(p["variant_stock"].get(combo), 0)
+        vcost = self._as_int(p["variant_costs"].get(combo), 0)
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+            "cat_step": "variant_combo", "cat_product_key": product_key,
+            "cat_combo": combo})
+        lines = [f"🎚️ *{p['name']}* — {combo or 'variant'}",
+                 f"📐 Stock: *{vstock}*"]
+        if vcost:
+            lines.append(f"🏷️ Cost: {format_amount(vcost)}")
+        return [text_response("\n".join(lines)),
+                button_response("Set:", [
+                    {"id": f"cat_vcstk_{product_key}", "title": "📐 Set stock"},
+                    {"id": f"cat_vccost_{product_key}", "title": "🏷️ Set cost"},
+                    {"id": f"cat_setvar_{product_key}", "title": "← Variants"},
+                ])]
+
+    def _apply_variant_field(self, phone_number: str, text: str, context: dict, field: str) -> list:
+        """Save stock or cost for the current combination, resync total stock."""
+        product_key = context.get("cat_product_key", "")
+        combo = context.get("cat_combo", "")
+        self.session.reset(phone_number)
+        val = parse_amount(text) if field == "cost" else None
+        if field == "stock":
+            digits = "".join(c for c in text if c.isdigit())
+            val = int(digits) if digits else None
+        if val is None:
+            return [text_response("Please type a valid number.")]
+        products = self._get_products(phone_number)
+        prod = products.get(product_key)
+        if not isinstance(prod, dict):
+            return [text_response("❓ Product not found.")]
+        if field == "stock":
+            vs = prod.get("variant_stock") or {}
+            vs[combo] = max(0, int(val))
+            prod["variant_stock"] = vs
+            # Keep the product total in sync with the sum of its combos.
+            prod["stock"] = sum(self._as_int(x, 0) for x in vs.values())
+        else:
+            vc = prod.get("variant_costs") or {}
+            vc[combo] = int(val)
+            prod["variant_costs"] = vc
+        products[product_key] = prod
+        self._save_products(phone_number, products)
+        return self._variant_combo(phone_number, product_key, combo.split(self._COMBO_SEP) if combo else [])
 
     def _card_back_buttons(self, product_key: str) -> list:
         """Common footer to return to a product's card / catalog after an edit."""
