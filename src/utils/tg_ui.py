@@ -118,6 +118,21 @@ def _fmt_qty(n: int) -> str:
     return f"{n:,}"
 
 
+def unit_keyboard(units, include_back=True) -> list:
+    """Unit toggle for the quantity step (2F). `units` = list of unit words
+    (e.g. ['bag', 'piece']). Each becomes a tap: __tgfx__:unit:<unit>."""
+    rows, row = [], []
+    for u in (units or []):
+        row.append({"text": u, "callback_data": _cb("unit", u)})
+        if len(row) == 3:
+            rows.append(row); row = []
+    if row:
+        rows.append(row)
+    if include_back:
+        rows.append([{"text": "⬅️ Back", "callback_data": _cb("back")}])
+    return rows
+
+
 def customer_keyboard(recent=None, include_back=True) -> list:
     """'Who?' step: recent/known customers as buttons + type-a-name + walk-in.
 

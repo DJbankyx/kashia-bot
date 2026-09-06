@@ -195,14 +195,27 @@ class TGFastEntry:
         parts = []
         if name:
             qty = fx.get("quantity")
+            unit = fx.get("unit", "")
             if qty and not fx.get("is_service"):
-                parts.append(f"{name} ×{int(qty):,}")
+                if unit:
+                    parts.append(f"{name} {int(qty):,} {unit}")
+                else:
+                    parts.append(f"{name} ×{int(qty):,}")
             else:
                 parts.append(name)
         amount = fx.get("amount")
         if amount:
             parts.append(format_amount(amount))
         return " · ".join(parts)
+
+    def _quantity_str(self, fx: dict) -> str:
+        """Build the quantity value sent to the engine. Includes the unit when
+        one was chosen (so update_stock/_apply_conversion converts to base)."""
+        qty = fx.get("quantity")
+        if not qty:
+            return ""
+        unit = fx.get("unit", "")
+        return f"{int(qty)} {unit}" if unit else str(int(qty))
 
     # ── callback handling (__tgfx__:*) ──────────────────────────────────
 
@@ -266,6 +279,9 @@ class TGFastEntry:
                          f"{self._header(fx)}\n💸 {fx.get('product_name','Expense')}\n\nHow much? (total)",
                          tg_ui.amount_keyboard())
             return []
+
+        if action == "unit":
+            return self._set_unit(phone_number, fx, value)
 
         if action == "amt":
             amount = int(value) if value.isdigit() else 0
@@ -444,9 +460,42 @@ class TGFastEntry:
 
     def _set_quantity(self, phone_number: str, fx: dict, n: int) -> list:
         fx["quantity"] = int(n)
+        # 2F: if this item has registered unit conversions (e.g. 1 bag = 20
+        # pieces), ask WHICH unit this quantity is in, then convert on save.
+        units = self._item_units(phone_number, fx)
+        if units.get("has_conversions") and len(units.get("units", [])) > 1:
+            fx["step"] = "unit"
+            fx["_units"] = units["units"]
+            self._save_fx(phone_number, fx)
+            text = (f"{self._header(fx)}\n📦 {fx['product_name']} — {n:,}\n\n"
+                    f"In what unit?")
+            self._render(phone_number, fx, text, tg_ui.unit_keyboard(units["units"]))
+            return []
+        # No conversions → straight to price (existing behaviour).
+        return self._go_to_price(phone_number, fx)
+
+    def _item_units(self, phone_number: str, fx: dict) -> dict:
+        try:
+            key = fx.get("product_key")
+            if key:
+                return self.catalog.get_item_units(phone_number, key)
+        except Exception as e:
+            logger.warning(f"tg_fastentry: get_item_units failed: {e}")
+        return {"base": "", "units": [], "has_conversions": False}
+
+    def _set_unit(self, phone_number: str, fx: dict, unit: str) -> list:
+        """2F: user picked the unit for the quantity → go to price."""
+        fx["unit"] = unit
+        return self._go_to_price(phone_number, fx)
+
+    def _go_to_price(self, phone_number: str, fx: dict) -> list:
         fx["step"] = "price"
-        text = (f"{self._header(fx)}\n📦 {fx['product_name']} ×{n:,}\n\n"
-                f"Price each?")
+        n = int(fx.get("quantity", 1) or 1)
+        unit = fx.get("unit", "")
+        qty_disp = f"{n:,} {unit}" if unit else f"×{n:,}"
+        text = (f"{self._header(fx)}\n📦 {fx['product_name']} {qty_disp}\n\n"
+                f"Price per {unit}?" if unit else
+                f"{self._header(fx)}\n📦 {fx['product_name']} ×{n:,}\n\nPrice each?")
         presets = self._price_presets(phone_number, fx)
         self._render(phone_number, fx, text, tg_ui.amount_keyboard(presets=presets or None))
         return []
@@ -643,7 +692,9 @@ class TGFastEntry:
             "description": fx.get("product_name", "Item"),
             "category": spec.get("category", "Uncategorized"),
             "vendor": fx.get("vendor", ""),
-            "quantity": str(fx["quantity"]) if fx.get("quantity") else "",
+            # 2F: carry the entered unit so the engine's update_stock/_apply_conversion
+            # converts to base (e.g. "20 bags" -> 400 pieces). Plain int if no unit.
+            "quantity": self._quantity_str(fx),
             "unit_cost": fx.get("unit_cost"),
             "is_service_job": bool(fx.get("is_service")),
             "payment_method": pm,
@@ -681,7 +732,7 @@ class TGFastEntry:
         fx["step"] = "product"
         for k in ("product_key", "product_name", "quantity", "unit_cost", "amount",
                   "payment_method", "has_credit", "vendor", "deposit_amount",
-                  "balance_owed", "counted_stock", "who_required"):
+                  "balance_owed", "counted_stock", "who_required", "unit", "_units"):
             fx.pop(k, None)
         # Expense restarts at the typed "what for?" step (no catalog picker).
         if fx.get("tx_type") == "expense":
@@ -711,6 +762,14 @@ class TGFastEntry:
                 return self._restart_item(phone_number, fx)
             self._cancel(phone_number, fx)
             return []
+        if step == "unit":
+            # back to quantity
+            fx["step"] = "quantity"
+            presets = self._qty_presets(phone_number, fx)
+            self._render(phone_number, fx,
+                         f"{self._header(fx)}\n📦 {fx['product_name']}\n\nHow many?",
+                         tg_ui.quantity_keyboard(presets=presets))
+            return []
         if step == "price":
             # back to quantity (expense uses its own qty step with the total escape)
             if fx.get("tx_type") == "expense":
@@ -721,6 +780,13 @@ class TGFastEntry:
                     f"{self._header(fx)}\n💸 {fx.get('product_name','Expense')}\n\n"
                     f"How many? _(or tap “Just a total”)_",
                     tg_ui.quantity_keyboard(presets=presets, include_no_qty=True))
+                return []
+            # If a unit was chosen (2F), step back to the unit toggle; else qty.
+            if fx.get("unit") and fx.get("_units"):
+                fx["step"] = "unit"
+                self._render(phone_number, fx,
+                             f"{self._header(fx)}\n📦 {fx['product_name']} — {int(fx.get('quantity',1)):,}\n\nIn what unit?",
+                             tg_ui.unit_keyboard(fx["_units"]))
                 return []
             fx["step"] = "quantity"
             presets = self._qty_presets(phone_number, fx)

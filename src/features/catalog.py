@@ -2773,6 +2773,36 @@ class CatalogHandler:
         products = self._get_products(phone_number)
         return self.normalize_product(products.get(key, {}), key=key)
 
+    def get_item_units(self, phone_number: str, product_key: str) -> dict:
+        """2F: return the units a catalog item can be entered in.
+
+        {"base": <primary_unit or ''>, "units": [larger-first list incl. base],
+         "has_conversions": bool}. Conversion keys look like "1 bag"; we surface
+        the UNIT word ("bag"). The tidy-box quantity step offers these as a
+        toggle only when has_conversions is True; the chosen unit is carried as
+        "<n> <unit>" so the existing update_stock/_apply_conversion converts it.
+        """
+        import re as _re
+        p = self.get_normalized_product(phone_number, product_key)
+        base = (p.get("primary_unit") or "").strip()
+        conv = p.get("conversions") or {}
+        conv_units = []
+        for ck in conv.keys():
+            m = _re.match(r'^\s*\d+\s+(.+)$', str(ck).strip())
+            if m:
+                u = m.group(1).strip()
+                if u and u not in conv_units:
+                    conv_units.append(u)
+        # Larger units first (e.g. bag before piece); base last.
+        units = list(conv_units)
+        if base and base not in units:
+            units.append(base)
+        return {
+            "base": base,
+            "units": units,
+            "has_conversions": bool(conv_units),
+        }
+
     def record_stock_movement(self, phone_number: str, key: str, delta: int,
                               reason: str = "", tx_id: str = "") -> bool:
         """Append an entry to a product's stock_movements log (additive history).
