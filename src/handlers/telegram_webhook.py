@@ -222,13 +222,22 @@ def _handle_callback_query(callback: dict):
 #     exactly where the equivalent tap would.
 #   - "text" routes become plain text the engine word-matches.
 _COMMAND_MAP = {
-    "start": ("hi", "text"),          # greeting / onboarding entry
-    "menu":  ("menu_home", "interactive"),
-    "report": ("menu_report", "interactive"),
-    "sale":  ("record_sale", "interactive"),
-    "debts": ("menu_debts", "interactive"),
-    "help":  ("help", "text"),
-    "reset": ("set_hardreset", "interactive"),  # full reset → re-onboard fresh
+    "start":    ("hi", "text"),          # greeting / onboarding entry (kept, not menu-listed)
+    "menu":     ("menu_home", "interactive"),
+    "sale":     ("record_sale", "interactive"),
+    "purchase": ("record_purchase", "interactive"),
+    "buy":      ("record_purchase", "interactive"),   # alias
+    "expense":  ("record_expense", "interactive"),
+    "report":   ("menu_report", "interactive"),
+    "reports":  ("menu_report", "interactive"),        # alias
+    "catalog":  ("menu_catalog", "interactive"),
+    "stock":    ("menu_catalog", "interactive"),       # alias
+    "products": ("menu_catalog", "interactive"),       # alias
+    "debts":    ("menu_debts", "interactive"),
+    "contacts": ("menu_contacts", "interactive"),
+    "customers":("menu_contacts", "interactive"),      # alias
+    "help":     ("help", "text"),
+    "reset":    ("set_hardreset", "interactive"),  # full reset → re-onboard fresh
 }
 
 
@@ -245,14 +254,21 @@ def _translate_command(text: str) -> tuple:
 
 # The command list registered with Telegram via setMyCommands (see
 # set_telegram_commands.sh). Descriptions show in the in-app "/" menu.
+# NOTE: /start is intentionally NOT listed here (it stayed a confusing second
+# "reset-like" entry next to /reset). It still works if typed. Aliases (buy,
+# stock, products, customers, reports) also work but aren't listed, to keep the
+# menu tight.
 COMMAND_MENU = [
-    {"command": "menu",   "description": "Open the main menu"},
-    {"command": "sale",   "description": "Record a sale"},
-    {"command": "report", "description": "View your reports"},
-    {"command": "debts",  "description": "Who owes you / who you owe"},
-    {"command": "help",   "description": "How to use Kashia"},
-    {"command": "start",  "description": "Restart / onboarding"},
-    {"command": "reset",  "description": "Full reset — delete all data & start over"},
+    {"command": "menu",     "description": "🏠 Main menu"},
+    {"command": "sale",     "description": "💰 Record a sale"},
+    {"command": "purchase", "description": "📦 Record a purchase"},
+    {"command": "expense",  "description": "💸 Record an expense"},
+    {"command": "report",   "description": "📊 Reports & dashboard"},
+    {"command": "catalog",  "description": "🗂️ Products & stock"},
+    {"command": "debts",    "description": "💳 Who owes you / who you owe"},
+    {"command": "contacts", "description": "👥 Customers & suppliers"},
+    {"command": "help",     "description": "❓ How to use Kashia"},
+    {"command": "reset",    "description": "🗑️ Delete all data & start over"},
 ]
 
 
