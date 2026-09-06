@@ -173,8 +173,31 @@ class CatalogHandler:
             return self.shelf_products(phone_number, low_only=True)
         if button_id == "cat_shelf_search":
             return self._start_shelf_search(phone_number)
+
+        # ── 2H: counter / bulk stock-take ──
+        if button_id == "cat_count_start":
+            return self._start_stocktake(phone_number)
+        if button_id.startswith("cat_count_grp_"):
+            return self._start_stocktake(phone_number, type_group=button_id[14:])
+        if button_id == "cat_count_skip":
+            return self._stocktake_advance(phone_number, skip=True)
+        if button_id == "cat_count_keep":
+            return self._stocktake_advance(phone_number, skip=True)
+        if button_id == "cat_count_finish":
+            return self._finish_stocktake(phone_number)
+        if button_id.startswith("cat_shelf_grp_"):
+            # Type-group browse: cat_shelf_grp_<finished|raw|supply|service>
+            return self.shelf_products(phone_number, type_group=button_id[14:])
+        if button_id.startswith("cat_shelf_catg_"):
+            # Category within a type group: cat_shelf_catg_<group>__<slug>
+            rest = button_id[15:]
+            grp, _, slug = rest.partition("__")
+            return self.shelf_products(phone_number, category_slug=slug, type_group=grp)
         if button_id.startswith("cat_shelf_cat_"):
             return self.shelf_products(phone_number, category_slug=button_id[14:])
+        if button_id.startswith("cat_shelf_gcats_"):
+            # Browse-by-category within a type group
+            return self.shelf_categories(phone_number, type_group=button_id[16:])
         if button_id.startswith("cat_view_") and self._is_telegram(phone_number):
             # New shelf card (Telegram). Legacy cat_view_products/materials/etc.
             # keep their handlers below; guard against those exact ids.
@@ -451,6 +474,9 @@ class CatalogHandler:
         # Route by step
         if step == "shelf_search":
             return self._do_shelf_search(phone_number, text_s)
+
+        if step == "stocktake_count":
+            return self._stocktake_record(phone_number, text_s, context)
 
         if step == "setting_sale_price":
             return self._handle_set_sale_price(phone_number, text_s, context)
@@ -2872,19 +2898,58 @@ class CatalogHandler:
 
     def _shelf_label(self, phone_number: str) -> str:
         """Industry-aware label for the catalog."""
-        try:
-            user = self.db.get_user(phone_number) or {}
-            industry = user.get("industry_class", user.get("business_type", "trading"))
-        except Exception:
-            industry = "trading"
         return {
             "services": "Services & Supplies",
             "manufacturing": "Products & Materials",
             "hybrid": "Products & Supplies",
-        }.get(industry, "Products")
+        }.get(self._industry(phone_number), "Products")
+
+    def _industry(self, phone_number: str) -> str:
+        try:
+            user = self.db.get_user(phone_number) or {}
+            return user.get("industry_class", user.get("business_type", "trading"))
+        except Exception:
+            return "trading"
+
+    # ── Item-type groups ─────────────────────────────────────
+    # Each catalog item belongs to exactly one browse group. Finished products
+    # (what you sell) are kept apart from raw materials (what you consume to make
+    # them) so a manufacturer's "products" list isn't polluted by inputs.
+    _TYPE_GROUPS = {
+        "finished": ("finished_product", "product", ""),
+        "raw": ("raw_material",),
+        "supply": ("consumable", "supply"),
+        "service": ("service",),
+    }
+    _GROUP_META = {
+        "finished": {"emoji": "🏭", "label": "Finished Products", "one": "product"},
+        "raw":      {"emoji": "🧱", "label": "Raw Materials",     "one": "material"},
+        "supply":   {"emoji": "📦", "label": "Supplies",          "one": "supply"},
+        "service":  {"emoji": "🛠️", "label": "Services",          "one": "service"},
+    }
+
+    def _group_of(self, product: dict) -> str:
+        it = (product.get("item_type") or "").strip().lower()
+        for grp, types in self._TYPE_GROUPS.items():
+            if it in types:
+                return grp
+        return "finished"  # unknown types default to the sellable group
+
+    def _grouped(self, prods: list) -> dict:
+        """Split products into type-groups (finished/raw/supply/service)."""
+        out = {}
+        for p in prods:
+            out.setdefault(self._group_of(p), []).append(p)
+        return out
+
+    def _uses_type_split(self, phone_number: str) -> bool:
+        """Manufacturing & hybrid separate finished vs raw; others don't."""
+        return self._industry(phone_number) in ("manufacturing", "hybrid")
 
     def shelf_home(self, phone_number: str) -> list:
-        """Telegram catalog home: Categories / All / Search / Low stock."""
+        """Telegram catalog home. Manufacturing/hybrid split browse by item type
+        (Finished Products vs Raw Materials vs Supplies); other industries show
+        a single product list. Same card behaviour in every group."""
         prods = [p for p in self._normalized_products(phone_number)
                  if p["item_type"] not in self._SHELF_HIDDEN_TYPES]
         label = self._shelf_label(phone_number)
@@ -2893,16 +2958,15 @@ class CatalogHandler:
             return [text_response(
                 f"📋 *{label}*\n\n"
                 "Your catalog is empty.\n\n"
-                "_Add your first product to track stock, cost and profit._"
+                "_Add your first item to track stock, cost and profit._"
             ), button_response("Set up:", [
-                {"id": "cat_add", "title": "➕ Add Product"},
+                {"id": "cat_add", "title": "➕ Add Item"},
                 {"id": "menu_home", "title": "☰ Menu"},
             ])]
 
         total = len(prods)
         stock_value = sum(p["_stock_value"] for p in prods)
         low = [p for p in prods if p["_is_low_stock"]]
-        cats = self._categories(prods)
 
         body = f"📋 *{label}* — {total} item{'s' if total != 1 else ''}"
         if stock_value > 0:
@@ -2911,13 +2975,30 @@ class CatalogHandler:
             body += f"\n🔴 Low stock: *{len(low)}*"
 
         rows = []
-        if len(cats) > 1:
-            rows.append({"id": "cat_shelf_cats", "title": "🗂️ Browse by Category"})
-        rows.append({"id": "cat_shelf_all", "title": f"📦 All Products ({total})"})
+        if self._uses_type_split(phone_number):
+            # Separate browse option per type-group that actually has items,
+            # in a sensible order.
+            grouped = self._grouped(prods)
+            for grp in ("finished", "raw", "supply", "service"):
+                items = grouped.get(grp)
+                if not items:
+                    continue
+                meta = self._GROUP_META[grp]
+                rows.append({
+                    "id": f"cat_shelf_grp_{grp}",
+                    "title": f"{meta['emoji']} {meta['label']} ({len(items)})",
+                })
+        else:
+            cats = self._categories(prods)
+            if len(cats) > 1:
+                rows.append({"id": "cat_shelf_cats", "title": "🗂️ Browse by Category"})
+            rows.append({"id": "cat_shelf_all", "title": f"📦 All {label} ({total})"})
+
         rows.append({"id": "cat_shelf_search", "title": "🔍 Search"})
         if low:
             rows.append({"id": "cat_shelf_low", "title": f"🔴 Low Stock ({len(low)})"})
-        rows.append({"id": "cat_add", "title": "➕ Add Product"})
+        rows.append({"id": "cat_count_start", "title": "🧮 Stock-Take (count)"})
+        rows.append({"id": "cat_add", "title": "➕ Add Item"})
 
         return [list_response(
             header=f"📋 {label}",
@@ -2934,21 +3015,30 @@ class CatalogHandler:
             cats.setdefault(cat, []).append(p)
         return cats
 
-    def shelf_categories(self, phone_number: str) -> list:
-        """Grid of categories → tap opens that category's products."""
+    def shelf_categories(self, phone_number: str, type_group: str = "") -> list:
+        """Grid of categories → tap opens that category's products.
+        When type_group is set, only categories within that group are shown and
+        taps stay scoped to the group."""
         prods = [p for p in self._normalized_products(phone_number)
                  if p["item_type"] not in self._SHELF_HIDDEN_TYPES]
+        if type_group:
+            prods = [p for p in prods if self._group_of(p) == type_group]
         cats = self._categories(prods)
         rows = []
         for cat in sorted(cats.keys()):
             n = len(cats[cat])
             # Category id: slug the name (kept short + safe for callback_data).
             slug = cat.lower().replace(" ", "_")[:32]
-            rows.append({"id": f"cat_shelf_cat_{slug}", "title": f"🗂️ {cat} ({n})"})
-        rows.append({"id": "menu_catalog", "title": "← Back"})
+            if type_group:
+                rows.append({"id": f"cat_shelf_catg_{type_group}__{slug}"[:60],
+                             "title": f"🗂️ {cat} ({n})"})
+            else:
+                rows.append({"id": f"cat_shelf_cat_{slug}", "title": f"🗂️ {cat} ({n})"})
+        back_id = f"cat_shelf_grp_{type_group}" if type_group else "menu_catalog"
+        rows.append({"id": back_id, "title": "← Back"})
         return [list_response(
             header="🗂️ Categories",
-            body="Tap a category to see its products:",
+            body="Tap a category to see its items:",
             button_text="Select",
             sections=[{"title": "", "rows": rows}],
         )]
@@ -2969,12 +3059,22 @@ class CatalogHandler:
         return rows
 
     def shelf_products(self, phone_number: str, category_slug: str = "",
-                       low_only: bool = False) -> list:
-        """Paginated product list — all, by category, or low-stock only."""
+                       low_only: bool = False, type_group: str = "") -> list:
+        """Paginated product list — filtered by type-group and/or category, or
+        low-stock only. type_group scopes to finished/raw/supply/service."""
         prods = [p for p in self._normalized_products(phone_number)
                  if p["item_type"] not in self._SHELF_HIDDEN_TYPES]
 
-        header = "📦 All Products"
+        # Scope to the item-type group first (Finished vs Raw vs Supply…).
+        group_meta = self._GROUP_META.get(type_group)
+        if type_group:
+            prods = [p for p in prods if self._group_of(p) == type_group]
+
+        if group_meta:
+            header = f"{group_meta['emoji']} {group_meta['label']}"
+        else:
+            header = f"📦 All {self._shelf_label(phone_number)}"
+
         if low_only:
             prods = [p for p in prods if p["_is_low_stock"]]
             header = "🔴 Low Stock"
@@ -2982,15 +3082,24 @@ class CatalogHandler:
             prods = [p for p in prods
                      if ((p.get("category") or "").strip() or "uncategorized")
                      .lower().replace(" ", "_")[:32] == category_slug]
-            # Recover a display name for the header.
             disp = category_slug.replace("_", " ").title()
             header = f"🗂️ {disp}"
 
+        back_id = f"cat_shelf_grp_{type_group}" if (type_group and category_slug) else "menu_catalog"
+
         if not prods:
             return [text_response(f"{header}\n\n_Nothing here yet._"),
-                    button_response("Back:", [{"id": "menu_catalog", "title": "← Catalog"}])]
+                    button_response("Back:", [{"id": back_id, "title": "← Back"}])]
 
         rows = self._product_rows(prods)
+        # Offer "browse by category" inside a group when it has several
+        # categories AND the list is short enough that the auto-pager won't
+        # engage (pager kicks in above 8 rows and would swallow this control).
+        if type_group and not category_slug and not low_only and len(rows) <= 8:
+            gcats = self._categories(prods)
+            if len(gcats) > 1:
+                rows.append({"id": f"cat_shelf_gcats_{type_group}",
+                             "title": "🗂️ Browse by Category"})
         body = f"{header} — {len(rows)} item{'s' if len(rows) != 1 else ''}\nTap one to open it:"
         return [list_response(
             header=header,
@@ -3109,6 +3218,157 @@ class CatalogHandler:
             pass
         # Re-render the card so the user sees the new stock instantly.
         return self._show_product_card(phone_number, product_key)
+
+    # ═════════════════════════════════════════════════════════
+    # 2H — COUNTER / BULK STOCK-TAKE
+    # Walk items one-by-one; type the real counted number to set stock.
+    # Each change logs a "stock-take" movement so history stays truthful.
+    # ═════════════════════════════════════════════════════════
+
+    def _stocktake_keys(self, phone_number: str, type_group: str = "") -> list:
+        """Ordered list of product keys to count (skip services & hidden types)."""
+        prods = [p for p in self._normalized_products(phone_number)
+                 if p["item_type"] not in self._SHELF_HIDDEN_TYPES
+                 and p["item_type"] != "service"]
+        if type_group:
+            prods = [p for p in prods if self._group_of(p) == type_group]
+        prods.sort(key=lambda x: x["name"].lower())
+        return [p["_key"] for p in prods]
+
+    def _start_stocktake(self, phone_number: str, type_group: str = "") -> list:
+        """Begin a stock-take. For manufacturing/hybrid, first ask which group
+        to count (Finished vs Raw vs Supplies) so a session stays focused."""
+        # Offer a group choice when the industry splits types and no group picked.
+        if not type_group and self._uses_type_split(phone_number):
+            prods = [p for p in self._normalized_products(phone_number)
+                     if p["item_type"] not in self._SHELF_HIDDEN_TYPES
+                     and p["item_type"] != "service"]
+            grouped = self._grouped(prods)
+            rows = []
+            for grp in ("finished", "raw", "supply"):
+                items = grouped.get(grp)
+                if not items:
+                    continue
+                meta = self._GROUP_META[grp]
+                rows.append({"id": f"cat_count_grp_{grp}",
+                             "title": f"{meta['emoji']} {meta['label']} ({len(items)})"})
+            if len(rows) > 1:
+                rows.append({"id": "menu_catalog", "title": "← Back"})
+                return [list_response(
+                    header="🧮 Stock-Take",
+                    body="Count one group at a time.\nWhat are you counting?",
+                    button_text="Select",
+                    sections=[{"title": "", "rows": rows}],
+                )]
+
+        keys = self._stocktake_keys(phone_number, type_group=type_group)
+        if not keys:
+            return [text_response("🧮 Nothing to count here yet."),
+                    button_response("Back:", [{"id": "menu_catalog", "title": "← Catalog"}])]
+
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+            "cat_step": "stocktake_count",
+            "cat_st_keys": keys,
+            "cat_st_index": 0,
+            "cat_st_group": type_group,
+            "cat_st_updated": 0,
+        })
+        return self._stocktake_prompt(phone_number)
+
+    def _stocktake_prompt(self, phone_number: str) -> list:
+        """Show the current item to count, with position + quick controls."""
+        ctx = self.session.get(phone_number).get("context", {}) or {}
+        keys = ctx.get("cat_st_keys", [])
+        idx = int(ctx.get("cat_st_index", 0))
+        if idx >= len(keys):
+            return self._finish_stocktake(phone_number)
+
+        p = self.get_normalized_product(phone_number, keys[idx])
+        # Skip anything that vanished mid-session.
+        if not p["name"]:
+            return self._stocktake_advance(phone_number, skip=True)
+
+        unit = p.get("primary_unit") or "unit"
+        pos = f"{idx + 1}/{len(keys)}"
+        body = (
+            f"🧮 *Stock-Take* ({pos})\n\n"
+            f"📦 *{p['name']}*\n"
+            f"System shows: *{p['stock']} {unit}*\n\n"
+            f"Type the *actual counted* quantity 👇\n"
+            f"_or keep the current number._"
+        )
+        return [text_response(body),
+                button_response("Options:", [
+                    {"id": "cat_count_keep", "title": "✓ Keep (no change)"},
+                    {"id": "cat_count_finish", "title": "🏁 Finish"},
+                ])]
+
+    def _stocktake_record(self, phone_number: str, text_s: str, context: dict) -> list:
+        """Set the counted item's stock to the typed number, log a movement,
+        then advance to the next item."""
+        keys = context.get("cat_st_keys", [])
+        idx = int(context.get("cat_st_index", 0))
+        if idx >= len(keys):
+            return self._finish_stocktake(phone_number)
+
+        # Parse the counted number (allow decimals, but store as int like the rest).
+        import re
+        m = re.search(r"-?\d+(\.\d+)?", text_s.replace(",", ""))
+        if not m:
+            return [text_response(
+                "🔢 Please type the counted number (e.g. *24*), "
+                "or tap ✓ Keep / 🏁 Finish."
+            ), button_response("Options:", [
+                {"id": "cat_count_keep", "title": "✓ Keep (no change)"},
+                {"id": "cat_count_finish", "title": "🏁 Finish"},
+            ])]
+        counted = max(0, int(float(m.group(0))))
+
+        key = keys[idx]
+        products = self._get_products(phone_number)
+        prod = products.get(key)
+        if isinstance(prod, dict):
+            cur = self._as_int(prod.get("stock"), 0)
+            delta = counted - cur
+            prod["stock"] = counted
+            products[key] = prod
+            self._save_products(phone_number, products)
+            if delta != 0:
+                try:
+                    self.record_stock_movement(phone_number, key, delta,
+                                               reason="stock-take")
+                except Exception:
+                    pass
+                context["cat_st_updated"] = int(context.get("cat_st_updated", 0)) + 1
+
+        context["cat_st_index"] = idx + 1
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, context)
+        return self._stocktake_prompt(phone_number)
+
+    def _stocktake_advance(self, phone_number: str, skip: bool = False) -> list:
+        """Move to the next item without changing the current one (Keep/Skip)."""
+        ctx = self.session.get(phone_number).get("context", {}) or {}
+        if ctx.get("cat_step") != "stocktake_count":
+            return self.shelf_home(phone_number)
+        ctx["cat_st_index"] = int(ctx.get("cat_st_index", 0)) + 1
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, ctx)
+        return self._stocktake_prompt(phone_number)
+
+    def _finish_stocktake(self, phone_number: str) -> list:
+        """End the stock-take with a short summary."""
+        ctx = self.session.get(phone_number).get("context", {}) or {}
+        updated = int(ctx.get("cat_st_updated", 0))
+        self.session.reset(phone_number)
+        msg = "🧮 *Stock-take complete.*\n\n"
+        if updated:
+            msg += f"✅ Adjusted *{updated}* item{'s' if updated != 1 else ''}."
+        else:
+            msg += "No changes made — counts matched the system. 👍"
+        return [text_response(msg),
+                button_response("What's next?", [
+                    {"id": "menu_catalog", "title": "📋 Catalog"},
+                    {"id": "menu_home", "title": "☰ Menu"},
+                ])]
 
     def _start_set_category(self, phone_number: str, product_key: str) -> list:
         p = self.get_normalized_product(phone_number, product_key)

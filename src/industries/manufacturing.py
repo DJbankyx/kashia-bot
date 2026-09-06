@@ -75,6 +75,8 @@ class ManufacturingIndustry(BaseIndustry):
                          "description": "Profile, bank, address"},
                         {"id": "sec_production", "title": "🏭 Production",
                          "description": "History, materials, batches"},
+                        {"id": "sec_inventory", "title": "📋 Products & Materials",
+                         "description": "Catalog, stock levels, recipes, costs"},
                         {"id": "sec_business", "title": "💼 Business",
                          "description": "Reports, debts, docs, export"},
                         {"id": "sec_crm", "title": "👥 Customers",
