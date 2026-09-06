@@ -106,6 +106,12 @@ class DebtHandler:
         if button_id == "debt_payment":
             return self._start_payment_flow(phone_number)
 
+        # Person + direction chosen for a payment.
+        if button_id.startswith("debt_payin_"):
+            return self._start_payment_amount(phone_number, button_id[11:], "in")
+        if button_id.startswith("debt_payout_"):
+            return self._start_payment_amount(phone_number, button_id[12:], "out")
+
         if button_id == "debt_remind":
             return self._show_remind_list(phone_number)
 
@@ -219,6 +225,10 @@ class DebtHandler:
 
     def _handle_payment(self, phone_number: str, text: str, context: dict) -> list:
         """Handle payment recording from text (e.g. 'Dangote paid 10000')."""
+        # ── New guided path: person + direction already chosen, ask amount ──
+        if context.get("debt_step") == "ask_pay_amount":
+            return self._apply_directed_payment(phone_number, text, context)
+
         payment_text = context.get("payment_text", text)
         text_lower = payment_text.lower()
 
@@ -276,25 +286,95 @@ class DebtHandler:
             return [text_response(f"✅ {format_amount(amount)} payment noted.")]
 
     def _start_payment_flow(self, phone_number: str) -> list:
-        """Show debtors list for payment recording."""
-        debts = self.db.get_all_debtors(phone_number) or []
-        unpaid = [d for d in debts if not d.get("paid")]
+        """Show BOTH directions for recording a payment:
+          - money owed TO you (a customer repaid you) → collect,
+          - money YOU owe (you repaid a supplier)      → repay.
+        Previously only the first was offered, so if you only OWED money the
+        flow wrongly said 'no outstanding debts'."""
+        debtors = [d for d in (self.db.get_all_debtors(phone_number) or [])
+                   if d.get("amount", 0) > 0]
+        creditors = [c for c in (self.db.get_all_creditors(phone_number) or [])
+                     if c.get("amount", 0) > 0]
 
-        if not unpaid:
-            return [text_response("No outstanding debts to record payment for.")]
+        if not debtors and not creditors:
+            return [text_response(
+                "✅ No outstanding debts either way — nothing to record a payment against."
+            )]
 
         rows = []
-        for d in unpaid[:10]:
+        # Owed to me → tapping records a payment received (in:<name>).
+        for d in debtors[:8]:
             name = d.get("name", "Unknown")
-            amt = format_amount(d.get("amount", 0))
-            rows.append({"id": f"debt_pay_{name}", "title": name, "description": f"Owes {amt}"})
+            rows.append({"id": f"debt_payin_{name}"[:60],
+                         "title": f"⬅️ {name} pays me · {format_amount(d.get('amount', 0))}"[:60]})
+        # I owe them → tapping records a repayment I made (out:<name>).
+        for c in creditors[:8]:
+            name = c.get("name", "Unknown")
+            rows.append({"id": f"debt_payout_{name}"[:60],
+                         "title": f"➡️ I pay {name} · {format_amount(c.get('amount', 0))}"[:60]})
 
         return [list_response(
             header="💵 Record Payment",
-            body="Who made a payment?",
-            button_text="Select Person",
-            sections=[{"title": "Debtors", "rows": rows}]
+            body="Who paid, and which way?\n"
+                 "_⬅️ = someone repaid you · ➡️ = you repaid a supplier_",
+            button_text="Select",
+            sections=[{"title": "", "rows": rows}]
         )]
+
+    def _start_payment_amount(self, phone_number: str, name: str, direction: str) -> list:
+        """After picking a person + direction, ask how much was paid."""
+        self.session.save(phone_number, states.DEBT_PAYMENT, {
+            "debt_step": "ask_pay_amount",
+            "pay_name": name,
+            "pay_direction": direction,   # 'in' (they paid me) | 'out' (I paid them)
+        })
+        who = f"*{name}* paid you" if direction == "in" else f"you paid *{name}*"
+        return [text_response(
+            f"💵 How much did {who}?\n\n_e.g. 50000, 150K. Type the amount._"
+        )]
+
+    def _apply_directed_payment(self, phone_number: str, text: str, context: dict) -> list:
+        """Settle the chosen debt in the chosen direction + record the matching
+        transaction. direction 'in' = they repaid me; 'out' = I repaid them."""
+        name = context.get("pay_name", "")
+        direction = context.get("pay_direction", "in")
+        amount = parse_amount(text)
+        if not amount:
+            return [text_response("💵 Please type a valid amount (e.g. 50000, 150K).")]
+        amount = float(amount)
+        try:
+            if direction == "in":
+                # A customer repaid a debt they owed me → reduce owed_to_me, log income.
+                remaining = self.db.settle_debt(phone_number, name, amount, 'owed_to_me')
+                self.db.save_transaction(
+                    phone_number, int(amount), "sale",
+                    f"Debt repayment from {name}", "Sales & Income",
+                    vendor=name, payment_method="cash")
+                headline = f"✅ *{name}* repaid you {format_amount(amount)}."
+            else:
+                # I repaid a supplier I owed → reduce i_owe, log the outgoing payment.
+                remaining = self.db.settle_debt(phone_number, name, amount, 'i_owe')
+                self.db.save_transaction(
+                    phone_number, int(amount), "expense",
+                    f"Debt repayment to {name}", "Debt Repayment",
+                    vendor=name, payment_method="cash")
+                headline = f"✅ You repaid *{name}* {format_amount(amount)}."
+        except Exception as e:
+            logger.error(f"Directed payment error: {e}\n{traceback.format_exc()}")
+            self.session.reset(phone_number)
+            return [text_response("❌ Couldn't record that payment. Please try again.")]
+
+        self.session.reset(phone_number)
+        rem = int(remaining or 0)
+        bal_line = (f"\n📝 Remaining balance: *{format_amount(rem)}*"
+                    if rem > 0 else "\n✅ Fully settled — no balance left.")
+        return [
+            text_response(headline + bal_line),
+            button_response("What's next?", [
+                {"id": "menu_debts", "title": "💳 View Debts"},
+                {"id": "menu_home", "title": "☰ Menu"},
+            ])
+        ]
 
     def _show_remind_list(self, phone_number: str) -> list:
         """Show debtors as tappable list for sending reminders."""
