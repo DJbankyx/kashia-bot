@@ -40,6 +40,9 @@ class CatalogHandler:
 
     def show_menu(self, phone_number: str) -> list:
         """Show inventory/catalog action menu."""
+        # Telegram gets the tap-first "shelf". WhatsApp keeps the classic menu.
+        if self._is_telegram(phone_number):
+            return self.shelf_home(phone_number)
         products = self.ensure_item_types(phone_number)
         count = len([p for p in products.values() if p.get("item_type") != "overhead"])
         total_stock = sum(int(p.get("stock", 0)) for p in products.values() if p.get("item_type") != "overhead")
@@ -161,6 +164,24 @@ class CatalogHandler:
 
     def handle_button(self, phone_number: str, button_id: str, session: dict) -> list:
         """Route all cat_* buttons."""
+        # ── 2B shelf navigation (Telegram) ──
+        if button_id == "cat_shelf_cats":
+            return self.shelf_categories(phone_number)
+        if button_id == "cat_shelf_all":
+            return self.shelf_products(phone_number)
+        if button_id == "cat_shelf_low":
+            return self.shelf_products(phone_number, low_only=True)
+        if button_id == "cat_shelf_search":
+            return self._start_shelf_search(phone_number)
+        if button_id.startswith("cat_shelf_cat_"):
+            return self.shelf_products(phone_number, category_slug=button_id[14:])
+        if button_id.startswith("cat_view_") and self._is_telegram(phone_number):
+            # New shelf card (Telegram). Legacy cat_view_products/materials/etc.
+            # keep their handlers below; guard against those exact ids.
+            key = button_id[9:]
+            if key not in ("products", "materials", "services", "supplies"):
+                return self._show_product_card(phone_number, key)
+
         if button_id == "cat_stock":
             return self._show_stock_levels(phone_number)
 
@@ -348,6 +369,9 @@ class CatalogHandler:
             return self.show_menu(phone_number)
 
         # Route by step
+        if step == "shelf_search":
+            return self._do_shelf_search(phone_number, text_s)
+
         if step == "adding_products":
             return self._handle_add_products(phone_number, text_s, context)
 
@@ -2686,6 +2710,227 @@ class CatalogHandler:
         except Exception as e:
             logger.warning(f"record_stock_movement failed for {key}: {e}")
             return False
+
+    def _is_telegram(self, phone_number: str) -> bool:
+        try:
+            from services.messaging_client import platform_for_user
+            return platform_for_user(phone_number) == "telegram"
+        except Exception:
+            return False
+
+    # ═════════════════════════════════════════════════════════
+    # 2B — SHELF BROWSE (Telegram, read-only, tap-first)
+    #
+    # Categories → products → (card comes in 2C). Uses normalize_product and
+    # the auto-pagination pager (list_response with DESCRIPTION-LESS rows so
+    # main._maybe_send_paginated_list engages ◀/▶; row ids cat_view_<key>).
+    # WhatsApp keeps the classic show_menu. No editing here (2D+).
+    # ═════════════════════════════════════════════════════════
+
+    # Item types that never appear on the sellable shelf (production inputs, etc.
+    # still show under their own category filters, but not as top "products").
+    _SHELF_HIDDEN_TYPES = ("overhead",)
+
+    def _normalized_products(self, phone_number: str) -> list:
+        """All products as normalized dicts (each carries its _key)."""
+        raw = self._get_products(phone_number) or {}
+        return [self.normalize_product(p, key=k) for k, p in raw.items()]
+
+    def _shelf_label(self, phone_number: str) -> str:
+        """Industry-aware label for the catalog."""
+        try:
+            user = self.db.get_user(phone_number) or {}
+            industry = user.get("industry_class", user.get("business_type", "trading"))
+        except Exception:
+            industry = "trading"
+        return {
+            "services": "Services & Supplies",
+            "manufacturing": "Products & Materials",
+            "hybrid": "Products & Supplies",
+        }.get(industry, "Products")
+
+    def shelf_home(self, phone_number: str) -> list:
+        """Telegram catalog home: Categories / All / Search / Low stock."""
+        prods = [p for p in self._normalized_products(phone_number)
+                 if p["item_type"] not in self._SHELF_HIDDEN_TYPES]
+        label = self._shelf_label(phone_number)
+
+        if not prods:
+            return [text_response(
+                f"📋 *{label}*\n\n"
+                "Your catalog is empty.\n\n"
+                "_Add your first product to track stock, cost and profit._"
+            ), button_response("Set up:", [
+                {"id": "cat_add", "title": "➕ Add Product"},
+                {"id": "menu_home", "title": "☰ Menu"},
+            ])]
+
+        total = len(prods)
+        stock_value = sum(p["_stock_value"] for p in prods)
+        low = [p for p in prods if p["_is_low_stock"]]
+        cats = self._categories(prods)
+
+        body = f"📋 *{label}* — {total} item{'s' if total != 1 else ''}"
+        if stock_value > 0:
+            body += f"\n💰 Inventory value: *{format_amount(stock_value)}*"
+        if low:
+            body += f"\n🔴 Low stock: *{len(low)}*"
+
+        rows = []
+        if len(cats) > 1:
+            rows.append({"id": "cat_shelf_cats", "title": "🗂️ Browse by Category"})
+        rows.append({"id": "cat_shelf_all", "title": f"📦 All Products ({total})"})
+        rows.append({"id": "cat_shelf_search", "title": "🔍 Search"})
+        if low:
+            rows.append({"id": "cat_shelf_low", "title": f"🔴 Low Stock ({len(low)})"})
+        rows.append({"id": "cat_add", "title": "➕ Add Product"})
+
+        return [list_response(
+            header=f"📋 {label}",
+            body=body,
+            button_text="Select",
+            sections=[{"title": "", "rows": rows}],
+        )]
+
+    def _categories(self, prods: list) -> dict:
+        """Group normalized products by category (blank → 'Uncategorized')."""
+        cats = {}
+        for p in prods:
+            cat = (p.get("category") or "").strip() or "Uncategorized"
+            cats.setdefault(cat, []).append(p)
+        return cats
+
+    def shelf_categories(self, phone_number: str) -> list:
+        """Grid of categories → tap opens that category's products."""
+        prods = [p for p in self._normalized_products(phone_number)
+                 if p["item_type"] not in self._SHELF_HIDDEN_TYPES]
+        cats = self._categories(prods)
+        rows = []
+        for cat in sorted(cats.keys()):
+            n = len(cats[cat])
+            # Category id: slug the name (kept short + safe for callback_data).
+            slug = cat.lower().replace(" ", "_")[:32]
+            rows.append({"id": f"cat_shelf_cat_{slug}", "title": f"🗂️ {cat} ({n})"})
+        rows.append({"id": "menu_catalog", "title": "← Back"})
+        return [list_response(
+            header="🗂️ Categories",
+            body="Tap a category to see its products:",
+            button_text="Select",
+            sections=[{"title": "", "rows": rows}],
+        )]
+
+    def _product_rows(self, prods: list) -> list:
+        """Build description-less rows (so the pager engages) for a product list.
+        Row label leads with stock health; tapping opens the product card (2C)."""
+        rows = []
+        for p in sorted(prods, key=lambda x: x["name"].lower()):
+            key = p["_key"]
+            stock = p["stock"]
+            unit = p.get("primary_unit") or ""
+            dot = "🔴" if stock <= 0 else ("🟡" if (p["_is_low_stock"] or stock <= 3) else "🟢")
+            unit_str = f" {unit}" if unit else ""
+            suffix = f" · {stock}{unit_str}"
+            title = f"{dot} {p['name']}{suffix}"
+            rows.append({"id": f"cat_view_{key}"[:60], "title": title[:60]})
+        return rows
+
+    def shelf_products(self, phone_number: str, category_slug: str = "",
+                       low_only: bool = False) -> list:
+        """Paginated product list — all, by category, or low-stock only."""
+        prods = [p for p in self._normalized_products(phone_number)
+                 if p["item_type"] not in self._SHELF_HIDDEN_TYPES]
+
+        header = "📦 All Products"
+        if low_only:
+            prods = [p for p in prods if p["_is_low_stock"]]
+            header = "🔴 Low Stock"
+        elif category_slug:
+            prods = [p for p in prods
+                     if ((p.get("category") or "").strip() or "uncategorized")
+                     .lower().replace(" ", "_")[:32] == category_slug]
+            # Recover a display name for the header.
+            disp = category_slug.replace("_", " ").title()
+            header = f"🗂️ {disp}"
+
+        if not prods:
+            return [text_response(f"{header}\n\n_Nothing here yet._"),
+                    button_response("Back:", [{"id": "menu_catalog", "title": "← Catalog"}])]
+
+        rows = self._product_rows(prods)
+        body = f"{header} — {len(rows)} item{'s' if len(rows) != 1 else ''}\nTap one to open it:"
+        return [list_response(
+            header=header,
+            body=body,
+            button_text="Open",
+            sections=[{"title": "", "rows": rows}],
+        )]
+
+    # ── Catalog search ───────────────────────────────────────
+
+    def _start_shelf_search(self, phone_number: str) -> list:
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, {"cat_step": "shelf_search"})
+        return [text_response(
+            "🔍 *Search catalog*\n\nType a product name, SKU or barcode:\n\n_Type *cancel* to go back._"
+        )]
+
+    def _do_shelf_search(self, phone_number: str, query: str) -> list:
+        self.session.reset(phone_number)
+        q = query.strip().lower()
+        if len(q) < 1:
+            return [text_response("🔍 Type at least one letter.")]
+        prods = self._normalized_products(phone_number)
+        matches = [p for p in prods if (
+            q in p["name"].lower()
+            or (p.get("sku") and q in str(p["sku"]).lower())
+            or (p.get("barcode") and q in str(p["barcode"]).lower())
+        )]
+        if not matches:
+            return [text_response(
+                f"🔍 No product matches *{query}*.\n\n_Try fewer letters, or ➕ Add Product._"
+            ), button_response("Back:", [{"id": "menu_catalog", "title": "← Catalog"}])]
+        if len(matches) == 1:
+            return self._show_product_card(phone_number, matches[0]["_key"])
+        rows = self._product_rows(matches)
+        return [list_response(
+            header="🔍 Search results",
+            body=f"Found *{len(rows)}* — tap one:",
+            button_text="Open",
+            sections=[{"title": "", "rows": rows}],
+        )]
+
+    def _show_product_card(self, phone_number: str, product_key: str) -> list:
+        """Product card. 2B: a clean read-only summary. 2C adds rich actions."""
+        p = self.get_normalized_product(phone_number, product_key)
+        if not p["name"]:
+            return [text_response("❓ Product not found.")]
+        lines = [f"📦 *{p['name']}*"]
+        if p.get("category"):
+            lines.append(f"🗂️ {p['category']}")
+        unit = p.get("primary_unit") or "unit"
+        lines.append(f"📐 Stock: *{p['stock']} {unit}*"
+                     + (" 🔴 low" if p["_is_low_stock"] else ""))
+        if p["landing_cost"]:
+            lines.append(f"🏷️ Cost: {format_amount(p['landing_cost'])}/{unit}")
+        if p["sale_price"]:
+            lines.append(f"💰 Price: {format_amount(p['sale_price'])}/{unit}")
+            if p["landing_cost"]:
+                margin = p["sale_price"] - p["landing_cost"]
+                lines.append(f"📈 Margin: {format_amount(margin)}/{unit}")
+        if p["_stock_value"]:
+            lines.append(f"💵 Stock value: {format_amount(p['_stock_value'])}")
+        if p["_has_variants"]:
+            axes = ", ".join(p["attributes"].keys())
+            lines.append(f"🎚️ Variants: {axes}")
+        if p.get("sku"):
+            lines.append(f"🔖 SKU: {p['sku']}")
+        if p.get("supplier"):
+            lines.append(f"🏪 Supplier: {p['supplier']}")
+        return [
+            text_response("\n".join(lines)),
+            button_response("Actions:", [
+                {"id": "menu_catalog", "title": "← Catalog"},
+            ])
+        ]
 
     # Item types that represent countable stock (ask "how many?" for these).
     # A "service" is delivered, not counted, so it never gets a quantity step.
