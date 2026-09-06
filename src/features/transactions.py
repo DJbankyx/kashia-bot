@@ -768,7 +768,9 @@ class TransactionHandler:
                     search_name = f"{brand} {desc}".strip() if brand else desc
                     qty = self._parse_qty(tx_data.get("quantity", "1"))
                     qty_str = tx_data.get("quantity", "")
-                    variant = self._detect_variant(phone_number, search_name)
+                    # Prefer an explicitly chosen variant/leaf (tidy-box tree
+                    # drill) over text auto-detection.
+                    variant = tx_data.get("variant") or self._detect_variant(phone_number, search_name)
                     cat.update_stock(phone_number, search_name, -qty, quantity_str=qty_str, variant=variant)
 
                     # Now ask landing cost (for margin tracking only, stock already handled)
@@ -784,8 +786,9 @@ class TransactionHandler:
                 brand = tx_data.get("brand", "")
                 search_name = f"{brand} {desc}".strip() if brand else desc
 
-                # Detect variant from description/details
-                variant = self._detect_variant(phone_number, search_name)
+                # Prefer an explicitly chosen variant/leaf (tidy-box tree drill)
+                # over text auto-detection.
+                variant = tx_data.get("variant") or self._detect_variant(phone_number, search_name)
 
                 from features.catalog import CatalogHandler
                 cat = CatalogHandler(self.session, self.db)

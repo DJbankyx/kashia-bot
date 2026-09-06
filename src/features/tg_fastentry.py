@@ -192,6 +192,10 @@ class TGFastEntry:
     def _summary_line(self, fx: dict) -> str:
         """A one-line running summary of what's chosen so far (item ×qty · ₦amount)."""
         name = fx.get("product_name", "")
+        # Append the chosen variant-tree leaf (e.g. "Buses — Sienna / 1992 / White").
+        vlabel = fx.get("variant_label", "")
+        if vlabel:
+            name = f"{name} — {vlabel}"
         parts = []
         if name:
             qty = fx.get("quantity")
@@ -255,6 +259,9 @@ class TGFastEntry:
                 phone_number, fx.get("tx_type", "sale"), fx.get("is_service", False))
 
         if action == "prod":
+            # While drilling a variant tree, a "prod" tap is a tree child pick.
+            if fx.get("step") == "vt_pick" and value.startswith("catrec_vt_"):
+                return self._vt_pick(phone_number, fx, value)
             return self._pick_product(phone_number, fx, value)
 
         if action == "qty":
@@ -438,7 +445,57 @@ class TGFastEntry:
         # spec already declares this a service (services / hybrid-service).
         fx["counted_stock"] = bool(info.get("is_counted_stock", True)) and not fx.get("is_service")
 
+        # Phase B: if this product has a nested variant tree, drill down to the
+        # exact leaf FIRST (e.g. Sienna → 1992 → White), so stock deducts from
+        # the right place. The chosen leaf path is carried as fx["vt_path"].
+        if info.get("has_variant_tree") and not fx.get("is_service"):
+            fx["vt_path"] = []
+            return self._vt_drill(phone_number, fx)
+
         return self._go_to_price_or_qty(phone_number, fx, first_screen=False)
+
+    # ── variant tree drill (Phase B) ─────────────────────────────────────
+
+    def _vt_drill(self, phone_number: str, fx: dict) -> list:
+        """Show the current tree node's children to pick; when a leaf is reached
+        (or a childless node), continue to quantity/price with the leaf path."""
+        key = fx.get("product_key", "")
+        path = list(fx.get("vt_path", []))
+        info = self.catalog.vt_children_at(phone_number, key, path)
+        if info.get("is_leaf"):
+            # Reached a sellable leaf — remember it and carry on.
+            fx["variant_label"] = " / ".join(path)
+            self._save_fx(phone_number, fx)
+            return self._go_to_price_or_qty(phone_number, fx, first_screen=False)
+
+        fx["step"] = "vt_pick"
+        self._save_fx(phone_number, fx)
+        children = info.get("children", [])
+        axis = info.get("axis", "Variant")
+        crumb = " › ".join([fx.get("product_name", "")] + path)
+        rows = []
+        for i, val in enumerate(children[:24]):
+            rows.append({"id": f"catrec_vt_{i}", "title": val})
+        keyboard = tg_ui.product_grid(rows, page=0) if rows else []
+        text = (f"{self._header(fx)}\n🎚️ {crumb}\n\n"
+                f"Pick *{axis}*:")
+        self._render(phone_number, fx, text, keyboard)
+        return []
+
+    def _vt_pick(self, phone_number: str, fx: dict, row_id: str) -> list:
+        """A tree child was tapped (catrec_vt_<index>) → descend one level."""
+        key = fx.get("product_key", "")
+        path = list(fx.get("vt_path", []))
+        info = self.catalog.vt_children_at(phone_number, key, path)
+        children = info.get("children", [])
+        idx = row_id.rsplit("_", 1)[-1]
+        try:
+            val = children[int(idx)]
+        except (ValueError, IndexError):
+            return self._vt_drill(phone_number, fx)
+        path.append(val)
+        fx["vt_path"] = path
+        return self._vt_drill(phone_number, fx)
 
     def _row_title(self, fx: dict, row_id: str) -> str:
         for r in fx.get("rows", []):
@@ -767,6 +824,11 @@ class TGFastEntry:
         if fx.get("product_key"):
             tx_data["catalog_product"] = fx["product_key"]
             tx_data["catalog_product_name"] = fx.get("product_name", "")
+        # Phase B: the exact variant-tree leaf chosen during the drill (e.g.
+        # "Sienna / 1992 / White"). The engine passes this to update_stock so
+        # the deduction hits the right leaf and the tree total resyncs.
+        if fx.get("variant_label"):
+            tx_data["variant"] = fx["variant_label"]
         return tx_data
 
     def _do_save(self, phone_number: str, fx: dict) -> list:
@@ -880,7 +942,7 @@ class TGFastEntry:
         for k in ("product_key", "product_name", "quantity", "unit_cost", "amount",
                   "payment_method", "has_credit", "vendor", "deposit_amount",
                   "balance_owed", "counted_stock", "who_required", "unit", "_units",
-                  "mixed_price"):
+                  "mixed_price", "vt_path", "variant_label"):
             fx.pop(k, None)
         # Expense restarts at the typed "what for?" step (no catalog picker).
         if fx.get("tx_type") == "expense":
@@ -901,6 +963,13 @@ class TGFastEntry:
     def _go_back(self, phone_number: str, fx: dict) -> list:
         """Step back one screen."""
         step = fx.get("step")
+        if step == "vt_pick":
+            # Go up one tree level; at the root, restart the item picker.
+            path = list(fx.get("vt_path", []))
+            if path:
+                fx["vt_path"] = path[:-1]
+                return self._vt_drill(phone_number, fx)
+            return self._restart_item(phone_number, fx)
         if step == "await_total":
             # Back from the "enter total" prompt → the price-each step.
             return self._go_to_price(phone_number, fx)

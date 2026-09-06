@@ -2445,9 +2445,52 @@ class CatalogHandler:
                     f"_e.g. \"1 {incoming_unit} = X {primary_unit}\"_"
                 )
 
-        # ── Variant-level stock update ──
-        variant_stock = product.get("variant_stock", {})
+        # ── NESTED variant TREE stock update (option 1) ──
+        # If the product uses a variant_tree and a leaf PATH was passed
+        # (e.g. "Sienna / 1992 / White"), adjust that exact leaf and resync the
+        # product total from the tree. Returns early — the flat logic below is
+        # for legacy variant_stock products only.
+        tree = product.get("variant_tree")
         resolved_variant = variant.strip() if variant else ""
+        if isinstance(tree, dict) and tree.get("children") and resolved_variant:
+            path = [x.strip() for x in resolved_variant.split(self._COMBO_SEP) if x.strip()]
+            node = self._vt_get_node(tree, path)
+            if node is not None:
+                cur = self._as_int(node.get("stock"), 0)
+                node["stock"] = max(0, cur + actual_qty)
+                # Cost on the leaf (weighted avg on purchase with a unit_cost).
+                if unit_cost and unit_cost > 0 and actual_qty != 0:
+                    old_cost = self._as_int(node.get("cost"), 0)
+                    old_stock = max(0, node["stock"] - abs(actual_qty))
+                    if old_cost > 0 and old_stock > 0:
+                        tot = old_stock + abs(actual_qty)
+                        node["cost"] = int((old_cost * old_stock + unit_cost * abs(actual_qty)) / tot)
+                    else:
+                        node["cost"] = int(unit_cost)
+                product["variant_tree"] = tree
+                product["stock"] = self._vt_node_total(tree)
+                # Movement log
+                try:
+                    from datetime import datetime as _dt
+                    moves = product.get("stock_movements") or []
+                    moves.append({"delta": actual_qty, "reason": f"{'sale' if actual_qty<0 else 'purchase'} {resolved_variant}",
+                                  "tx_id": "", "date": _dt.now().strftime("%Y-%m-%d"),
+                                  "at": _dt.now().isoformat(timespec="seconds")})
+                    product["stock_movements"] = moves[-100:]
+                except Exception:
+                    pass
+                self._save_products(phone_number, products)
+                return {
+                    "matched": True,
+                    "product": product.get("name", matched_key),
+                    "new_stock": int(product.get("stock", 0)),
+                    "variant": resolved_variant,
+                    "landing_cost": self._as_int(node.get("cost"), 0),
+                    "unit_warning": _unit_warning,
+                }
+
+        # ── Variant-level stock update (legacy flat combos) ──
+        variant_stock = product.get("variant_stock", {})
 
         if resolved_variant and resolved_variant in variant_stock:
             # Update variant stock
@@ -4354,6 +4397,7 @@ class CatalogHandler:
                 "landing_cost": 0,
             }
         item_type = prod.get("item_type", "") or ""
+        tree = prod.get("variant_tree") or {}
         return {
             "key": product_key,
             "name": prod.get("name", product_key),
@@ -4361,6 +4405,25 @@ class CatalogHandler:
             "is_counted_stock": item_type in self._COUNTED_STOCK_TYPES
                                 and item_type != "service",
             "landing_cost": int(prod.get("landing_cost", 0) or 0),
+            # Phase B: does this item have a nested variant tree to drill into?
+            "has_variant_tree": bool(tree.get("children")),
+        }
+
+    def vt_children_at(self, phone_number: str, product_key: str, path: list) -> dict:
+        """Fast-entry drill helper: return the node at `path` for a product.
+
+        {"axis": <child axis label>, "children": [names], "is_leaf": bool,
+         "stock": <leaf stock>}. Used by the tidy-box to walk the tree to a
+         sellable leaf before asking quantity/price."""
+        prod = self._get_products(phone_number).get(product_key) or {}
+        root = self._vt_root(prod) if isinstance(prod, dict) else {}
+        node = self._vt_get_node(root, list(path or [])) or {}
+        children = node.get("children") or {}
+        return {
+            "axis": node.get("child_axis") or "Variant",
+            "children": list(children.keys()),
+            "is_leaf": not children,
+            "stock": self._as_int(node.get("stock"), 0),
         }
 
     def _apply_conversion(self, product: dict, quantity_str: str, raw_qty: int):
