@@ -199,7 +199,7 @@ class TGFastEntry:
         parts = []
         if name:
             qty = fx.get("quantity")
-            unit = fx.get("unit", "")
+            unit = fx.get("unit", "") or fx.get("qty_unit", "")
             if qty and not fx.get("is_service"):
                 if unit:
                     parts.append(f"{name} {int(qty):,} {unit}")
@@ -214,11 +214,12 @@ class TGFastEntry:
 
     def _quantity_str(self, fx: dict) -> str:
         """Build the quantity value sent to the engine. Includes the unit when
-        one was chosen (so update_stock/_apply_conversion converts to base)."""
+        one was chosen (2F catalog conversion) OR typed (expense unit word like
+        'litres'/'Wh'), so the record and reports read '20 litres' not just 20."""
         qty = fx.get("quantity")
         if not qty:
             return ""
-        unit = fx.get("unit", "")
+        unit = fx.get("unit", "") or fx.get("qty_unit", "")
         return f"{int(qty)} {unit}" if unit else str(int(qty))
 
     # ── callback handling (__tgfx__:*) ──────────────────────────────────
@@ -274,7 +275,13 @@ class TGFastEntry:
         if action == "qtymore":
             fx["step"] = "await_custom_qty"
             self._save_fx(phone_number, fx)
-            self._edit_plain(phone_number, fx, "🔢 Type the quantity (e.g. 24):")
+            # For expenses, hint that a unit can be included (fuel litres, power Wh).
+            if fx.get("tx_type") == "expense":
+                self._edit_plain(phone_number, fx,
+                                 "🔢 Type the quantity — you can add a unit:\n"
+                                 "_e.g. 24, or 20 litres, or 500 Wh_")
+            else:
+                self._edit_plain(phone_number, fx, "🔢 Type the quantity (e.g. 24):")
             return []
 
         if action == "noqty":
@@ -366,11 +373,22 @@ class TGFastEntry:
 
         step = fx.get("step")
         if step == "await_custom_qty":
-            digits = "".join(c for c in text if c.isdigit())
-            n = int(digits) if digits else 0
-            if n <= 0:
-                self._edit_plain(phone_number, fx, "🔢 That didn't look like a number. Type e.g. 24:")
+            # Parse "<number> <optional unit>" — e.g. "20", "20 litres", "500 Wh".
+            # A unit word is kept (for expenses especially: fuel in litres,
+            # power in Wh) so the record reads "20 litres" not just "20".
+            import re as _re
+            m = _re.match(r"\s*(\d+(?:\.\d+)?)\s*([A-Za-z%µ]+.*)?$", text.strip())
+            if not m:
+                self._edit_plain(phone_number, fx, "🔢 That didn't look like a number. Type e.g. 24, or 20 litres:")
                 return []
+            n = int(float(m.group(1)))
+            unit_word = (m.group(2) or "").strip()
+            if n <= 0:
+                self._edit_plain(phone_number, fx, "🔢 Please type a quantity greater than 0 (e.g. 24, or 20 litres):")
+                return []
+            if unit_word:
+                # A typed unit word becomes the quantity's unit label.
+                fx["qty_unit"] = unit_word
             fx["counted_stock"] = True  # a typed quantity means it's countable
             return self._set_quantity(phone_number, fx, n)
 
@@ -942,7 +960,7 @@ class TGFastEntry:
         for k in ("product_key", "product_name", "quantity", "unit_cost", "amount",
                   "payment_method", "has_credit", "vendor", "deposit_amount",
                   "balance_owed", "counted_stock", "who_required", "unit", "_units",
-                  "mixed_price", "vt_path", "variant_label"):
+                  "mixed_price", "vt_path", "variant_label", "qty_unit"):
             fx.pop(k, None)
         # Expense restarts at the typed "what for?" step (no catalog picker).
         if fx.get("tx_type") == "expense":

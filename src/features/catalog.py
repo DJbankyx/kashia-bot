@@ -3207,6 +3207,9 @@ class CatalogHandler:
         else:
             lines.append(f"📐 Stock: *{p['stock']} {unit}*"
                          + (" 🔴 low" if p["_is_low_stock"] else ""))
+            if not p.get("primary_unit"):
+                # Nudge: no unit set yet → counts show a generic "unit".
+                lines.append("📏 _No unit set — tap “Set Unit” (e.g. bottle, kg, litre)._")
         if p["landing_cost"] and not has_tree:
             lines.append(f"🏷️ Cost: {format_amount(p['landing_cost'])}/{unit}")
         if p["sale_price"]:
