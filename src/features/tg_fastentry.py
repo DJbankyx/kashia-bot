@@ -549,15 +549,17 @@ class TGFastEntry:
     def _go_to_price_or_qty(self, phone_number: str, fx: dict, first_screen: bool) -> list:
         """After an item is chosen, either ask quantity (counted stock) or go to
         the amount step (services / no catalog)."""
+        hint = self._item_hint(phone_number, fx)
+        hint_line = f"\n{hint}" if hint else ""
         if self._uses_quantity(fx):
             fx["step"] = "quantity"
-            text = f"{self._header(fx)}\n📦 {fx['product_name']}\n\nHow many?"
+            text = f"{self._header(fx)}\n📦 {fx['product_name']}{hint_line}\n\nHow many?"
             presets = self._qty_presets(phone_number, fx)
             self._render(phone_number, fx, text, tg_ui.quantity_keyboard(presets=presets))
             return []
         # No quantity → ask the total amount directly.
         fx["step"] = "amount"
-        text = f"{self._header(fx)}\n📦 {fx.get('product_name','Item')}\n\nHow much? (total)"
+        text = f"{self._header(fx)}\n📦 {fx.get('product_name','Item')}{hint_line}\n\nHow much? (total)"
         presets = self._price_presets(phone_number, fx)
         self._render(phone_number, fx, text, tg_ui.amount_keyboard(presets=presets or None))
         return []
@@ -579,6 +581,47 @@ class TGFastEntry:
             return []
         # No conversions → straight to price (existing behaviour).
         return self._go_to_price(phone_number, fx)
+
+    def _item_hint(self, phone_number: str, fx: dict) -> str:
+        """A short hint line for the sale/purchase card: what we already know
+        about this item from the catalog (price / cost / margin / stock / unit),
+        so the owner has context while recording. Empty if nothing useful."""
+        key = fx.get("product_key")
+        if not key:
+            return ""
+        try:
+            p = self.catalog.get_normalized_product(phone_number, key)
+        except Exception:
+            return ""
+        if not p or not p.get("name"):
+            return ""
+        try:
+            from utils.whatsapp_ui import format_amount
+        except Exception:
+            def format_amount(x): return f"₦{int(x):,}"
+        unit = p.get("primary_unit") or ""
+        bits = []
+        tt = fx.get("tx_type")
+        sale_price = int(p.get("sale_price") or 0)
+        cost = int(p.get("landing_cost") or 0)
+        stock = int(p.get("stock") or 0)
+        if tt == "sale":
+            if sale_price:
+                bits.append(f"💰 usual price {format_amount(sale_price)}{'/'+unit if unit else ''}")
+            if cost:
+                bits.append(f"🏷️ cost {format_amount(cost)}")
+            if sale_price and cost:
+                bits.append(f"📈 margin {format_amount(sale_price - cost)}")
+            if stock:
+                bits.append(f"📦 {stock}{' '+unit if unit else ''} in stock")
+        else:  # purchase / expense
+            if cost:
+                bits.append(f"🏷️ last cost {format_amount(cost)}{'/'+unit if unit else ''}")
+            if stock:
+                bits.append(f"📦 {stock}{' '+unit if unit else ''} in stock")
+        if not bits:
+            return ""
+        return "_" + " · ".join(bits) + "_"
 
     def _item_units(self, phone_number: str, fx: dict) -> dict:
         try:
@@ -602,10 +645,12 @@ class TGFastEntry:
         # When more than one unit is involved, offer "Enter total instead" so
         # mixed/different per-unit prices can still be captured (as one total).
         multi = n > 1
+        hint = self._item_hint(phone_number, fx)
+        hint_line = f"\n{hint}" if hint else ""
         if unit:
-            text = f"{self._header(fx)}\n📦 {fx['product_name']} {qty_disp}\n\nPrice per {unit}?"
+            text = f"{self._header(fx)}\n📦 {fx['product_name']} {qty_disp}{hint_line}\n\nPrice per {unit}?"
         else:
-            text = f"{self._header(fx)}\n📦 {fx['product_name']} ×{n:,}\n\nPrice each?"
+            text = f"{self._header(fx)}\n📦 {fx['product_name']} ×{n:,}{hint_line}\n\nPrice each?"
         if multi:
             text += "\n_Different prices? Tap “Enter total instead”._"
         presets = self._price_presets(phone_number, fx)
@@ -981,6 +1026,15 @@ class TGFastEntry:
     def _go_back(self, phone_number: str, fx: dict) -> list:
         """Step back one screen."""
         step = fx.get("step")
+        if step == "product":
+            # First step — Back cancels the flow and offers the menu, so the
+            # user isn't stuck scrolling the item list.
+            self.session.reset(phone_number)
+            import utils.tg_ui as _tg
+            self._render(phone_number, fx,
+                         "❌ Cancelled. Tap ☰ Menu or send your next transaction.",
+                         [[{"text": "☰ Menu", "callback_data": "menu_home"}]])
+            return []
         if step == "vt_pick":
             # Go up one tree level; at the root, restart the item picker.
             path = list(fx.get("vt_path", []))

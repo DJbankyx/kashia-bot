@@ -224,6 +224,9 @@ def product_grid(rows, page: int = 0, page_size: int = 8, other_label="📝 Othe
         keyboard.append(nav)
 
     keyboard.append([{"text": other_label, "callback_data": _cb("other")}])
+    # Back/Cancel — lets the user leave the item picker (the first step) instead
+    # of being stuck scrolling. At the product step this cancels the flow.
+    keyboard.append([{"text": "⬅️ Back", "callback_data": _cb("back")}])
     return keyboard
 
 
