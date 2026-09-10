@@ -627,11 +627,18 @@ class TGFastEntry:
                 bits.append(f"📈 margin {format_amount(sale_price - cost)}")
             if stock:
                 bits.append(f"📦 {stock}{' '+unit if unit else ''} in stock")
+            # Nudge when we have no pricing on file — so the owner knows WHY
+            # there's no SP/CP/margin hint and how to fix it, rather than seeing
+            # a blank line. Only when neither a price nor a cost is known.
+            if not sale_price and not cost:
+                bits.append("💡 no price/cost on file — set it in Catalog to see margin")
         else:  # purchase / expense
             if cost:
                 bits.append(f"🏷️ last cost {format_amount(cost)}{'/'+unit if unit else ''}")
             if stock:
                 bits.append(f"📦 {stock}{' '+unit if unit else ''} in stock")
+            if not cost:
+                bits.append("💡 no cost on file yet — this purchase will set it")
         if not bits:
             return ""
         return "_" + " · ".join(bits) + "_"

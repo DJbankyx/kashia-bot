@@ -605,9 +605,15 @@ def _build_scan_card(data: dict, decision: dict = None):
         if decision.get("low_confidence"):
             lines.append("\n⚠️ I'm not fully sure I read this right — please "
                          "double-check the total before recording.")
-        lines.append(f"\n📝 Record this as an *{side}* of "
+        lines.append(f"\n📝 Record this as *one* {side} of "
                      f"{_money(decision.get('amount'))}, or *Edit* to fix "
                      f"details / add payment method + notes.")
+        # Transparency: if the document lists several priced items, make clear
+        # this is booked as a SINGLE transaction for the grand total (multi-
+        # transaction split from one document isn't recorded row-by-row yet).
+        if len([it for it in items if it.get("amount") is not None]) > 1:
+            lines.append("_(Multiple items → recorded as one transaction for "
+                         "the total. To log them separately, record each on its own.)_")
         buttons = [
             {"id": "scan_save", "title": f"✅ Record {side}"},
             {"id": "scan_edit", "title": "✏️ Edit first"},
