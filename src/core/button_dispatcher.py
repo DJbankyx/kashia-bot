@@ -47,6 +47,11 @@ class ButtonDispatcher:
         if bid.startswith("edit_") and state == states.AWAITING_CORRECTION:
             return r.transactions.handle_correction(phone_number, bid, session)
 
+        # ── Post-purchase cost choice (Use new / Keep old / Weighted avg) ──
+        if bid.startswith("costpick_") and state == states.COST_CHOICE:
+            return r.transactions.handle_cost_choice(
+                phone_number, bid, session.get("context", {}))
+
         # ── Done button ──
         if bid == "btn_done":
             if state in (states.CATALOG_SETUP_DETAILS, states.CATALOG_ORGANIZE,

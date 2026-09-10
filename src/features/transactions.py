@@ -851,6 +851,19 @@ class TransactionHandler:
 
                 # Surface unit mismatch warning to user
                 _purchase_unit_warning = stock_result.get("unit_warning")
+                # Bug-9: if the purchase price differs from the cost on record,
+                # offer Use-new / Keep-old / Weighted-avg (already applied). The
+                # prompt call stashes COST_CHOICE state — return WITHOUT resetting
+                # the session so the follow-up tap is handled.
+                _cost_choice = self._maybe_cost_choice_prompt(
+                    phone_number, tx_data, stock_result)
+                if _cost_choice is not None:
+                    resp = [text_response(
+                        f"✅ *Saved!* {format_amount(tx_data['amount'])} purchase recorded.")]
+                    if _purchase_unit_warning:
+                        resp.append(text_response(_purchase_unit_warning))
+                    resp.append(_cost_choice)
+                    return resp
 
             # ── For EXPENSES (manufacturing/services): ask if direct or indirect ──
             if tx_data["type"] == "expense":
@@ -966,6 +979,131 @@ class TransactionHandler:
             self.session.reset(phone_number)
             return [text_response(f"❌ Error saving: {str(e)[:100]}. Please try again.")]
 
+    def _apply_stock_for_tx(self, phone_number: str, tx_data: dict):
+        """Adjust catalog stock (and, on purchase, the weighted-average cost)
+        for a sale or purchase — regardless of payment method.
+
+        Extracted so the CREDIT / part-payment path can reuse the exact same
+        stock + cost handling as the normal cash/transfer path. Previously a
+        credit or part-payment purchase never added stock or updated cost, and a
+        credit/part sale never deducted stock (money was recorded but inventory
+        was left untouched). This mirrors the purchase/sale stock logic in
+        _save_transaction. Returns the update_stock result dict (or None).
+        """
+        tx_type = tx_data.get("type")
+        if tx_type not in ("sale", "purchase"):
+            return None
+        try:
+            from features.catalog import CatalogHandler
+            cat = CatalogHandler(self.session, self.db)
+            desc = tx_data.get("description", "")
+            brand = tx_data.get("brand", "")
+            search_name = f"{brand} {desc}".strip() if brand else desc
+            qty = self._parse_qty(tx_data.get("quantity", "1"))
+            qty_str = tx_data.get("quantity", "")
+            # Prefer an explicitly chosen variant/leaf (tidy-box tree drill)
+            # over text auto-detection.
+            variant = tx_data.get("variant") or self._detect_variant(phone_number, search_name)
+
+            if tx_type == "sale":
+                # Services deduct supplies elsewhere; a product sale deducts here.
+                return cat.update_stock(
+                    phone_number, search_name, -qty,
+                    quantity_str=qty_str, variant=variant)
+
+            # purchase — add stock + fold cost into the weighted average.
+            unit_cost = int(tx_data.get("unit_cost") or 0)
+            if unit_cost <= 0:
+                amt = int(tx_data.get("amount") or 0)
+                if amt > 0 and qty > 0:
+                    unit_cost = amt // qty
+                    tx_data["unit_cost"] = unit_cost
+            stock_result = cat.update_stock(
+                phone_number, search_name, qty, unit_cost, qty_str, variant=variant)
+            # Keep manufacturing recipe costs in sync, same as the normal path.
+            if unit_cost > 0:
+                try:
+                    self._update_recipe_costs(phone_number, search_name, unit_cost)
+                except Exception as e:
+                    logger.warning(f"credit purchase: recipe cost update failed: {e}")
+            return stock_result
+        except Exception as e:
+            logger.warning(f"_apply_stock_for_tx failed: {e}")
+            return None
+
+    def _maybe_cost_choice_prompt(self, phone_number: str, tx_data: dict,
+                                  stock_result: dict):
+        """Bug-9 feature: when a PURCHASE arrives at a NEW per-unit price that
+        DIFFERS from the cost already on record, offer the owner a choice —
+        Use the new price, Keep the old one, or accept the Weighted average
+        (already applied). Returns a button_response dict, or None when no prompt
+        is warranted (first-ever cost, same price, no cost captured, or a sale).
+
+        The purchase has ALREADY saved with the weighted-average (the safe
+        default), so this never blocks the flow. Tapping Use-new/Keep-old simply
+        re-sets the stored cost afterwards via set_cost_direct.
+        """
+        try:
+            if tx_data.get("type") != "purchase" or not isinstance(stock_result, dict):
+                return None
+            prev_cost = int(stock_result.get("prev_cost") or 0)
+            new_cost = int(tx_data.get("unit_cost") or 0)
+            # Conditions (b)+(c): only when a cost already exists AND it differs.
+            if prev_cost <= 0 or new_cost <= 0 or prev_cost == new_cost:
+                return None
+            avg_cost = int(stock_result.get("landing_cost") or 0)
+            product = stock_result.get("product", tx_data.get("description", ""))
+            variant = tx_data.get("variant", "")
+            # Stash what the button taps need (kept small; costs re-applied later).
+            self.session.save(phone_number, states.COST_CHOICE, {
+                "product": product, "variant": variant,
+                "prev_cost": prev_cost, "new_cost": new_cost, "avg_cost": avg_cost,
+            })
+            leaf = f" ({variant})" if variant else ""
+            body = (
+                f"🏷️ *{product}*{leaf} — cost changed.\n\n"
+                f"On record: {format_amount(prev_cost)}\n"
+                f"This purchase: {format_amount(new_cost)}\n"
+                f"Weighted avg: {format_amount(avg_cost)} _(applied)_\n\n"
+                f"Which cost should I keep?"
+            )
+            return button_response(body, [
+                {"id": "costpick_new", "title": f"🆕 Use {format_amount(new_cost)}"},
+                {"id": "costpick_keep", "title": f"↩️ Keep {format_amount(prev_cost)}"},
+                {"id": "costpick_avg", "title": "⚖️ Weighted avg"},
+            ])
+        except Exception as e:
+            logger.warning(f"cost-choice prompt failed: {e}")
+            return None
+
+    def handle_cost_choice(self, phone_number: str, button_id: str, context: dict) -> list:
+        """Handle the post-purchase cost-choice tap (costpick_new/keep/avg)."""
+        choice = button_id.replace("costpick_", "")
+        product = context.get("product", "")
+        variant = context.get("variant", "")
+        prev_cost = int(context.get("prev_cost") or 0)
+        new_cost = int(context.get("new_cost") or 0)
+        avg_cost = int(context.get("avg_cost") or 0)
+        self.session.reset(phone_number)
+
+        from features.catalog import CatalogHandler
+        cat = CatalogHandler(self.session, self.db)
+        if choice == "new":
+            cat.set_cost_direct(phone_number, product, new_cost, variant)
+            msg = f"✅ Cost for *{product}* set to {format_amount(new_cost)} (latest price)."
+        elif choice == "keep":
+            cat.set_cost_direct(phone_number, product, prev_cost, variant)
+            msg = f"✅ Kept the existing cost for *{product}*: {format_amount(prev_cost)}."
+        else:  # avg — already applied during save
+            msg = f"✅ Keeping the weighted average for *{product}*: {format_amount(avg_cost)}."
+        return [
+            text_response(msg),
+            button_response("What's next?", [
+                {"id": "record_purchase", "title": "📦 Buy More"},
+                {"id": "menu_home", "title": "☰ Menu"},
+            ]),
+        ]
+
     def _save_credit_transaction(self, phone_number: str, tx_data: dict) -> list:
         """Save a transaction + record as debt."""
         try:
@@ -1009,6 +1147,16 @@ class TransactionHandler:
                 except Exception as e:
                     logger.warning(f"credit save: update_contact_totals failed: {e}")
 
+            # Adjust inventory + weighted-average cost, same as a cash/transfer
+            # save. A credit or part-payment sale still leaves the shop; a credit
+            # or part-payment purchase still arrives. Money owed is tracked
+            # separately via record_debt below — it does not change stock.
+            _stock_result = self._apply_stock_for_tx(phone_number, tx_data)
+            # Bug-9: build the cost-choice prompt (purchase price differs from the
+            # cost on record). Appended to the purchase confirmations below.
+            _cost_choice = self._maybe_cost_choice_prompt(
+                phone_number, tx_data, _stock_result or {})
+
             # Determine direction: who owes whom?
             # Purchases AND expenses on credit mean *I* owe the other party.
             # Only a credit sale means they owe me.
@@ -1024,35 +1172,36 @@ class TransactionHandler:
                     # Deposit: record only the balance as debt (I owe them the rest)
                     self.db.record_debt(phone_number, vendor, balance_owed, 'i_owe',
                                         f"Balance after deposit: {description}")
+                    head = text_response(
+                        f"✅ *Purchase saved!* {format_amount(amount)}\n\n"
+                        f"💳 You paid: *{format_amount(deposit_amount)}*\n"
+                        f"📝 You still owe *{vendor}*: *{format_amount(balance_owed)}*\n\n"
+                        f"_Balance tracked in Debts. Pay the rest when ready._"
+                    )
+                    if _cost_choice is not None:
+                        # Keep the COST_CHOICE session state for the follow-up tap.
+                        return [head, _cost_choice]
                     self.session.reset(phone_number)
-                    return [
-                        text_response(
-                            f"✅ *Purchase saved!* {format_amount(amount)}\n\n"
-                            f"💳 You paid: *{format_amount(deposit_amount)}*\n"
-                            f"📝 You still owe *{vendor}*: *{format_amount(balance_owed)}*\n\n"
-                            f"_Balance tracked in Debts. Pay the rest when ready._"
-                        ),
-                        button_response("What's next?", [
-                            {"id": "record_purchase", "title": "📦 Buy More"},
-                            {"id": "menu_debts", "title": "💳 View Debts"},
-                            {"id": "menu_home", "title": "☰ Menu"},
-                        ])
-                    ]
+                    return [head, button_response("What's next?", [
+                        {"id": "record_purchase", "title": "📦 Buy More"},
+                        {"id": "menu_debts", "title": "💳 View Debts"},
+                        {"id": "menu_home", "title": "☰ Menu"},
+                    ])]
                 else:
                     # Full credit — no payment made
                     self.db.record_debt(phone_number, vendor, amount, 'i_owe', f"Credit purchase: {description}")
+                    head = text_response(
+                        f"✅ Saved! {format_amount(amount)} purchase on credit.\n"
+                        f"📝 You owe *{vendor}* {format_amount(amount)}."
+                    )
+                    if _cost_choice is not None:
+                        return [head, _cost_choice]
                     self.session.reset(phone_number)
-                    return [
-                        text_response(
-                            f"✅ Saved! {format_amount(amount)} purchase on credit.\n"
-                            f"📝 You owe *{vendor}* {format_amount(amount)}."
-                        ),
-                        button_response("What's next?", [
-                            {"id": "record_purchase", "title": "📦 Buy More"},
-                            {"id": "menu_debts", "title": "💳 View Debts"},
-                            {"id": "menu_home", "title": "☰ Menu"},
-                        ])
-                    ]
+                    return [head, button_response("What's next?", [
+                        {"id": "record_purchase", "title": "📦 Buy More"},
+                        {"id": "menu_debts", "title": "💳 View Debts"},
+                        {"id": "menu_home", "title": "☰ Menu"},
+                    ])]
             else:
                 # They owe me — this is a credit sale, offer invoice
                 # Check if this is a deposit (partial payment) vs full credit
@@ -1073,9 +1222,13 @@ class TransactionHandler:
                             f"📝 Balance owed by *{vendor}*: *{format_amount(balance_owed)}*\n\n"
                             f"_Balance tracked in Debts. Settle when they pay the rest._"
                         ),
+                        # A deposit means money WAS received, so offer a Receipt
+                        # (for the amount paid) alongside the Invoice. Kept to 3
+                        # buttons because button_response caps at 3; the balance
+                        # is already stated above and Menu reaches Debts.
                         button_response("What's next?", [
                             {"id": f"gen_invoice_{tx_id}", "title": "🧾 Invoice"},
-                            {"id": "menu_debts", "title": "💳 View Debts"},
+                            {"id": f"gen_receipt_{tx_id}", "title": "🧾 Receipt"},
                             {"id": "menu_home", "title": "☰ Menu"},
                         ])
                     ]

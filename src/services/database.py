@@ -1130,13 +1130,15 @@ class Database:
             if not contact:
                 return
 
-            # Calculate new analytics
-            tx_count = int(contact.get('transaction_count', 0))
+            # Calculate new analytics.
+            # NOTE: update_contact_totals runs its total/count increment BEFORE
+            # calling this, so the contact we just read ALREADY reflects this
+            # transaction. Use the persisted values directly — do NOT add amount
+            # or +1 again (that was the old double-count).
+            new_count = int(contact.get('transaction_count', 0)) or 1
             # Purchases + expenses are money OUT (total_paid); sales are money IN.
             is_outgoing = tx_type in ('expense', 'purchase')
-            total = int(contact.get('total_paid', 0)) if is_outgoing else int(contact.get('total_received', 0))
-            new_total = total + amount
-            new_count = tx_count + 1
+            new_total = int(contact.get('total_paid', 0)) if is_outgoing else int(contact.get('total_received', 0))
             new_avg = new_total // new_count if new_count > 0 else amount
 
             # First purchase date
@@ -1159,22 +1161,23 @@ class Database:
             else:
                 new_freq = old_freq
 
-            field = 'total_paid' if is_outgoing else 'total_received'
-
+            # IMPORTANT: this method owns ANALYTICS ONLY. The authoritative
+            # totals (total_paid / total_received) and transaction_count are
+            # written by update_contact_totals, which calls this. Do NOT add
+            # :amount to those fields here or they double-count (a 420m purchase
+            # would show 840m — the exact bug this comment guards against).
+            # lifetime_value stays here since update_contact_totals doesn't own
+            # it; new_avg is derived from the totals already incremented there.
             self.contacts.update_item(
                 Key={'phone_number': phone_number, 'contact_id': contact_id},
                 UpdateExpression=(
-                    f"SET {field} = if_not_exists({field}, :zero) + :amount, "
-                    f"transaction_count = if_not_exists(transaction_count, :zero) + :one, "
-                    f"last_transaction_date = :today, "
-                    f"first_purchase_date = if_not_exists(first_purchase_date, :today), "
-                    f"avg_order_value = :avg, "
-                    f"avg_days_between_purchases = :freq, "
-                    f"lifetime_value = if_not_exists(lifetime_value, :zero) + :amount"
+                    "SET first_purchase_date = if_not_exists(first_purchase_date, :today), "
+                    "avg_order_value = :avg, "
+                    "avg_days_between_purchases = :freq, "
+                    "lifetime_value = if_not_exists(lifetime_value, :zero) + :amount"
                 ),
                 ExpressionAttributeValues={
                     ':amount': amount,
-                    ':one': 1,
                     ':zero': 0,
                     ':today': today,
                     ':avg': new_avg,

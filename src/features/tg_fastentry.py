@@ -605,6 +605,19 @@ class TGFastEntry:
         sale_price = int(p.get("sale_price") or 0)
         cost = int(p.get("landing_cost") or 0)
         stock = int(p.get("stock") or 0)
+        # For variant-TREE products the cost (and real stock) live on the chosen
+        # LEAF, not the product level — so product landing_cost is 0 here. Once a
+        # leaf has been drilled, surface that leaf's cost/stock instead, so the
+        # owner still gets the "last cost / margin" hint they stored.
+        vlabel = fx.get("variant_label", "")
+        if vlabel:
+            try:
+                leaf_cost = int(self.catalog.leaf_cost(
+                    phone_number, fx.get("product_key", ""), vlabel) or 0)
+                if leaf_cost:
+                    cost = leaf_cost
+            except Exception as e:
+                logger.warning(f"tg_fastentry: leaf_cost lookup failed: {e}")
         if tt == "sale":
             if sale_price:
                 bits.append(f"💰 usual price {format_amount(sale_price)}{'/'+unit if unit else ''}")

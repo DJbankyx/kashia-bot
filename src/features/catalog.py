@@ -2388,16 +2388,26 @@ class CatalogHandler:
     # ─────────────────────────────────────────────────────────
 
     def update_stock(self, phone_number: str, product_name: str, qty_change: int,
-                     unit_cost: int = 0, quantity_str: str = "", variant: str = "") -> dict:
+                     unit_cost: int = 0, quantity_str: str = "", variant: str = "",
+                     cost_mode: str = "average") -> dict:
         """
         Update stock for a product. Called after purchase (+) or sale (-).
         Also updates landing_cost if provided.
         
         If quantity_str contains a unit (e.g. "3 cartons"), applies conversion.
         If variant is provided, updates variant_stock and syncs to total.
-        On purchase with unit_cost, appends to cost_history and updates weighted avg.
-        
-        Returns: {"matched": True/False, "product": name, "new_stock": int, "variant": str}
+        On purchase with unit_cost, appends to cost_history and updates cost per
+        `cost_mode`:
+          - "average" (default): weighted-average of old and new cost.
+          - "new": overwrite the stored cost with this purchase's unit_cost.
+          - "keep": leave the stored cost unchanged (stock still updates).
+
+        The result dict includes "prev_cost" (the cost BEFORE this update) so the
+        caller can offer the user a Use-new / Keep-old / Weighted-average choice
+        after the fact when the new price differs from what was on record.
+
+        Returns: {"matched", "product", "new_stock", "variant", "landing_cost",
+                  "prev_cost", "unit_warning"}
         """
         products = self._get_products(phone_number)
 
@@ -2458,11 +2468,15 @@ class CatalogHandler:
             if node is not None:
                 cur = self._as_int(node.get("stock"), 0)
                 node["stock"] = max(0, cur + actual_qty)
-                # Cost on the leaf (weighted avg on purchase with a unit_cost).
-                if unit_cost and unit_cost > 0 and actual_qty != 0:
-                    old_cost = self._as_int(node.get("cost"), 0)
+                # Cost on the leaf. Default weighted-avg on purchase; cost_mode
+                # lets a follow-up user choice override to "new" or "keep".
+                _leaf_prev_cost = self._as_int(node.get("cost"), 0)
+                if unit_cost and unit_cost > 0 and actual_qty != 0 and cost_mode != "keep":
+                    old_cost = _leaf_prev_cost
                     old_stock = max(0, node["stock"] - abs(actual_qty))
-                    if old_cost > 0 and old_stock > 0:
+                    if cost_mode == "new":
+                        node["cost"] = int(unit_cost)
+                    elif old_cost > 0 and old_stock > 0:
                         tot = old_stock + abs(actual_qty)
                         node["cost"] = int((old_cost * old_stock + unit_cost * abs(actual_qty)) / tot)
                     else:
@@ -2486,6 +2500,7 @@ class CatalogHandler:
                     "new_stock": int(product.get("stock", 0)),
                     "variant": resolved_variant,
                     "landing_cost": self._as_int(node.get("cost"), 0),
+                    "prev_cost": _leaf_prev_cost,
                     "unit_warning": _unit_warning,
                 }
 
@@ -2521,20 +2536,28 @@ class CatalogHandler:
             product["stock"] = new_stock
 
         # ── Landing cost update (from purchase) ──
+        # Capture the cost that was on record BEFORE this purchase, so the caller
+        # can offer Use-new / Keep-old / Weighted-average when it differs.
+        if resolved_variant:
+            _prev_cost = int(product.get("variant_costs", {}).get(resolved_variant, 0))
+        else:
+            _prev_cost = int(product.get("landing_cost", 0))
         effective_unit_cost = unit_cost
-        if unit_cost and unit_cost > 0:
+        if unit_cost and unit_cost > 0 and cost_mode != "keep":
             # If conversion was applied, adjust cost per base unit
             if actual_qty != qty_change and abs(qty_change) > 0:
                 effective_unit_cost = int(unit_cost * abs(qty_change) / abs(actual_qty)) if actual_qty != 0 else unit_cost
 
             if resolved_variant:
-                # Update variant-specific cost (weighted average)
+                # Update variant-specific cost.
                 variant_costs = product.get("variant_costs", {})
                 old_cost = int(variant_costs.get(resolved_variant, 0))
                 old_stock = int(variant_stock.get(resolved_variant, 0)) - abs(actual_qty)
                 old_stock = max(0, old_stock)
 
-                if old_cost > 0 and old_stock > 0:
+                if cost_mode == "new":
+                    variant_costs[resolved_variant] = effective_unit_cost
+                elif old_cost > 0 and old_stock > 0:
                     # Weighted average: (old_cost × old_stock + new_cost × new_qty) / total
                     total_units = old_stock + abs(actual_qty)
                     weighted_avg = int((old_cost * old_stock + effective_unit_cost * abs(actual_qty)) / total_units)
@@ -2544,12 +2567,14 @@ class CatalogHandler:
 
                 product["variant_costs"] = variant_costs
             else:
-                # Update base landing_cost (weighted average)
+                # Update base landing_cost.
                 old_cost = int(product.get("landing_cost", 0))
                 old_stock = int(product.get("stock", 0)) - abs(actual_qty)
                 old_stock = max(0, old_stock)
 
-                if old_cost > 0 and old_stock > 0:
+                if cost_mode == "new":
+                    product["landing_cost"] = effective_unit_cost
+                elif old_cost > 0 and old_stock > 0:
                     total_units = old_stock + abs(actual_qty)
                     weighted_avg = int((old_cost * old_stock + effective_unit_cost * abs(actual_qty)) / total_units)
                     product["landing_cost"] = weighted_avg
@@ -2577,6 +2602,7 @@ class CatalogHandler:
             "new_stock": int(product.get("stock", 0)),
             "variant": resolved_variant,
             "landing_cost": int(product.get("variant_costs", {}).get(resolved_variant, product.get("landing_cost", 0))) if resolved_variant else int(product.get("landing_cost", 0)),
+            "prev_cost": _prev_cost,
             "unit_warning": _unit_warning,
         }
 
@@ -3168,11 +3194,27 @@ class CatalogHandler:
         if len(q) < 1:
             return [text_response("🔍 Type at least one letter.")]
         prods = self._normalized_products(phone_number)
-        matches = [p for p in prods if (
-            q in p["name"].lower()
-            or (p.get("sku") and q in str(p["sku"]).lower())
-            or (p.get("barcode") and q in str(p["barcode"]).lower())
-        )]
+
+        def _hit(p):
+            # Top-level name / SKU / barcode.
+            if q in p["name"].lower():
+                return True
+            if p.get("sku") and q in str(p["sku"]).lower():
+                return True
+            if p.get("barcode") and q in str(p["barcode"]).lower():
+                return True
+            # Legacy flat variant names.
+            for v in (p.get("variants") or []):
+                if q in str(v).lower():
+                    return True
+            # Nested variant-tree values (e.g. "Highlander" under "Toyota").
+            tree = p.get("variant_tree")
+            if isinstance(tree, dict) and tree.get("children"):
+                if any(q in val for val in self._vt_all_values(tree)):
+                    return True
+            return False
+
+        matches = [p for p in prods if _hit(p)]
         if not matches:
             return [text_response(
                 f"🔍 No product matches *{query}*.\n\n_Try fewer letters, or ➕ Add Product._"
@@ -3622,6 +3664,92 @@ class CatalogHandler:
                 return None
         return node
 
+    def _split_values(self, text: str) -> list:
+        """Split a user's typed value list into individual items. Accepts commas,
+        'and', '&', and newlines as separators (people naturally type 'Sienna and
+        Hiace' or 'Sienna, Hiace & Coaster'). De-dupes while preserving order,
+        Title-cases each. Returns [] if nothing usable."""
+        import re
+        if not text:
+            return []
+        # Normalize separators to commas: newlines, '&', and the word 'and'
+        # (whole word only, so 'Highlander' / 'Grand' aren't split).
+        s = str(text).replace("\n", ",").replace("&", ",")
+        s = re.sub(r"\s+and\s+", ",", s, flags=re.IGNORECASE)
+        out, seen = [], set()
+        for part in s.split(","):
+            v = part.strip().title()
+            if v and v.lower() not in seen:
+                seen.add(v.lower())
+                out.append(v)
+        return out
+
+    def set_cost_direct(self, phone_number: str, product_name: str, cost: int,
+                        variant: str = "") -> bool:
+        """Force a product's (or variant-tree leaf's, or flat variant's) cost to
+        an exact value — no weighted-average. Used by the post-purchase
+        'Use new price' / 'Keep old price' choice, which re-sets the cost after
+        the purchase already folded a weighted-average. Returns True on success."""
+        try:
+            cost = int(cost)
+            products = self._get_products(phone_number)
+            key = self._find_product_key(products, product_name)
+            if not key:
+                return False
+            product = products[key]
+            resolved = (variant or "").strip()
+            tree = product.get("variant_tree")
+            if isinstance(tree, dict) and tree.get("children") and resolved:
+                parts = [x.strip() for x in resolved.split(self._COMBO_SEP) if x.strip()]
+                node = self._vt_get_node(tree, parts)
+                if node is None:
+                    return False
+                node["cost"] = cost
+                product["variant_tree"] = tree
+            elif resolved:
+                vc = product.get("variant_costs", {})
+                vc[resolved] = cost
+                product["variant_costs"] = vc
+            else:
+                product["landing_cost"] = cost
+            self._save_products(phone_number, products)
+            return True
+        except Exception as e:
+            logger.warning(f"set_cost_direct failed: {e}")
+            return False
+
+    def leaf_cost(self, phone_number: str, product_key: str, leaf_path: str) -> int:
+        """Public: per-unit cost stored on a variant-tree LEAF. leaf_path is
+        e.g. 'Sienna / 1992 / White'. Returns 0 if not a tree / not found. Lets
+        callers (e.g. the recording hint) surface the cost that actually lives on
+        the leaf rather than the product-level landing_cost (which is 0 for tree
+        products)."""
+        try:
+            prod = self._get_products(phone_number).get(product_key)
+            if not isinstance(prod, dict):
+                return 0
+            tree = prod.get("variant_tree") or {}
+            if not tree.get("children"):
+                return 0
+            parts = [p.strip() for p in str(leaf_path).split(self._COMBO_SEP) if p.strip()]
+            node = self._vt_get_node(tree, parts)
+            return self._as_int((node or {}).get("cost"), 0)
+        except Exception:
+            return 0
+
+    def _vt_all_values(self, node: dict) -> list:
+        """All variant VALUE names anywhere in the tree (every child key at every
+        depth), so a product is searchable by any of its sub-variant names
+        (e.g. find 'Toyota' by searching its leaf 'Highlander'). Returns a flat
+        lowercased list."""
+        out = []
+        children = (node or {}).get("children") or {}
+        for val, child in children.items():
+            if val:
+                out.append(str(val).lower())
+            out.extend(self._vt_all_values(child))
+        return out
+
     def _vt_node_total(self, node: dict) -> int:
         """Roll-up stock for a node: own stock if leaf, else sum of children."""
         children = node.get("children") or {}
@@ -3745,7 +3873,7 @@ class CatalogHandler:
                 "cat_vt_path": list(path), "cat_vt_axis": existing_axis})
             return [button_response(
                 f"➕ Add *{existing_axis}* value(s) here.\n"
-                f"_Separate multiple with commas, e.g. Sienna, Hiace._",
+                f"_Multiple? Separate with commas or 'and' — e.g. Sienna, Hiace and Coaster._",
                 [{"id": "cat_cancel", "title": "← Cancel"}])]
         self.session.save(phone_number, states.CATALOG_ADD_DATA, {
             "cat_step": "vt_add_axis", "cat_vt_key": product_key, "cat_vt_path": list(path)})
@@ -3758,6 +3886,15 @@ class CatalogHandler:
         key = context.get("cat_vt_key", "")
         path = list(context.get("cat_vt_path", []))
         axis = text.strip().title()
+        # This step wants exactly ONE axis name (e.g. "Year"). If the user typed
+        # several (commas or "and"), they probably meant to add VALUES — guide
+        # them rather than creating a bogus axis literally named "2024, 2026".
+        if len(self._split_values(text)) > 1:
+            return [button_response(
+                "🎚️ One axis name only here (e.g. *Year* or *Colour*).\n\n"
+                "_The axis is the CATEGORY the sub-variants vary by — you'll type the "
+                "actual values (like 2024, 2026) on the next step._",
+                [{"id": "cat_cancel", "title": "← Cancel"}])]
         if len(axis) < 2:
             return [text_response("Please type a valid axis name (2+ characters).")]
         self.session.save(phone_number, states.CATALOG_ADD_DATA, {
@@ -3765,16 +3902,16 @@ class CatalogHandler:
             "cat_vt_path": path, "cat_vt_axis": axis})
         return [button_response(
             f"🎚️ *{axis}* — type the value(s) to add here.\n"
-            f"_Separate multiple with commas, e.g. Sienna, Hiace, Coaster._",
+            f"_Multiple? Separate with commas or 'and' — e.g. Sienna, Hiace and Coaster._",
             [{"id": "cat_cancel", "title": "← Cancel"}])]
 
     def _vt_handle_add_values(self, phone_number: str, text: str, context: dict) -> list:
         key = context.get("cat_vt_key", "")
         path = list(context.get("cat_vt_path", []))
         axis = context.get("cat_vt_axis", "") or "Variant"
-        vals = [v.strip().title() for v in text.split(",") if v.strip()]
+        vals = self._split_values(text)
         if not vals:
-            return [text_response("Please type at least one value (commas for multiple).")]
+            return [text_response("Please type at least one value (commas, or 'and', for multiple).")]
         products = self._get_products(phone_number)
         prod = products.get(key)
         if not isinstance(prod, dict):
