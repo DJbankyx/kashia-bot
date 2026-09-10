@@ -330,6 +330,27 @@ class ExportService:
             logger.error(f"S3 upload error: {e}")
             return None
 
+    def deliver_image(self, phone_number, filepath, filename, caption=""):
+        """Upload a chart PNG to S3 and send it INLINE as a photo (Telegram) —
+        used by the visual dashboard (N2). Falls back to send_document on
+        platforms without send_photo. Returns (success, url)."""
+        url = self.upload_to_s3(filepath, filename)
+        if not url:
+            return False, None
+        client, recipient = resolve_client(phone_number, whatsapp_fallback=self.whatsapp)
+        if client is None:
+            client = self.whatsapp
+            recipient = phone_number
+        if hasattr(client, "send_photo"):
+            success = client.send_photo(recipient, url, caption)
+        else:
+            success = client.send_document(recipient, url, filename, caption)
+        try:
+            os.remove(filepath)
+        except Exception:
+            pass
+        return success, url
+
     def deliver_file(self, phone_number, filepath, filename, caption=""):
         """Full pipeline: upload to S3 then send to the user on their platform.
 

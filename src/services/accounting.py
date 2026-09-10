@@ -321,6 +321,41 @@ class Accounting:
             "tx_count": len(txns),
         }
 
+    def profit_trend(self, phone_number, months=6):
+        """Net-profit series over the last `months` calendar months (oldest→
+        newest), each computed via period_pnl so it's accrual-correct. Returns
+        [(label, net_profit), ...] e.g. [("Apr", 120000), ("May", -5000), ...].
+        Powers the trend chart (N2)."""
+        from datetime import date
+        try:
+            from dateutil.relativedelta import relativedelta
+        except Exception:
+            relativedelta = None
+        today = date.today()
+        series = []
+        for i in range(months - 1, -1, -1):
+            if relativedelta is not None:
+                first = (today.replace(day=1) - relativedelta(months=i))
+            else:
+                # Fallback: crude month stepping without dateutil.
+                y, m = today.year, today.month - i
+                while m <= 0:
+                    m += 12
+                    y -= 1
+                first = date(y, m, 1)
+            # last day of that month
+            if relativedelta is not None:
+                last = first + relativedelta(months=1) - relativedelta(days=1)
+            else:
+                ny, nm = (first.year + (1 if first.month == 12 else 0),
+                          1 if first.month == 12 else first.month + 1)
+                from datetime import timedelta
+                last = date(ny, nm, 1) - timedelta(days=1)
+            pnl = self.period_pnl(phone_number, first.isoformat(), last.isoformat(),
+                                  first.strftime("%b"))
+            series.append((first.strftime("%b"), pnl["net_profit"]))
+        return series
+
     # ── Position / Inventory (balance-sheet snapshot) ───────────────────
 
     def position(self, phone_number, as_of=None):

@@ -226,7 +226,10 @@ def _handle_callback_query(callback: dict):
     #    follow-up taps (period switch, drill open, ← Dashboard) edit in place;
     #    the initial open (menu_dashboard) sends a fresh card via normal dispatch
     #    so there's a message to keep editing. ──
-    if data.startswith("dash_period_") or data.startswith("dash_drill_") or data == "dash_open":
+    # The charts drill SENDS photos (can't edit a text card into images), so it
+    # goes through normal dispatch — everything else edits the card in place.
+    if (data.startswith("dash_period_") or data.startswith("dash_drill_") or data == "dash_open") \
+            and not data.startswith("dash_drill_charts_"):
         if _handle_dashboard_tap(user_id, chat_id, message_id, data):
             return
         # If the in-place edit couldn't run (no client / unexpected response),

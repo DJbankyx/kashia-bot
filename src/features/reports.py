@@ -504,6 +504,7 @@ class ReportsHandler:
             {"id": f"dash_drill_profit_{period}", "title": "📈 Profit detail"},
             {"id": f"dash_drill_expenses_{period}", "title": "💸 Expense breakdown"},
             {"id": f"dash_drill_position_{period}", "title": "🏦 Stock & who owes"},
+            {"id": f"dash_drill_charts_{period}", "title": "📈 Charts"},
             {"id": f"report_pdf_{period}", "title": "📄 PDF report"},
             {"id": f"report_export_{period}", "title": "📎 Excel"},
             {"id": "menu_home", "title": "☰ Menu"},
@@ -616,7 +617,72 @@ class ReportsHandler:
             lines.append("\n_Unsold stock is an asset you're holding — not a loss._")
             return _drill_card(f"🏦 Stock & who owes — {d['label']}", lines)
 
+        if what == "charts":
+            return self._dash_charts(phone_number, period, d)
+
         return self.dashboard(phone_number, period)
+
+    def _dash_charts(self, phone_number: str, period: str, d: dict) -> list:
+        """Render the visual dashboard (N2): a top-products bar + a profit-trend
+        line, drawn in-house with Pillow and delivered as inline photos. Falls
+        back to a text nudge if rendering/delivery isn't available. This drill
+        SENDS photos (not an editable card), so it goes through normal dispatch."""
+        import re as _re
+        from services.accounting import Accounting
+        try:
+            from services.chart_renderer import bar_chart, trend_chart
+        except Exception:
+            return [text_response("📈 Charts aren't available right now — the "
+                                  "dashboard numbers above are up to date.")]
+
+        acct = Accounting(self.db, self.session)
+        try:
+            from services.export_service import ExportService
+            export_svc = ExportService(database=self.db)
+        except Exception:
+            export_svc = None
+
+        responses = []
+        sent = 0
+
+        # 1) Top products (best sellers) — reuse the sales aggregation.
+        agg = {}
+        for t in d.get("sales", []):
+            name = _clean_desc(t)
+            rev = int(t.get("amount", 0))
+            agg[name] = agg.get(name, 0) + rev
+        top = sorted(agg.items(), key=lambda x: x[1], reverse=True)[:6]
+        if top and export_svc:
+            png = bar_chart(f"Top products — {d['label']}",
+                            [n for n, _ in top], [v for _, v in top],
+                            filename=f"top_{period}.png")
+            if png:
+                ok, _u = export_svc.deliver_image(phone_number, png, f"top_{period}.png",
+                                                  caption=f"🏆 Top products — {d['label']}")
+                sent += 1 if ok else 0
+
+        # 2) Profit trend — last 6 months net profit.
+        try:
+            series = acct.profit_trend(phone_number, months=6)
+        except Exception:
+            series = []
+        if any(v for _, v in series) and export_svc:
+            png = trend_chart("Net profit — last 6 months", series, filename="trend.png")
+            if png:
+                ok, _u = export_svc.deliver_image(phone_number, png, "trend.png",
+                                                  caption="📈 Net profit trend (6 months)")
+                sent += 1 if ok else 0
+
+        back = [
+            {"id": f"dash_period_{period}", "title": "← Dashboard"},
+            {"id": "menu_home", "title": "☰ Menu"},
+        ]
+        if sent:
+            body = f"📊 Sent {sent} chart{'s' if sent != 1 else ''} above."
+        else:
+            body = ("📈 Not enough data to chart yet — record a few more sales to "
+                    "see your visuals.")
+        return [text_response(body), button_response("Back:", back)]
 
     # ─────────────────────────────────────────────────────────
     # BUSINESS TABS — Sales / Purchases / Expenses

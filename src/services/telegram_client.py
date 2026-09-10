@@ -192,6 +192,16 @@ class TelegramClient(MessagingClient):
             payload["parse_mode"] = "Markdown"
         return self._call("sendDocument", payload)
 
+    def send_photo(self, to, photo_url, caption="") -> bool:
+        """Send an image by URL — renders INLINE as a photo (not a download),
+        which is what we want for dashboard charts. Telegram fetches the URL
+        server-side, exactly like send_document."""
+        payload = {"chat_id": to, "photo": photo_url}
+        if caption:
+            payload["caption"] = self._truncate(self._prepare_text(caption), CAPTION_MAX)
+            payload["parse_mode"] = "Markdown"
+        return self._call("sendPhoto", payload)
+
     def send_chat_action(self, to, action: str = "typing") -> bool:
         """Show a transient status (e.g. "typing…", "upload_document") to the user.
 
