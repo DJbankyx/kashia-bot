@@ -118,6 +118,11 @@ def _handle_message(message: dict):
 
     user_id = f"{TG_USER_PREFIX}{chat_id}"
 
+    # Best-effort: remember this user's Telegram @username + display name so
+    # support can find an account by handle/name (not just a raw chat id). Passive
+    # and non-blocking — never affects message handling. See _capture_tg_identity.
+    _capture_tg_identity(user_id, message.get("from") or {})
+
     # Immediately show "typing…" so the chat feels responsive while the engine
     # works (Telegram-only nicety; auto-clears when we reply).
     _show_typing(chat_id)
@@ -310,6 +315,40 @@ def _reset_stale_flow(user_id: str):
         bot.router.session.reset(user_id)
     except Exception as e:
         logger.warning(f"_reset_stale_flow failed for {user_id}: {e}")
+
+
+def _capture_tg_identity(user_id: str, from_user: dict):
+    """Best-effort: store the Telegram @username + display name on the user
+    record, so support/audit can find an account by handle/name (not just the
+    raw chat id).
+
+    Fully passive: only writes when a REAL user row already exists (post-
+    onboarding) and only when a value is new or changed — so it's at most one
+    tiny update per identity change, never per message. Any failure is swallowed;
+    this must never affect message handling.
+    """
+    try:
+        if not isinstance(from_user, dict):
+            return
+        username = (from_user.get("username") or "").strip()
+        first = (from_user.get("first_name") or "").strip()
+        last = (from_user.get("last_name") or "").strip()
+        display = (f"{first} {last}".strip()) or username
+        if not username and not display:
+            return
+
+        from main import get_bot
+        db = get_bot().db
+        user = db.get_user(user_id)
+        # Only annotate an existing account (don't create phantom rows here).
+        if not user or not user.get("business_name"):
+            return
+        if username and user.get("tg_username") != username:
+            db.update_user_field(user_id, "tg_username", username)
+        if display and user.get("tg_name") != display:
+            db.update_user_field(user_id, "tg_name", display)
+    except Exception as e:
+        logger.debug(f"_capture_tg_identity skipped for {user_id}: {e}")
 
 
 def _dispatch(user_id: str, text: str, message_type: str):
