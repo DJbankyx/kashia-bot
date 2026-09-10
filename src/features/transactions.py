@@ -1699,8 +1699,20 @@ class TransactionHandler:
         return best_cost
 
     def _update_catalog_cost(self, phone_number: str, catalog_key: str, cost: int):
-        """Update the landing_cost on a catalog product."""
+        """Seed a product's cost basis from a SALE-time cost — but never OVERWRITE
+        an existing weighted-average.
+
+        Weighted-average costing rule: only PURCHASES change a product's average
+        cost (handled by CatalogHandler.update_stock). A sale must not rewrite the
+        average, or one odd sale-time figure would corrupt the cost basis for all
+        future COGS. So here we only SEED landing_cost when the product has no
+        cost on record yet (first data point); otherwise we leave the
+        purchase-derived average untouched. The sale's own cost is still stored on
+        the transaction (for that sale's COGS) by the caller.
+        """
         try:
+            if not cost or int(cost) <= 0:
+                return
             user = self.db.get_user(phone_number)
             if not user:
                 return
@@ -1708,12 +1720,15 @@ class TransactionHandler:
             products = catalog.get("products", {})
 
             if catalog_key in products:
-                products[catalog_key]["landing_cost"] = cost
-                from services.database import Database
-                db = self.db
-                db.update_user_field(phone_number, "product_catalog", catalog)
+                existing = int(products[catalog_key].get("landing_cost", 0) or 0)
+                if existing > 0:
+                    # Already have a weighted-average cost — do NOT overwrite it
+                    # from a sale. Purchases maintain the average.
+                    return
+                products[catalog_key]["landing_cost"] = int(cost)
+                self.db.update_user_field(phone_number, "product_catalog", catalog)
         except Exception as e:
-            logger.error(f"Error updating catalog cost: {e}")
+            logger.error(f"Error seeding catalog cost: {e}")
 
     def _save_cost_to_catalog(self, phone_number: str, tx_data: dict):
         """Auto-save unit_cost from a purchase to the matching catalog product."""
