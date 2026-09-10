@@ -56,6 +56,51 @@ def _qty_of(tx):
     return int(m.group(1)) if m else 1
 
 
+def _is_debt_settlement(tx):
+    """True when a transaction is a debt repayment (in or out), not a real
+    sale/expense. These are recorded as sale/expense rows for cash tracking but
+    must be kept OUT of the P&L (revenue/expense) — the P&L already recognised
+    the original credit sale/purchase. They're a cash event + a receivable/
+    payable reduction."""
+    desc = str(tx.get("description", "")).lower()
+    cat = str(tx.get("category", "")).lower()
+    return ("debt payment" in desc or "debt repayment" in desc
+            or cat == "debt repayment")
+
+
+def _payment_method(tx):
+    return str(tx.get("payment_method", "")).lower()
+
+
+def _cash_received(tx):
+    """Cash actually received on a SALE tx (accrual-agnostic cash view):
+      * cash/transfer sale  -> full amount
+      * deposit sale        -> the deposit portion only (balance is a receivable)
+      * credit sale         -> 0 (nothing received yet)
+      * debt repayment (in) -> full amount (collection)
+    """
+    if _is_debt_settlement(tx):
+        return int(float(tx.get("amount", 0)))
+    pm = _payment_method(tx)
+    if pm == "credit":
+        return 0
+    if pm == "deposit":
+        return int(float(tx.get("deposit_amount", 0)))
+    return int(float(tx.get("amount", 0)))
+
+
+def _cash_paid(tx):
+    """Cash actually paid on a PURCHASE/EXPENSE tx (mirror of _cash_received)."""
+    if _is_debt_settlement(tx):
+        return int(float(tx.get("amount", 0)))
+    pm = _payment_method(tx)
+    if pm == "credit":
+        return 0
+    if pm == "deposit":
+        return int(float(tx.get("deposit_amount", 0)))
+    return int(float(tx.get("amount", 0)))
+
+
 def product_avg_cost(product):
     """Read a product's weighted-average unit cost.
 
@@ -139,10 +184,18 @@ class Accounting:
         """
         txns = self.db.get_transactions_by_period(phone_number, start_date, end_date) or []
 
-        sales = [t for t in txns if t.get("type") == "sale"]
-        # Operating expenses = expenses that are NOT cost-of-goods inputs.
+        # Revenue = real sales only. A debt repayment is recorded as a `sale`
+        # transaction (money collected) but its revenue was ALREADY recognised
+        # at the original credit sale — counting it again would double-count.
+        # Exclude debt-payment/repayment rows from the P&L (they're a cash event,
+        # handled in period_cashflow, and a receivables reduction, not revenue).
+        sales = [t for t in txns if t.get("type") == "sale"
+                 and not _is_debt_settlement(t)]
+        # Operating expenses = expenses that are NOT cost-of-goods inputs AND not
+        # debt repayments (a repayment settles a payable, it's not a P&L expense).
         opex_txns = [t for t in txns if t.get("type") == "expense"
-                     and t.get("category") not in COGS_CATEGORIES]
+                     and t.get("category") not in COGS_CATEGORIES
+                     and not _is_debt_settlement(t)]
 
         # Catalog products for weighted-average cost resolution.
         products = self._products(phone_number)
@@ -190,6 +243,50 @@ class Accounting:
             "tx_count": len(txns),
             "sales": sales,
             "opex_txns": opex_txns,
+        }
+
+    # ── Cash Flow (paid-only) ───────────────────────────────────────────
+
+    def period_cashflow(self, phone_number, start_date, end_date, label=""):
+        """Cash flow for a period — money ACTUALLY received vs ACTUALLY paid.
+
+        Unlike the P&L (accrual), this counts real money movement:
+          IN  = cash/transfer sales (full) + deposit portions + debt collected.
+          OUT = cash/transfer purchases + expenses paid (full) + deposit portions
+                + debt repaid.
+        Credit sales/purchases contribute 0 until paid (their unpaid balance is a
+        receivable/payable, reported by the position report in R5). This is where
+        buying unsold stock correctly shows as cash OUT.
+        """
+        txns = self.db.get_transactions_by_period(phone_number, start_date, end_date) or []
+
+        cash_in = 0
+        cash_out = 0
+        collected = 0   # debt collected (subset of cash_in)
+        repaid = 0      # debt repaid (subset of cash_out)
+        for t in txns:
+            ttype = t.get("type")
+            if ttype in ("sale", "income"):
+                amt = _cash_received(t)
+                cash_in += amt
+                if _is_debt_settlement(t):
+                    collected += amt
+            elif ttype in ("purchase", "expense"):
+                amt = _cash_paid(t)
+                cash_out += amt
+                if _is_debt_settlement(t):
+                    repaid += amt
+
+        return {
+            "label": label,
+            "start": start_date,
+            "end": end_date,
+            "cash_in": cash_in,
+            "cash_out": cash_out,
+            "net_cash": cash_in - cash_out,
+            "debt_collected": collected,
+            "debt_repaid": repaid,
+            "tx_count": len(txns),
         }
 
     # ── Helpers ─────────────────────────────────────────────────────────

@@ -219,25 +219,31 @@ class ReportsHandler:
                 lines.append(f"  • {cat}: {format_amount(amt)} ({pct}%)")
 
         # ════════════════════════════════════════════════════
-        # SECTION 2 — Cash Flow (money in vs out)
-        # This is where purchases (incl. unsold stock) show as cash out.
+        # SECTION 2 — Cash Flow (money ACTUALLY in vs out, paid-only)
+        # Credit sales/purchases contribute 0 until paid; deposits count only the
+        # paid portion; debt collections/repayments count as cash. This is where
+        # buying unsold stock correctly shows as cash out.
         # ════════════════════════════════════════════════════
-        cash_out = _sum(purchases + cogs_txns) + opex
-        net_cash = revenue - cash_out
+        cf = acct.period_cashflow(phone_number, start_date, end_date, label)
         lines.append(f"")
         lines.append(f"━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"💵 *Cash Flow*")
-        lines.append(f"  Money in:   {format_amount(revenue)}")
-        lines.append(f"  Money out:  {format_amount(cash_out)}  _(incl. all stock bought)_")
-        if net_cash >= 0:
-            lines.append(f"  *Net cash:*  +{format_amount(net_cash)}")
+        lines.append(f"💵 *Cash Flow* _(money actually moved)_")
+        lines.append(f"  Cash in:   {format_amount(cf['cash_in'])}")
+        lines.append(f"  Cash out:  {format_amount(cf['cash_out'])}")
+        if cf["debt_collected"]:
+            lines.append(f"    _incl. {format_amount(cf['debt_collected'])} debt collected_")
+        if cf["debt_repaid"]:
+            lines.append(f"    _incl. {format_amount(cf['debt_repaid'])} debt repaid_")
+        if cf["net_cash"] >= 0:
+            lines.append(f"  *Net cash:*  +{format_amount(cf['net_cash'])}")
         else:
-            lines.append(f"  *Net cash:*  −{format_amount(abs(net_cash))}")
+            lines.append(f"  *Net cash:*  −{format_amount(abs(cf['net_cash']))}")
         lines.append(f"")
         lines.append(f"📝 {tx_count} transaction{'s' if tx_count != 1 else ''}")
         lines.append(
             f"_P&L = profit on goods sold (accrual). Cash flow = money movement. "
-            f"Unsold stock is inventory, not a loss._"
+            f"Credit sales count as profit but not yet cash; unsold stock is "
+            f"inventory, not a loss._"
         )
 
         responses = [text_response("\n".join(lines))]
@@ -320,9 +326,10 @@ class ReportsHandler:
         costed_rev   = pnl["costed_revenue"]
         uncosted     = pnl["uncosted_count"]
 
-        # ── Cash view (money in vs out) — purchases hit cash here, not P&L ──
-        cash_out = _sum(purchases + cogs_txns) + opex
-        net_cash = revenue - cash_out
+        # ── Cash view (money ACTUALLY moved, paid-only) from the shared engine ──
+        cf = acct.period_cashflow(phone_number, start_date, end_date, label)
+        cash_out = cf["cash_out"]
+        net_cash = cf["net_cash"]
 
         # Debt position (who owes me / I owe) — receivables/payables.
         owed_to_me = owe_out = 0
