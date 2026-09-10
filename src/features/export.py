@@ -3,7 +3,7 @@
 
 import logging
 from core import states
-from utils.whatsapp_ui import text_response, list_response
+from utils.whatsapp_ui import text_response, list_response, button_response
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +17,53 @@ class ExportHandler:
         self.export_service = export_service
         self.pdf_generator = pdf_generator
 
+    def _is_telegram(self, phone_number: str) -> bool:
+        """True when this user is on Telegram (tg: namespaced id). Telegram gets
+        the tap-first Documents flow; WhatsApp keeps the classic export menu."""
+        try:
+            from services.messaging_client import platform_for_user
+            return platform_for_user(phone_number) == "telegram"
+        except Exception:
+            return False
+
+    # ─────────────────────────────────────────────────────────
+    # STAGE 4 — Documents home (Telegram, tap-first)
+    # ─────────────────────────────────────────────────────────
+
+    def documents_home(self, phone_number: str) -> list:
+        """Tap-first Documents type picker (Telegram). Mirrors the dashboard's
+        boxed language. Routes to the existing receipt/statement flows and the
+        invoice/quote builders (4C–4E)."""
+        lines = [
+            "🗂️ *Documents*",
+            "────────────────────",
+            "Create something you can send to a customer.",
+            "",
+            "🧾 *Invoice* — a bill for goods/services",
+            "🧾 *Receipt* — proof of a payment received",
+            "📄 *Quote* — a price estimate (not yet paid)",
+            "📊 *Statement* — your financial summary PDF",
+        ]
+        rows = [
+            {"id": "doc_invoice", "title": "🧾 Invoice"},
+            {"id": "doc_receipt", "title": "🧾 Receipt"},
+            {"id": "doc_quote", "title": "📄 Quote"},
+            {"id": "doc_statement", "title": "📊 Statement"},
+            {"id": "menu_home", "title": "☰ Menu"},
+        ]
+        return [list_response(
+            header="🗂️ Documents",
+            body="\n".join(lines),
+            button_text="Create",
+            sections=[{"title": "Document Type", "rows": rows}],
+            no_paginate=True,
+        )]
+
     def show_options(self, phone_number: str) -> list:
-        """Show export options menu."""
+        """Show export/documents menu. Telegram gets the tap-first Documents
+        picker; WhatsApp keeps the classic export list."""
+        if self._is_telegram(phone_number):
+            return self.documents_home(phone_number)
         return [list_response(
             header="📁 Export & Documents",
             body="What would you like to export or generate?",
@@ -45,6 +90,25 @@ class ExportHandler:
         """Handle export buttons — PIN-protected for data exports."""
         from core.pin_guard import requires_pin
 
+        # ── Stage 4: Documents (Telegram tap-first) ──────────────────────────
+        # Receipt + Statement reuse the existing generators. Invoice + Quote
+        # open the boxed builder (4C–4E); until those land they route to the
+        # existing invoice flow / a clear placeholder so no tap dead-ends.
+        if button_id == "doc_statement":
+            pin_check = requires_pin(self.db, self.session, phone_number, button_id)
+            if pin_check:
+                return pin_check
+            return self.pdf_generator.handle_statement_request(phone_number)
+
+        if button_id == "doc_receipt":
+            return self.pdf_generator.handle_receipt_request(phone_number)
+
+        if button_id == "doc_invoice":
+            return self._start_invoice(phone_number)
+
+        if button_id == "doc_quote":
+            return self._doc_quote_placeholder(phone_number)
+
         # PIN-protected actions
         if button_id in ("export_excel", "export_csv", "export_statement"):
             pin_check = requires_pin(self.db, self.session, phone_number, button_id)
@@ -70,6 +134,20 @@ class ExportHandler:
             return self.pdf_generator.handle_statement_request(phone_number)
 
         return self.show_options(phone_number)
+
+    def _doc_quote_placeholder(self, phone_number: str) -> list:
+        """Interim Quote entry (4A). The full tap-first quote builder + quote
+        PDF land in 4E; until then this is an honest placeholder that doesn't
+        dead-end the tap."""
+        return [button_response(
+            "📄 *Quote*\n\n"
+            "The tap-first quote builder is coming next. For now you can build a "
+            "full *Invoice* the same way and send it as your estimate.",
+            [
+                {"id": "doc_invoice", "title": "🧾 Build Invoice"},
+                {"id": "menu_export", "title": "← Documents"},
+            ]
+        )]
 
     def _start_invoice(self, phone_number: str) -> list:
         """Start invoice generation flow."""

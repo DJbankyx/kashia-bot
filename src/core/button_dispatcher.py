@@ -182,6 +182,14 @@ class ButtonDispatcher:
         if bid.startswith("report_"):
             return r.reports.handle_button(phone_number, bid, session)
 
+        # ── Dashboard buttons (Stage 3, Telegram) → reports handler ──
+        #    Period toggles (dash_period_*) and drill-downs (dash_drill_*) plus
+        #    the dashboard open (menu_dashboard / dash_open) all re-render the
+        #    same card. Without this seam these taps fell through to "Unknown
+        #    button" and bounced the user to the home menu.
+        if bid == "menu_dashboard" or bid == "dash_open" or bid.startswith("dash_"):
+            return r.reports.handle_button(phone_number, bid, session)
+
         # ── Section sub-menu buttons (industry-specific) ──
         if bid.startswith("sec_") or bid.startswith("pi_") or bid.startswith("biz_") or bid.startswith("crm_") or bid.startswith("set_"):
             # Try industry handler first
@@ -237,6 +245,12 @@ class ButtonDispatcher:
 
         # ── Export buttons ──
         if bid.startswith("export_"):
+            return r.export.handle_button(phone_number, bid, session)
+
+        # ── Document builder buttons (Stage 4, Telegram) → export handler ──
+        #    Tap-first Documents home + invoice/quote builder. WhatsApp keeps the
+        #    classic export_* menu; doc_* is only emitted on Telegram.
+        if bid.startswith("doc_"):
             return r.export.handle_button(phone_number, bid, session)
 
         # ── Industry change list taps (set_ind_trading etc) ──
