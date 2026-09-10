@@ -149,3 +149,27 @@ dashboard's `dash_*`).
 - Recurring/scheduled invoices.
 - Payment links on invoices (Paystack) — possible later tie-in.
 - TIN/address rendering unless you ask for it (small add if wanted).
+
+---
+
+## STATUS: COMPLETE (4A–4G shipped)
+
+- 4A (c784a92) — Documents home + type picker (Telegram); fixed dashboard routing.
+- 4B (7f3043b) — Receipt + period-aware Statement; delivery cleanup (no raw URL);
+  statement tuple-truthiness fix.
+- 4C (87af827) — tap-first invoice builder (tg_invoice.py, __tginv__): customer +
+  line items (type / catalog / past sale) -> generate_invoice(items=).
+- 4D (7d48a57) — discount/tax (percent or amount) + note + due date; business
+  identity block on the invoice PDF (address compulsory, TIN optional+toggle;
+  fixes raw tg: id leak).
+- 4E (7d30994) — Quote PDF + quote mode (title QUOTE, valid-until, no bank block).
+- 4F (35dd2b9) — exact transaction fetch (db.get_transaction) for doc paths so
+  older transactions aren't missed; filename/forward delivery confirmed clean.
+- 4G — end-to-end verify: invoice/quote/receipt/statement all build as real PDFs;
+  numbers accounting-correct (COGS of sold, positive net, inventory value);
+  Telegram documents picker vs WhatsApp classic export routing confirmed; clean
+  app-wide imports.
+
+Documents draw figures from the shared accounting engine, so invoices/statements
+never disagree with the reports. WhatsApp free-text invoice + export paths
+unchanged throughout.
