@@ -25,12 +25,22 @@ class ReportsHandler:
         self.session = session_mgr
         self.db = database
 
+    def _is_telegram(self, phone_number: str) -> bool:
+        try:
+            from services.messaging_client import platform_for_user
+            return platform_for_user(phone_number) == "telegram"
+        except Exception:
+            return False
+
     # ─────────────────────────────────────────────────────────
     # ENTRY — period selector menu
     # ─────────────────────────────────────────────────────────
 
     def show(self, phone_number: str) -> list:
-        """Show report period options."""
+        """Show report entry. Telegram gets the tap-first in-place DASHBOARD
+        (Stage 3); WhatsApp keeps the classic period-selector list."""
+        if self._is_telegram(phone_number):
+            return self.dashboard(phone_number, "month")
         return [list_response(
             header="📊 Reports",
             body="Which report would you like?",
@@ -55,7 +65,18 @@ class ReportsHandler:
     # ─────────────────────────────────────────────────────────
 
     def handle_button(self, phone_number: str, button_id: str, session: dict) -> list:
-        """Route all report_ and biz_ buttons."""
+        """Route all report_, dash_ and biz_ buttons."""
+        # ── Stage 3 dashboard (Telegram) ──
+        if button_id == "menu_dashboard" or button_id == "dash_open":
+            return self.dashboard(phone_number, "month")
+        if button_id.startswith("dash_period_"):
+            return self.dashboard(phone_number, button_id[len("dash_period_"):])
+        if button_id.startswith("dash_drill_"):
+            # dash_drill_<what>_<period>
+            rest = button_id[len("dash_drill_"):]
+            what, _, period = rest.partition("_")
+            return self._dash_drill(phone_number, what, period or "month")
+
         # ── Period reports ──
         if button_id == "report_today":
             return self._pnl_report(phone_number, "today")
@@ -239,6 +260,218 @@ class ReportsHandler:
         ))
 
         return responses
+
+    # ─────────────────────────────────────────────────────────
+    # STAGE 3 — Shared totals + tap-first Telegram DASHBOARD
+    # ─────────────────────────────────────────────────────────
+
+    def _period_totals(self, phone_number: str, period: str) -> dict:
+        """SINGLE source of truth for a period's headline numbers. Both the
+        dashboard card and (in future) the text P&L read from this so they can
+        never disagree. Reuses the same buckets/COGS logic as _pnl_report."""
+        start_date, end_date, label = _date_range(period)
+        txns = self.db.get_transactions_by_period(phone_number, start_date, end_date) or []
+
+        sales     = [t for t in txns if t.get("type") == "sale"]
+        purchases = [t for t in txns if t.get("type") == "purchase"]
+        expenses  = [t for t in txns if t.get("type") == "expense"
+                     and t.get("category") not in COGS_CATEGORIES]
+        cogs_txns = [t for t in txns if t.get("type") == "expense"
+                     and t.get("category") in COGS_CATEGORIES]
+        production = [t for t in txns if t.get("type") == "production"]
+
+        revenue = _sum(sales)
+        cogs    = _sum(purchases + cogs_txns)          # cash "money out" for goods
+        opex    = _sum(expenses)
+        net     = revenue - cogs - opex                # net cash (money in − out)
+
+        # True gross margin from recorded costs (revenue of costed sales − their cost)
+        gross_margin, costed_rev, uncosted = self._costed_margin(phone_number, sales)
+
+        # Debt position (who owes me / I owe) — best-effort.
+        owed_to_me = owe_out = 0
+        try:
+            owed_to_me = sum(int(d.get("amount", 0)) for d in
+                             (self.db.get_all_debtors(phone_number) or []))
+            owe_out = sum(int(c.get("amount", 0)) for c in
+                          (self.db.get_all_creditors(phone_number) or []))
+        except Exception:
+            pass
+
+        user = self.db.get_user(phone_number) or {}
+        industry = user.get("industry_class", user.get("business_type", "trading"))
+
+        return {
+            "period": period, "label": label,
+            "revenue": revenue, "cogs": cogs, "opex": opex, "net": net,
+            "gross_margin": gross_margin, "costed_revenue": costed_rev,
+            "uncosted_sales": uncosted,
+            "owed_to_me": owed_to_me, "owe_out": owe_out,
+            "tx_count": len(txns), "sales_count": len(sales),
+            "industry": industry,
+            "sales": sales, "purchases": purchases, "expenses": expenses,
+            "production": production,
+        }
+
+    def _costed_margin(self, phone_number: str, sales: list):
+        """Return (total_gross_margin, costed_revenue, uncosted_count) using the
+        same cost sources as the margin report: tx landing_cost, then catalog."""
+        if not sales:
+            return 0, 0, 0
+        import re
+        from features.catalog import CatalogHandler
+        cat = CatalogHandler(self.session, self.db)
+        total_margin = costed_rev = 0
+        uncosted = 0
+        for t in sales:
+            extra = t.get("extra_details", {}) or {}
+            lc = extra.get("landing_cost") or t.get("landing_cost")
+            qty = 1
+            m = re.match(r'^(\d+)', str(t.get("quantity", "1")))
+            if m:
+                qty = int(m.group(1))
+            has_per_unit = extra.get("landing_cost_per_unit") or t.get("landing_cost_per_unit")
+            if lc and int(lc) > 0 and not has_per_unit:
+                lc = int(lc) * qty
+            if not lc or int(lc) <= 0:
+                desc = t.get("description", t.get("item_name", ""))
+                brand = t.get("brand", "")
+                search = f"{brand} {desc}".strip() if brand else desc
+                cc = cat.get_landing_cost(phone_number, search)
+                if cc > 0:
+                    lc = cc * qty
+            rev = int(t.get("amount", 0))
+            if lc and int(lc) > 0:
+                total_margin += rev - int(lc)
+                costed_rev += rev
+            else:
+                uncosted += 1
+        return total_margin, costed_rev, uncosted
+
+    _PERIOD_LABELS = {"today": "Today", "week": "This Week",
+                      "month": "This Month", "last_month": "Last Month"}
+
+    def dashboard(self, phone_number: str, period: str = "month") -> list:
+        """The tap-first, in-place Telegram dashboard card. Period toggles +
+        drill-downs re-render this same card. Numbers from _period_totals."""
+        if period not in ("today", "week", "month", "last_month"):
+            period = "month"
+        d = self._period_totals(phone_number, period)
+        industry = d["industry"]
+
+        rev_label = {"manufacturing": "Output sales", "services": "Service revenue"}\
+            .get(industry, "Revenue")
+        cogs_label = {"manufacturing": "Materials", "services": "Job costs"}\
+            .get(industry, "Purchases")
+
+        lines = [
+            f"📊 *Dashboard — {d['label']}*",
+            "────────────────────",
+            f"💰 {rev_label}:  *{format_amount(d['revenue'])}*",
+            f"📦 {cogs_label}:  {format_amount(d['cogs'])}",
+            f"💸 Expenses:  {format_amount(d['opex'])}",
+            "────────────────────",
+        ]
+        if d["net"] >= 0:
+            net_pct = f" ({int(d['net']/d['revenue']*100)}%)" if d["revenue"] > 0 else ""
+            lines.append(f"📈 *Net (cash): +{format_amount(d['net'])}*{net_pct}")
+        else:
+            lines.append(f"📉 *Net (cash): −{format_amount(abs(d['net']))}*")
+        if d["costed_revenue"] > 0:
+            gm_pct = int(d["gross_margin"] / d["costed_revenue"] * 100) if d["costed_revenue"] else 0
+            lines.append(f"🟢 Gross margin: {format_amount(d['gross_margin'])} ({gm_pct}%)")
+        if d["uncosted_sales"] > 0:
+            lines.append(f"_⚠️ {d['uncosted_sales']} sale(s) missing cost — set costs for true profit._")
+        if d["owed_to_me"] or d["owe_out"]:
+            lines.append(f"🔴 Owed to you: {format_amount(d['owed_to_me'])}  ·  "
+                         f"📝 You owe: {format_amount(d['owe_out'])}")
+        lines.append(f"\n_📝 {d['tx_count']} transaction(s) in this period._")
+
+        # Rows: period toggle, drill-downs, exports, menu.
+        def per_btn(pk, lbl):
+            mark = "• " if pk == period else ""
+            return {"id": f"dash_period_{pk}", "title": f"{mark}{lbl}"}
+        rows = [
+            per_btn("today", "Today"), per_btn("week", "Week"),
+            per_btn("month", "Month"), per_btn("last_month", "Last"),
+            {"id": f"dash_drill_top_{period}", "title": "🏆 Top Products"},
+            {"id": f"dash_drill_profit_{period}", "title": "📈 Profit / Margin"},
+            {"id": f"dash_drill_expenses_{period}", "title": "💸 Expenses by Category"},
+            {"id": f"report_pdf_{period}", "title": "📄 PDF"},
+            {"id": f"report_export_{period}", "title": "📎 Excel"},
+            {"id": "menu_home", "title": "☰ Menu"},
+        ]
+        return [list_response(
+            header=f"📊 Dashboard — {d['label']}",
+            body="\n".join(lines),
+            button_text="View",
+            sections=[{"title": "", "rows": rows}],
+            no_paginate=True,
+        )]
+
+    def _dash_drill(self, phone_number: str, what: str, period: str) -> list:
+        """Drill-down views off the dashboard. Each ends with a ← Dashboard back."""
+        d = self._period_totals(phone_number, period)
+        back = [
+            {"id": f"dash_period_{period}", "title": "← Dashboard"},
+            {"id": "menu_home", "title": "☰ Menu"},
+        ]
+
+        if what == "expenses":
+            cats = {}
+            for t in d["expenses"]:
+                c = t.get("category", "Other") or "Other"
+                cats[c] = cats.get(c, 0) + float(t.get("amount", 0))
+            lines = [f"💸 *Expenses — {d['label']}*", ""]
+            if not cats:
+                lines.append("_No expenses in this period._")
+            else:
+                total = sum(cats.values())
+                for c, amt in sorted(cats.items(), key=lambda x: x[1], reverse=True):
+                    pct = int(amt / total * 100) if total else 0
+                    lines.append(f"  • {c}: {format_amount(amt)} ({pct}%)")
+                lines.append(f"\n*Total: {format_amount(total)}*")
+            return [text_response("\n".join(lines)), button_response("Back:", back)]
+
+        if what == "top":
+            # Rank sales by revenue; show qty + margin where cost is known.
+            import re
+            from features.catalog import CatalogHandler
+            cat = CatalogHandler(self.session, self.db)
+            agg = {}
+            for t in d["sales"]:
+                name = _clean_desc(t)
+                rev = int(t.get("amount", 0))
+                m = re.match(r'^(\d+)', str(t.get("quantity", "1")))
+                qty = int(m.group(1)) if m else 1
+                a = agg.setdefault(name, {"rev": 0, "qty": 0})
+                a["rev"] += rev
+                a["qty"] += qty
+            lines = [f"🏆 *Top Products — {d['label']}*", ""]
+            if not agg:
+                lines.append("_No sales in this period._")
+            else:
+                ranked = sorted(agg.items(), key=lambda x: x[1]["rev"], reverse=True)[:10]
+                for name, a in ranked:
+                    lines.append(f"  • *{name}* — {format_amount(a['rev'])} ({a['qty']} sold)")
+            return [text_response("\n".join(lines)), button_response("Back:", back)]
+
+        if what == "profit":
+            lines = [
+                f"📈 *Profit / Margin — {d['label']}*", "",
+                f"💰 Revenue (costed): {format_amount(d['costed_revenue'])}",
+                f"🟢 Gross margin: {format_amount(d['gross_margin'])}"
+                + (f" ({int(d['gross_margin']/d['costed_revenue']*100)}%)"
+                   if d['costed_revenue'] else ""),
+                f"💸 Expenses: {format_amount(d['opex'])}",
+                f"📊 Net (cash): {format_amount(d['net'])}",
+            ]
+            if d["uncosted_sales"] > 0:
+                lines.append(f"\n_⚠️ {d['uncosted_sales']} sale(s) have no cost recorded._\n"
+                             "_Set costs on those items for an accurate margin._")
+            return [text_response("\n".join(lines)), button_response("Back:", back)]
+
+        return self.dashboard(phone_number, period)
 
     # ─────────────────────────────────────────────────────────
     # BUSINESS TABS — Sales / Purchases / Expenses
