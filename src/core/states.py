@@ -58,6 +58,10 @@ RECURRING_SERVICES = "RECURRING_SERVICES"
 # ─── Telegram fast-entry (app-like tappable sale/purchase flow; Telegram only) ───
 TG_FASTENTRY = "TG_FASTENTRY"
 
+# ─── Document Scan confirm (Telegram only; N4.5). Holds a pending scanned
+#     document awaiting the user's one-tap confirm-to-record. ───
+SCAN_CONFIRM = "SCAN_CONFIRM"
+
 # ─── Personal Info ───
 PERSONAL_INFO = "PERSONAL_INFO"
 

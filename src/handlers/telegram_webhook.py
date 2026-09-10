@@ -201,10 +201,14 @@ def _handle_callback_query(callback: dict):
         _handle_page_nav(user_id, chat_id, message_id, data)
         return
 
-    # ── Receipt-scan confirmation (Phase A: extraction only, no record yet).
-    #    Handled locally so the placeholder button doesn't confuse the engine. ──
-    if data == "scan_ok":
-        _send_text(user_id, "👍 Great. For now, please record it the usual way — scan-to-record is coming soon.")
+    # ── Document-scan confirm (N4.5): record the stashed scan, or discard.
+    #    Handled locally (not via the engine) since the scan lives in a
+    #    transient SCAN_CONFIRM session stash. ──
+    if data == "scan_save":
+        _handle_scan_save(user_id)
+        return
+    if data == "scan_cancel":
+        _handle_scan_cancel(user_id)
         return
 
     # ── Telegram fast-entry taps (app-like sale/purchase flow). These are
@@ -503,14 +507,34 @@ def _handle_receipt_scan(user_id: str, chat_id, file_id: str):
             _send_text(user_id, "📄 I couldn't process that document. Please try a clearer photo.")
             return
 
-        from services.receipt_scanner import ReceiptScanner
+        from services.receipt_scanner import ReceiptScanner, route_scan
         result = ReceiptScanner().scan(image_url, business_name=business_name, industry=industry)
 
         if not result.get("ok"):
             _send_text(user_id, "📄 I couldn't read that document. Please try a clearer photo, or type the details in.")
             return
 
-        card, buttons = _build_scan_card(result["data"])
+        scan_data = result["data"]
+        decision = route_scan(scan_data)
+
+        # Stash the extracted data + source image so a single "Record" tap can
+        # save it (button ids can't carry the full payload). State SCAN_CONFIRM
+        # is transient and cleared on record/cancel/next message.
+        if decision.get("recordable"):
+            try:
+                from main import get_bot
+                from core import states
+                get_bot().session.save(user_id, states.SCAN_CONFIRM, {
+                    "pending_scan": {
+                        "data": scan_data,
+                        "image_url": image_url,
+                        "route": decision,
+                    }
+                })
+            except Exception as e:
+                logger.warning(f"Could not stash pending scan for {user_id}: {e}")
+
+        card, buttons = _build_scan_card(scan_data, decision)
         client = _get_telegram_client()
         if client is not None:
             client.send_buttons(user_id, card, buttons)
@@ -522,12 +546,16 @@ def _handle_receipt_scan(user_id: str, chat_id, file_id: str):
         _send_text(user_id, "📄 Something went wrong scanning that. Please type the details instead.")
 
 
-def _build_scan_card(data: dict):
-    """Build the confirmation-card text + buttons from extracted data.
+def _build_scan_card(data: dict, decision: dict = None):
+    """Build the confirmation card from extracted data + the routing decision.
 
-    Phase A: buttons are placeholders (scan_confirm/scan_cancel) — recording is
-    wired in a later phase. The card is explicit that nothing is saved yet.
+    N4.5: when the document is recordable, the card offers a real one-tap
+    "Record" button (scan_save). Money accuracy matters, so we ALWAYS ask the
+    user to confirm — even at high confidence — rather than silently
+    auto-recording. Quotes / unreadable docs / missing totals show no record
+    button, with guidance instead.
     """
+    decision = decision or {}
     doc_type = data.get("doc_type", "unknown")
     direction = data.get("direction", "unknown")
     vendor = data.get("vendor") or "—"
@@ -568,16 +596,147 @@ def _build_scan_card(data: dict):
     if notes:
         lines.append(f"_Note: {notes}_")
 
-    if doc_type == "quote":
-        lines.append("\n⚠️ This looks like a *quote*, not a completed transaction — it wouldn't be recorded as income/expense.")
+    # ── Recordable: offer a real one-tap record ──
+    if decision.get("recordable"):
+        side = "income" if decision.get("tx_type") == "sale" else "expense"
+        if decision.get("low_confidence"):
+            lines.append("\n⚠️ I'm not fully sure I read this right — please "
+                         "double-check the total before recording.")
+        lines.append(f"\n📝 Tap to record this as an *{side}* of "
+                     f"{_money(decision.get('amount'))}.")
+        buttons = [
+            {"id": "scan_save", "title": f"✅ Record {side}"},
+            {"id": "scan_cancel", "title": "✖️ Discard"},
+        ]
+        return "\n".join(lines), buttons
 
-    lines.append("\n📌 _Nothing has been saved yet._ Recording from scans is coming soon — for now, please record it the usual way.")
+    # ── Not recordable: explain why + point to the usual flow ──
+    reason = decision.get("reason", "")
+    if reason == "quote":
+        lines.append("\n⚠️ This looks like a *quote* — a potential future sale, "
+                     "not a completed transaction. I won't record it as "
+                     "income/expense.")
+    elif reason == "direction_unknown":
+        lines.append("\n🤔 I couldn't tell if this is money *in* or *out*. "
+                     "Please record it the usual way so it's booked correctly.")
+    elif reason == "no_total":
+        lines.append("\n🤔 I couldn't read a clear total. Please record it the "
+                     "usual way, or try a clearer photo.")
+    else:  # unreadable / unknown
+        lines.append("\n📄 I couldn't read this as a financial document. "
+                     "Please try a clearer photo, or type the details in.")
 
-    buttons = [
-        {"id": "scan_ok", "title": "👍 Looks right"},
-        {"id": "menu_home", "title": "☰ Menu"},
-    ]
+    buttons = [{"id": "menu_home", "title": "☰ Menu"}]
     return "\n".join(lines), buttons
+
+
+def _handle_scan_save(user_id: str):
+    """Record a previously-scanned document (N4.5, Phase E).
+
+    Reads the pending scan from the SCAN_CONFIRM session stash, routes it via
+    the Phase-C decision, saves it as a transaction with the source image +
+    scan metadata attached (audit trail), then confirms. Clears the stash
+    FIRST so a double-tap can't record twice.
+    """
+    try:
+        from main import get_bot
+        from core import states
+        bot = get_bot()
+        ctx = bot.session.get_context(user_id) or {}
+        pending = ctx.get("pending_scan")
+
+        # Clear the stash up-front (idempotency: a second tap finds nothing).
+        bot.session.reset(user_id)
+
+        if not pending:
+            _send_text(user_id, "⏳ That scan has expired. Please send the photo again.")
+            return
+
+        route = pending.get("route") or {}
+        data = pending.get("data") or {}
+        image_url = pending.get("image_url", "")
+
+        if not route.get("recordable"):
+            _send_text(user_id, "📄 I can't record that one automatically. Please record it the usual way.")
+            return
+
+        amount = route.get("amount")
+        tx_type = route.get("tx_type")
+        category = route.get("category") or ""
+        vendor = route.get("vendor") or (data.get("vendor") or "")
+        doc_type = data.get("doc_type", "unknown")
+        scan_date = data.get("date") or ""
+
+        # Build a short description from the doc + vendor.
+        side_word = "Sale" if tx_type == "sale" else "Purchase"
+        desc = f"{side_word} from scanned {doc_type}"
+        if vendor:
+            desc += f" ({vendor})"
+
+        # Attach the source document + scan provenance for the audit trail.
+        extra_details = {
+            "source": "scan",
+            "image_url": image_url,
+            "doc_type": doc_type,
+            "scan_confidence": int(data.get("confidence", 0) or 0),
+            "scanned_at": _now_iso(),
+        }
+        if scan_date:
+            extra_details["document_date"] = scan_date
+
+        saved = bot.db.save_transaction(
+            user_id, int(round(float(amount))), tx_type, desc, category,
+            vendor=vendor,
+            confidence=int(data.get("confidence", 0) or 0),
+            tax_amount=data.get("tax") if data.get("tax") else None,
+            extra_details=extra_details,
+            tags=["scan", doc_type],
+        )
+
+        def _money(v):
+            try:
+                return f"₦{float(v):,.0f}"
+            except (ValueError, TypeError):
+                return "—"
+
+        side = "income" if tx_type == "sale" else "expense"
+        lines = [
+            "✅ *Recorded from your scan.*",
+            "",
+            f"{'💰' if tx_type == 'sale' else '🧾'} {side.title()}: {_money(amount)}",
+        ]
+        if vendor:
+            lines.append(f"🏷️ {vendor}")
+        lines.append(f"🗂️ {category}")
+        if image_url:
+            lines.append(f"\n📎 [View original document]({image_url})")
+        lines.append("\n_Saved to your books._")
+
+        client = _get_telegram_client()
+        if client is not None:
+            client.send_buttons(user_id, "\n".join(lines),
+                                [{"id": "menu_home", "title": "☰ Menu"}])
+        else:
+            _send_text(user_id, "\n".join(lines))
+
+    except Exception as e:
+        logger.error(f"Scan save error for {user_id}: {e}")
+        _send_text(user_id, "❌ Couldn't record that scan. Please record it the usual way.")
+
+
+def _handle_scan_cancel(user_id: str):
+    """Discard a pending scan (clears the stash)."""
+    try:
+        from main import get_bot
+        get_bot().session.reset(user_id)
+    except Exception:
+        pass
+    _send_text(user_id, "👍 Discarded — nothing was saved.")
+
+
+def _now_iso():
+    from datetime import datetime
+    return datetime.now().isoformat()
 
 
 def _handle_voice_note(user_id: str, chat_id, file_id: str):

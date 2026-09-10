@@ -55,6 +55,81 @@ Rules:
 - Never invent a total you cannot see; use null and lower confidence instead."""
 
 
+# Categories used when a scan is turned into a ledger entry (Phase C routing).
+# These match the accounting engine's expectations: a "sale" is revenue; a
+# purchase is an expense whose category decides whether it's COGS/inventory.
+SCAN_SALE_CATEGORY = "Sales & Income"
+SCAN_PURCHASE_CATEGORY = "Purchases"        # goods bought for resale (COGS input)
+SCAN_EXPENSE_CATEGORY = "Other Expense"     # generic paid-out expense
+
+
+def route_scan(data: dict) -> dict:
+    """Phase C — decide how a scanned document should be recorded.
+
+    Pure function over the scanner's normalized `data`. Returns:
+        {
+          "recordable": bool,
+          "reason": str,           # why NOT recordable (when recordable is False)
+          "tx_type": "sale"|"expense"|None,
+          "category": str|None,
+          "amount": float|None,
+          "vendor": str|None,
+          "low_confidence": bool,  # record allowed, but flag "please double-check"
+        }
+
+    Rules (money-safe):
+    - A quote is never a ledger entry (it's a potential future sale).
+    - Unknown doc types / unreadable docs are not recordable.
+    - No usable total (missing or <= 0) is not recordable.
+    - direction 'sale' -> income; 'purchase' -> expense. If direction is
+      'unknown' but we have a total, we DON'T guess the side — not recordable,
+      ask the user to record it the usual way (avoids booking income as expense).
+    - Confidence < 60 is still recordable on explicit confirm, but flagged.
+    """
+    doc_type = (data or {}).get("doc_type", "unknown")
+    direction = (data or {}).get("direction", "unknown")
+    total = (data or {}).get("total")
+    confidence = int((data or {}).get("confidence", 0) or 0)
+    vendor = (data or {}).get("vendor")
+
+    def _no(reason):
+        return {"recordable": False, "reason": reason, "tx_type": None,
+                "category": None, "amount": None, "vendor": vendor,
+                "low_confidence": False}
+
+    if doc_type == "quote":
+        return _no("quote")
+    if doc_type == "unknown":
+        return _no("unreadable")
+    try:
+        amount = float(total)
+    except (ValueError, TypeError):
+        amount = None
+    if not amount or amount <= 0:
+        return _no("no_total")
+
+    if direction == "sale":
+        tx_type, category = "sale", SCAN_SALE_CATEGORY
+    elif direction == "purchase":
+        tx_type = "expense"
+        # An itemised receipt/invoice for goods -> treat as a purchase of goods
+        # (COGS input); otherwise a generic expense.
+        category = SCAN_PURCHASE_CATEGORY if (data or {}).get("line_items") else SCAN_EXPENSE_CATEGORY
+    else:
+        # We have a total but can't tell which side — don't guess with money.
+        return _no("direction_unknown")
+
+    return {
+        "recordable": True,
+        "reason": "",
+        "tx_type": tx_type,
+        "category": category,
+        "amount": amount,
+        "vendor": vendor,
+        "low_confidence": confidence < 60,
+    }
+
+
 class ReceiptScanner:
     """Vision extraction for receipts/invoices/quotes. Extraction only (no record)."""
 
