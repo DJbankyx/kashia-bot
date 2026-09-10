@@ -181,9 +181,11 @@ class TelegramClient(MessagingClient):
             "document": document_link,
         }
         if filename:
-            # Telegram derives the display name from the URL, but we can hint
-            # it via the caption; the actual filename shown comes from the URL
-            # path. We keep filename in the caption when useful.
+            # Telegram derives the display name from the URL path when a document
+            # is sent by URL (sendDocument doesn't accept a filename override
+            # without a multipart upload). Our S3 keys end in the real filename
+            # (exports/<date>/<filename>), so the download already shows the
+            # correct name (e.g. Invoice_INV-00012.pdf) — nothing to set here.
             pass
         if caption:
             payload["caption"] = self._truncate(self._prepare_text(caption), CAPTION_MAX)

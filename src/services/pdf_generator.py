@@ -405,10 +405,12 @@ class PDFGenerator:
             (filepath, filename) or (None, None)
         """
         try:
-            # Get the transaction
+            # Get the transaction — exact fetch by id (no recent-list limit miss).
             if transaction_id:
-                transactions = self.db.get_transactions(phone_number, limit=50)
-                tx = next((t for t in transactions if t.get('transaction_id') == transaction_id), None)
+                tx = self.db.get_transaction(phone_number, transaction_id)
+                if not tx:
+                    transactions = self.db.get_transactions(phone_number, limit=50)
+                    tx = next((t for t in transactions if t.get('transaction_id') == transaction_id), None)
             else:
                 transactions = self.db.get_transactions(phone_number, limit=1)
                 tx = transactions[0] if transactions else None
@@ -1169,8 +1171,16 @@ class PDFGenerator:
 
     def handle_multi_invoice_request(self, phone_number, transaction_ids):
         """Generate invoice from multiple transactions"""
-        transactions = self.db.get_transactions(phone_number, limit=50)
-        selected = [tx for tx in transactions if tx.get('transaction_id') in transaction_ids]
+        # Exact-fetch each requested transaction (avoids missing older ones past
+        # the recent-list limit). Falls back to the recent list on any miss.
+        selected = []
+        for tx_id in transaction_ids:
+            tx = self.db.get_transaction(phone_number, tx_id)
+            if tx:
+                selected.append(tx)
+        if not selected:
+            transactions = self.db.get_transactions(phone_number, limit=50)
+            selected = [tx for tx in transactions if tx.get('transaction_id') in transaction_ids]
 
         if not selected:
             return [{"type": "text", "content": "No matching transactions found."}]
@@ -1224,8 +1234,15 @@ class PDFGenerator:
 
     def handle_multi_receipt_request(self, phone_number, transaction_ids):
         """Generate receipt for specific transaction(s)"""
-        transactions = self.db.get_transactions(phone_number, limit=50)
-        selected = [tx for tx in transactions if tx.get('transaction_id') in transaction_ids]
+        # Exact-fetch each requested transaction; fall back to the recent list.
+        selected = []
+        for tx_id in transaction_ids:
+            tx = self.db.get_transaction(phone_number, tx_id)
+            if tx:
+                selected.append(tx)
+        if not selected:
+            transactions = self.db.get_transactions(phone_number, limit=50)
+            selected = [tx for tx in transactions if tx.get('transaction_id') in transaction_ids]
 
         if not selected:
             return [{"type": "text", "content": "No matching transactions found."}]
