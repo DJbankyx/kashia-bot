@@ -20,8 +20,44 @@ class DebtHandler:
         self.session = session_mgr
         self.db = database
 
+    def _is_telegram(self, phone_number: str) -> bool:
+        try:
+            from services.messaging_client import platform_for_user
+            return platform_for_user(phone_number) == "telegram"
+        except Exception:
+            return False
+
+    @staticmethod
+    def _age_days(item) -> int:
+        """Days since the debt's due date (preferred) or last activity date.
+        Returns 0 if no date on record or the date can't be parsed."""
+        raw = (item.get("due_date") or item.get("last_date") or "").strip()
+        if not raw:
+            return 0
+        # Take just the calendar date (drop any time portion), then parse.
+        day = raw.replace("T", " ").split(" ")[0][:10]
+        try:
+            d = datetime.strptime(day, "%Y-%m-%d")
+        except ValueError:
+            return 0
+        return max(0, (datetime.now() - d).days)
+
+    @staticmethod
+    def _bucket_label(days: int) -> str:
+        if days >= 90:
+            return "🔴 90+ days"
+        if days >= 60:
+            return "🟠 60+ days"
+        if days >= 30:
+            return "🟡 30+ days"
+        return "🟢 Current"
+
     def show_summary(self, phone_number: str) -> list:
-        """Show debt summary with action buttons."""
+        """Show debt summary. Telegram gets the tap-first board with aging
+        buckets + tappable people; WhatsApp keeps the classic text summary."""
+        if self._is_telegram(phone_number):
+            return self._debt_board(phone_number)
+
         debts = self.db.get_all_debtors(phone_number) or []
         i_owe = self.db.get_all_creditors(phone_number) or []
 
@@ -61,6 +97,148 @@ class DebtHandler:
                 {"id": "debt_payment", "title": "💵 Record Payment"},
                 {"id": "debt_remind", "title": "⏰ Send Reminder"},
             ]
+        )]
+
+    # ────────────────────────── Telegram tap-first board ──────────────────────────
+
+    def _aging_lines(self, items: list) -> list:
+        """Summarise a set of debts by aging bucket → list of display lines.
+        Only non-empty buckets are shown, in oldest-first order for urgency."""
+        buckets = {"🔴 90+ days": 0.0, "🟠 60+ days": 0.0,
+                   "🟡 30+ days": 0.0, "🟢 Current": 0.0}
+        for it in items:
+            amt = float(it.get("amount", 0) or 0)
+            if amt <= 0:
+                continue
+            buckets[self._bucket_label(self._age_days(it))] += amt
+        lines = []
+        for label in ("🔴 90+ days", "🟠 60+ days", "🟡 30+ days", "🟢 Current"):
+            if buckets[label] > 0:
+                lines.append(f"   {label}: {format_amount(buckets[label])}")
+        return lines
+
+    def _debt_board(self, phone_number: str) -> list:
+        """Tap-first Debt/Credit board (Telegram). Totals + aging buckets +
+        a tappable row per person that opens their card."""
+        debtors = [d for d in (self.db.get_all_debtors(phone_number) or [])
+                   if float(d.get("amount", 0) or 0) > 0 and not d.get("paid")]
+        creditors = [c for c in (self.db.get_all_creditors(phone_number) or [])
+                     if float(c.get("amount", 0) or 0) > 0 and not c.get("paid")]
+
+        total_in = sum(float(d.get("amount", 0) or 0) for d in debtors)
+        total_out = sum(float(c.get("amount", 0) or 0) for c in creditors)
+        net = total_in - total_out
+
+        body = ["💳 *Debts & Credits*", ""]
+
+        if total_in > 0:
+            body.append(f"💰 *Owed to you:* {format_amount(total_in)}")
+            body.extend(self._aging_lines(debtors))
+        else:
+            body.append("💰 *Owed to you:* nothing outstanding")
+        body.append("")
+
+        if total_out > 0:
+            body.append(f"📝 *You owe:* {format_amount(total_out)}")
+            body.extend(self._aging_lines(creditors))
+        else:
+            body.append("📝 *You owe:* nothing outstanding")
+
+        if total_in > 0 or total_out > 0:
+            body.append("")
+            net_label = "net in your favour" if net >= 0 else "net you owe"
+            body.append(f"⚖️ *Balance:* {format_amount(abs(net))} _{net_label}_")
+
+        # Tappable people. Sort each side oldest-first so the most urgent
+        # debts surface at the top of the list.
+        rows = []
+        if debtors:
+            rows.append({"id": "debt_noop", "title": "─── 💰 Owed to you ───"})
+            for d in sorted(debtors, key=lambda x: -self._age_days(x))[:12]:
+                name = d.get("name", "Unknown")
+                age = self._age_days(d)
+                flag = self._bucket_label(age).split(" ")[0]  # colour dot only
+                rows.append({
+                    "id": f"debt_person_in_{name}"[:60],
+                    "title": f"{flag} {name} · {format_amount(d.get('amount', 0))}"[:60],
+                })
+        if creditors:
+            rows.append({"id": "debt_noop", "title": "─── 📝 You owe ───"})
+            for c in sorted(creditors, key=lambda x: -self._age_days(x))[:12]:
+                name = c.get("name", "Unknown")
+                age = self._age_days(c)
+                flag = self._bucket_label(age).split(" ")[0]
+                rows.append({
+                    "id": f"debt_person_out_{name}"[:60],
+                    "title": f"{flag} {name} · {format_amount(c.get('amount', 0))}"[:60],
+                })
+
+        # Always-available actions.
+        rows.append({"id": "debt_record", "title": "➕ Record a new debt"})
+
+        if not debtors and not creditors:
+            return [button_response(
+                "\n".join(body) + "\n\n_All clear — no open debts either way._",
+                [{"id": "debt_record", "title": "➕ Record Debt"}]
+            )]
+
+        return [list_response(
+            header="💳 Debts & Credits",
+            body="\n".join(body),
+            button_text="Open",
+            sections=[{"title": "", "rows": rows}],
+            no_paginate=True,
+        )]
+
+    def _person_card(self, phone_number: str, name: str, direction: str) -> list:
+        """A single person's debt card with tap actions. direction:
+        'in' = they owe me, 'out' = I owe them."""
+        source = (self.db.get_all_debtors(phone_number) if direction == "in"
+                  else self.db.get_all_creditors(phone_number)) or []
+        match = next((x for x in source
+                      if x.get("name", "").lower() == name.lower()
+                      and float(x.get("amount", 0) or 0) > 0), None)
+        if not match:
+            return [text_response(
+                f"✅ Nothing outstanding with *{name}* — that debt looks settled."
+            )] + self._debt_board(phone_number)
+
+        amount = float(match.get("amount", 0) or 0)
+        age = self._age_days(match)
+        bucket = self._bucket_label(age)
+        contact_id = match.get("contact_id", "")
+        reason = match.get("reason") or match.get("note") or ""
+
+        if direction == "in":
+            headline = f"💰 *{name}* owes you {format_amount(amount)}"
+            pay_id = f"debt_payin_{name}"[:60]
+            pay_title = "💵 Record a payment"
+        else:
+            headline = f"📝 You owe *{name}* {format_amount(amount)}"
+            pay_id = f"debt_payout_{name}"[:60]
+            pay_title = "💵 Record a payment"
+
+        body = [headline, f"⏱ Age: {bucket} ({age} days)"]
+        if reason:
+            body.append(f"📝 {reason}")
+
+        rows = [{"id": pay_id, "title": pay_title}]
+        # Settle-in-full pre-fills the exact outstanding amount.
+        rows.append({
+            "id": f"debt_settle_{direction}_{name}"[:60],
+            "title": f"✅ Settle in full ({format_amount(amount)})"[:60],
+        })
+        if direction == "in" and contact_id:
+            rows.append({"id": f"debt_remind_{contact_id}"[:60],
+                         "title": "⏰ Send a reminder"})
+        rows.append({"id": "debt_back_board", "title": "⬅️ Back to board"})
+
+        return [list_response(
+            header="💳 Debt details",
+            body="\n".join(body),
+            button_text="Action",
+            sections=[{"title": "", "rows": rows}],
+            no_paginate=True,
         )]
 
     def handle(self, phone_number: str, text: str, session: dict) -> list:
@@ -105,6 +283,24 @@ class DebtHandler:
 
         if button_id == "debt_payment":
             return self._start_payment_flow(phone_number)
+
+        # ── Telegram board: divider rows are inert ──
+        if button_id == "debt_noop":
+            return []
+        if button_id == "debt_back_board":
+            return self._debt_board(phone_number)
+
+        # ── Telegram board: open a person's card ──
+        if button_id.startswith("debt_person_in_"):
+            return self._person_card(phone_number, button_id[15:], "in")
+        if button_id.startswith("debt_person_out_"):
+            return self._person_card(phone_number, button_id[16:], "out")
+
+        # ── Telegram board: settle a debt in full (pre-fill the full amount) ──
+        if button_id.startswith("debt_settle_in_"):
+            return self._settle_in_full(phone_number, button_id[15:], "in")
+        if button_id.startswith("debt_settle_out_"):
+            return self._settle_in_full(phone_number, button_id[16:], "out")
 
         # Person + direction chosen for a payment.
         if button_id.startswith("debt_payin_"):
@@ -332,6 +528,22 @@ class DebtHandler:
         return [text_response(
             f"💵 How much did {who}?\n\n_e.g. 50000, 150K. Type the amount._"
         )]
+
+    def _settle_in_full(self, phone_number: str, name: str, direction: str) -> list:
+        """Settle a debt in full: look up the exact outstanding amount and run
+        the directed payment for that figure (reuses _apply_directed_payment)."""
+        source = (self.db.get_all_debtors(phone_number) if direction == "in"
+                  else self.db.get_all_creditors(phone_number)) or []
+        match = next((x for x in source
+                      if x.get("name", "").lower() == name.lower()
+                      and float(x.get("amount", 0) or 0) > 0), None)
+        if not match:
+            return [text_response(
+                f"✅ Nothing outstanding with *{name}* — already settled."
+            )] + self._debt_board(phone_number)
+        amount = float(match.get("amount", 0) or 0)
+        context = {"pay_name": name, "pay_direction": direction}
+        return self._apply_directed_payment(phone_number, str(int(amount)), context)
 
     def _apply_directed_payment(self, phone_number: str, text: str, context: dict) -> list:
         """Settle the chosen debt in the chosen direction + record the matching
