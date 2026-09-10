@@ -444,62 +444,67 @@ class ReportsHandler:
         industry = d["industry"]
 
         rev_label = {"manufacturing": "Output sales", "services": "Service revenue"}\
-            .get(industry, "Revenue")
-        # `cogs` is now the cost of goods SOLD (accrual), so the label is
-        # "Cost of sales" — NOT "Purchases" (purchases are cash-out, shown below).
+            .get(industry, "Sales")
+        # `cogs` = cost of goods SOLD (accrual). Not "Purchases" (that's cash-out).
         cogs_label = {"manufacturing": "Cost of output", "services": "Job costs"}\
             .get(industry, "Cost of sales")
 
-        # NOTE: the title is supplied via the list_response `header`; we do NOT
-        # repeat it as the body's first line. Previously both were present and the
-        # send_list dedup (which compares stripped header vs body-first-line) could
-        # miss on internal whitespace/dash differences, rendering the title twice.
-        lines = [
-            "────────────────────",
-            f"💰 {rev_label}:  *{format_amount(d['revenue'])}*",
-            f"📦 {cogs_label}:  {format_amount(d['cogs'])}",
-            f"💸 Expenses:  {format_amount(d['opex'])}",
-            "────────────────────",
-        ]
-        # Headline = ACCRUAL net profit (revenue − cost of sales − expenses).
-        if d["net"] >= 0:
-            net_pct = f" ({int(d['net']/d['revenue']*100)}%)" if d["revenue"] > 0 else ""
-            lines.append(f"📈 *Net profit: +{format_amount(d['net'])}*{net_pct}")
-        else:
-            lines.append(f"📉 *Net profit: −{format_amount(abs(d['net']))}*")
-        if d["costed_revenue"] > 0:
-            gm_pct = int(d["gross_margin"] / d["costed_revenue"] * 100) if d["costed_revenue"] else 0
-            lines.append(f"🟢 Gross margin: {format_amount(d['gross_margin'])} ({gm_pct}%)")
-        # Secondary cash line so the owner still sees actual money movement
-        # (this is where a big stock purchase shows up — as cash out, not a loss).
+        gm_pct = (int(d["gross_margin"] / d["costed_revenue"] * 100)
+                  if d.get("costed_revenue") else 0)
         nc = d.get("net_cash", d["net"])
-        if nc >= 0:
-            lines.append(f"💵 _Net cash flow: +{format_amount(nc)}_")
+
+        def _signed(v):
+            return f"+{format_amount(v)}" if v >= 0 else f"−{format_amount(abs(v))}"
+
+        # ── One clean, sectioned card. The title comes from the list_response
+        #    header (not repeated in the body). Sections are visually separated
+        #    and each figure is labelled in plain language so nothing overlaps. ──
+        lines = [
+            "*💼 Profit & Loss*",
+            f"  {rev_label}:  *{format_amount(d['revenue'])}*",
+            f"  {cogs_label}:  {format_amount(d['cogs'])}",
+            f"  Expenses:  {format_amount(d['opex'])}",
+        ]
+        if d["net"] >= 0:
+            lines.append(f"  ➡️ *Net profit: {_signed(d['net'])}*"
+                         + (f"  ({int(d['net']/d['revenue']*100)}%)" if d["revenue"] > 0 else ""))
         else:
-            lines.append(f"💵 _Net cash flow: −{format_amount(abs(nc))}_")
+            lines.append(f"  ➡️ *Net loss: {_signed(d['net'])}*")
+        if d.get("costed_revenue"):
+            lines.append(f"  Gross margin: {format_amount(d['gross_margin'])} ({gm_pct}%)")
         if d["uncosted_sales"] > 0:
-            lines.append(f"_⚠️ {d['uncosted_sales']} sale(s) missing cost — set costs for true profit._")
-        if d["owed_to_me"] or d["owe_out"]:
-            lines.append(f"🔴 Owed to you: {format_amount(d['owed_to_me'])}  ·  "
-                         f"📝 You owe: {format_amount(d['owe_out'])}")
+            lines.append(f"  _⚠️ {d['uncosted_sales']} sale(s) missing cost — profit understated._")
 
-        # 3F: per-industry tailoring — compact lines on the card.
-        lines.extend(self._dash_industry_lines(d))
+        # Cash + what's owed — clearly separated from the P&L above.
+        lines.append("")
+        lines.append("*💵 Cash & Debts*")
+        lines.append(f"  Net cash flow:  {_signed(nc)}")
+        if d.get("owed_to_me") or d.get("owe_out"):
+            lines.append(f"  Owed to you:  {format_amount(d.get('owed_to_me', 0))}")
+            lines.append(f"  You owe:  {format_amount(d.get('owe_out', 0))}")
 
-        lines.append(f"\n_📝 {d['tx_count']} transaction(s) in this period._")
+        # Per-industry highlight (products/services split, production, jobs).
+        ind_lines = self._dash_industry_lines(d)
+        if ind_lines:
+            lines.append("")
+            lines.extend("  " + l for l in ind_lines)
 
-        # Rows: period toggle, drill-downs, exports, menu.
+        lines.append(f"\n_{d['tx_count']} transaction(s) · tap below to explore_")
+
+        # ── Buttons in tidy, non-overlapping groups ──
+        # Group 1: period switch (a leading • marks the active one).
         def per_btn(pk, lbl):
             mark = "• " if pk == period else ""
             return {"id": f"dash_period_{pk}", "title": f"{mark}{lbl}"}
+        # Group 2: drill-downs (clear names). Group 3: export + menu.
         rows = [
             per_btn("today", "Today"), per_btn("week", "Week"),
-            per_btn("month", "Month"), per_btn("last_month", "Last"),
-            {"id": f"dash_drill_top_{period}", "title": "🏆 Top Products"},
-            {"id": f"dash_drill_profit_{period}", "title": "📈 Profit / Margin"},
-            {"id": f"dash_drill_expenses_{period}", "title": "💸 Expenses by Category"},
-            {"id": f"dash_drill_position_{period}", "title": "🏦 Inventory & Debts"},
-            {"id": f"report_pdf_{period}", "title": "📄 PDF"},
+            per_btn("month", "Month"), per_btn("last_month", "Last month"),
+            {"id": f"dash_drill_top_{period}", "title": "🏆 Best sellers"},
+            {"id": f"dash_drill_profit_{period}", "title": "📈 Profit detail"},
+            {"id": f"dash_drill_expenses_{period}", "title": "💸 Expense breakdown"},
+            {"id": f"dash_drill_position_{period}", "title": "🏦 Stock & who owes"},
+            {"id": f"report_pdf_{period}", "title": "📄 PDF report"},
             {"id": f"report_export_{period}", "title": "📎 Excel"},
             {"id": "menu_home", "title": "☰ Menu"},
         ]
@@ -531,24 +536,25 @@ class ReportsHandler:
                 no_paginate=True,
             )]
 
+        # Drill bodies do NOT repeat the title (the list_response header carries
+        # it) — keeps each card clean with no doubled heading.
         if what == "expenses":
             cats = {}
             for t in d["expenses"]:
                 c = t.get("category", "Other") or "Other"
                 cats[c] = cats.get(c, 0) + float(t.get("amount", 0))
-            lines = [f"💸 *Expenses — {d['label']}*", ""]
+            lines = []
             if not cats:
                 lines.append("_No expenses in this period._")
             else:
                 total = sum(cats.values())
                 for c, amt in sorted(cats.items(), key=lambda x: x[1], reverse=True):
                     pct = int(amt / total * 100) if total else 0
-                    lines.append(f"  • {c}: {format_amount(amt)} ({pct}%)")
-                lines.append(f"\n*Total: {format_amount(total)}*")
-            return _drill_card(f"💸 Expenses — {d['label']}", lines)
+                    lines.append(f"  • {c}:  {format_amount(amt)}  ({pct}%)")
+                lines.append(f"\n*Total expenses:  {format_amount(total)}*")
+            return _drill_card(f"💸 Expense breakdown — {d['label']}", lines)
 
         if what == "top":
-            # Rank sales by revenue; show qty + margin where cost is known.
             import re
             agg = {}
             for t in d["sales"]:
@@ -559,59 +565,56 @@ class ReportsHandler:
                 a = agg.setdefault(name, {"rev": 0, "qty": 0})
                 a["rev"] += rev
                 a["qty"] += qty
-            lines = [f"🏆 *Top Products — {d['label']}*", ""]
+            lines = []
             if not agg:
                 lines.append("_No sales in this period._")
             else:
                 ranked = sorted(agg.items(), key=lambda x: x[1]["rev"], reverse=True)[:10]
-                for name, a in ranked:
-                    lines.append(f"  • *{name}* — {format_amount(a['rev'])} ({a['qty']} sold)")
-            return _drill_card(f"🏆 Top Products — {d['label']}", lines)
+                for i, (name, a) in enumerate(ranked, 1):
+                    lines.append(f"  {i}. *{name}*  —  {format_amount(a['rev'])}  ({a['qty']} sold)")
+            return _drill_card(f"🏆 Best sellers — {d['label']}", lines)
 
         if what == "profit":
+            def _signed(v):
+                return f"+{format_amount(v)}" if v >= 0 else f"−{format_amount(abs(v))}"
             lines = [
-                f"📈 *Profit / Margin — {d['label']}*", "",
-                f"💰 Revenue (costed): {format_amount(d['costed_revenue'])}",
-                f"🟢 Gross margin: {format_amount(d['gross_margin'])}"
-                + (f" ({int(d['gross_margin']/d['costed_revenue']*100)}%)"
+                f"  Sales (with cost recorded):  {format_amount(d['costed_revenue'])}",
+                f"  Gross margin:  {format_amount(d['gross_margin'])}"
+                + (f"  ({int(d['gross_margin']/d['costed_revenue']*100)}%)"
                    if d['costed_revenue'] else ""),
-                f"💸 Expenses: {format_amount(d['opex'])}",
-                (f"📈 Net profit: +{format_amount(d['net'])}" if d['net'] >= 0
-                 else f"📉 Net loss: −{format_amount(abs(d['net']))}"),
+                f"  Expenses:  {format_amount(d['opex'])}",
+                f"  ➡️ *{'Net profit' if d['net'] >= 0 else 'Net loss'}:  {_signed(d['net'])}*",
             ]
             if d["uncosted_sales"] > 0:
-                lines.append(f"\n_⚠️ {d['uncosted_sales']} sale(s) have no cost recorded._\n"
-                             "_Set costs on those items for an accurate margin._")
-            return _drill_card(f"📈 Profit / Margin — {d['label']}", lines)
+                lines.append(f"\n_⚠️ {d['uncosted_sales']} sale(s) have no cost recorded — "
+                             "set their cost for an accurate margin._")
+            return _drill_card(f"📈 Profit detail — {d['label']}", lines)
 
         if what == "position":
-            # R5: balance-sheet snapshot — inventory value + receivables/payables.
-            # Period-independent (a point-in-time position), but we keep the back
-            # row on the selected period so the card stays one editable surface.
+            # Balance-sheet snapshot — point-in-time (period-independent), but the
+            # back row keeps the selected period so it stays one editable card.
             from services.accounting import Accounting
             pos = Accounting(self.db, self.session).position(phone_number)
-            lines = ["🏦 *Position — right now*", ""]
-            lines.append(f"📦 Inventory (at cost):  *{format_amount(pos['inventory_value'])}*")
-            lines.append(f"   _{pos['inventory_units']:,} unit(s) across {pos['item_count']} item(s)_")
-            lines.append("")
-            lines.append(f"🟢 Owed to you (receivables):  {format_amount(pos['receivables'])}")
-            lines.append(f"🔴 You owe (payables):  {format_amount(pos['payables'])}")
-            lines.append("────────────────────")
-            nw = pos["net_worth_proxy"]
-            if nw >= 0:
-                lines.append(f"💎 *Net position: +{format_amount(nw)}*")
-            else:
-                lines.append(f"⚠️ *Net position: −{format_amount(abs(nw))}*")
-            lines.append("_= inventory + receivables − payables_")
+            def _signed(v):
+                return f"+{format_amount(v)}" if v >= 0 else f"−{format_amount(abs(v))}"
+            lines = [
+                "*📦 Stock you're holding*",
+                f"  Value (at cost):  *{format_amount(pos['inventory_value'])}*",
+                f"  _{pos['inventory_units']:,} unit(s) · {pos['item_count']} item(s)_",
+                "",
+                "*💳 Debts*",
+                f"  Owed to you:  {format_amount(pos['receivables'])}",
+                f"  You owe:  {format_amount(pos['payables'])}",
+                "",
+                f"➡️ *Net position:  {_signed(pos['net_worth_proxy'])}*",
+                "_stock + owed to you − what you owe_",
+            ]
             if pos["top_items"]:
                 lines.append("\n*Top stock by value:*")
                 for name, units, value in pos["top_items"][:5]:
-                    lines.append(f"  • {name}: {format_amount(value)} _({units:,} units)_")
-            lines.append(
-                "\n_Unsold stock is an ASSET here, not a loss. This is what your "
-                "business is holding right now._"
-            )
-            return _drill_card("🏦 Inventory & Debts", lines)
+                    lines.append(f"  • {name}:  {format_amount(value)}  _({units:,})_")
+            lines.append("\n_Unsold stock is an asset you're holding — not a loss._")
+            return _drill_card(f"🏦 Stock & who owes — {d['label']}", lines)
 
         return self.dashboard(phone_number, period)
 
