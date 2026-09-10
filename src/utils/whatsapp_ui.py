@@ -23,7 +23,7 @@ def button_response(body: str, buttons: list) -> dict:
 
 
 def list_response(header: str, body: str, button_text: str, sections: list,
-                  no_paginate: bool = False) -> dict:
+                  no_paginate: bool = False, tap_first: bool = False) -> dict:
     """
     Interactive list message.
     
@@ -33,6 +33,13 @@ def list_response(header: str, body: str, button_text: str, sections: list,
     rendered as a single inline keyboard (all buttons shown) instead of being
     auto-paged. Used for rich action cards (e.g. the product card) where every
     action must be visible at once. Ignored on WhatsApp.
+
+    tap_first: Telegram-only hint. When True, the picker renders as a clean,
+    grid-packed inline keyboard (app-like taps) even when rows carry
+    descriptions — the descriptions are dropped from the button layout so the
+    card doesn't become a stacked-list wall of text. Used for the transaction
+    payment-method picker and similar quick choices. Implies no_paginate.
+    Ignored on WhatsApp (which keeps its native rich list picker).
     """
     return {
         "type": "list",
@@ -41,7 +48,8 @@ def list_response(header: str, body: str, button_text: str, sections: list,
             "body": body,
             "button_text": button_text,
             "sections": sections,
-            "no_paginate": no_paginate,
+            "no_paginate": no_paginate or tap_first,
+            "tap_first": tap_first,
         }
     }
 

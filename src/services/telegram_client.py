@@ -87,7 +87,7 @@ class TelegramClient(MessagingClient):
         }
         return self._call("sendMessage", payload)
 
-    def _render_list(self, header, body_text, sections):
+    def _render_list(self, header, body_text, sections, tap_first=False):
         """Build the (text, inline_keyboard) for a list card. Shared by send_list
         (new message) and edit_list_in_place (edit an existing message), so a
         re-rendered card looks identical whether it's sent or edited."""
@@ -131,15 +131,18 @@ class TelegramClient(MessagingClient):
                 title = row.get("title", "")
                 desc = row.get("description", "")
                 rid = row.get("id", "")
-                # Only fold descriptions into the text for non-menu rich lists.
-                if desc and not is_menu:
+                # Fold descriptions into the text for non-menu rich lists — but
+                # NOT when tap_first is set (the caller wants a clean, app-like
+                # grid of taps, so descriptions must not force a stacked list).
+                if desc and not is_menu and not tap_first:
                     any_description = True
                     lines.append(f"• *{self._strip_markup(title)}* — {self._strip_markup(desc)}")
                 flat_buttons.append({"id": rid, "title": title})
 
-        # Menus and pure pickers grid-pack (compact, app-like). A single-section
-        # rich list (descriptions shown) stays one-button-per-row under its text.
-        if any_description:
+        # Menus, pure pickers, and tap_first cards grid-pack (compact, app-like).
+        # A single-section rich list that shows descriptions stays one-button-
+        # per-row under its text.
+        if any_description and not tap_first:
             keyboard = [[self._make_button(b["title"], b["id"])] for b in flat_buttons]
         else:
             keyboard = self._buttons_to_keyboard(flat_buttons)
@@ -147,7 +150,7 @@ class TelegramClient(MessagingClient):
         text = "\n".join(l for l in lines if l).strip() or "Choose an option:"
         return self._truncate(text, MESSAGE_TEXT_MAX), keyboard
 
-    def send_list(self, to, header, body_text, button_text, sections) -> bool:
+    def send_list(self, to, header, body_text, button_text, sections, tap_first=False) -> bool:
         """
         Send a selectable menu.
 
@@ -156,8 +159,12 @@ class TelegramClient(MessagingClient):
         not need one: we render the header + body as the message text, fold
         each row's description into that text, and turn every row into an
         inline keyboard button. `button_text` is unused on Telegram.
+
+        tap_first: render a clean, grid-packed inline keyboard (app-like) even
+        when rows carry descriptions — used for quick pickers like the payment
+        method so they don't become a stacked list of text + buttons.
         """
-        text, keyboard = self._render_list(header, body_text, sections)
+        text, keyboard = self._render_list(header, body_text, sections, tap_first=tap_first)
         payload = {
             "chat_id": to,
             "text": text,

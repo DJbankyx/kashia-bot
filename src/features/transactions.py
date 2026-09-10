@@ -496,7 +496,8 @@ class TransactionHandler:
                     {"id": "pm_transfer", "title": "🏦 Transfer/POS", "description": "Paid in full — bank transfer"},
                     {"id": "pm_deposit", "title": "💳 Deposit/Part Payment", "description": deposit_desc},
                     {"id": "pm_credit", "title": "📝 On Credit (Full)", "description": credit_desc},
-                ]}]
+                ]}],
+                tap_first=True,   # Telegram: clean grid of taps (WhatsApp keeps its list)
             )]
 
         # Expenses: simple 3-button (no deposit concept)
@@ -1187,7 +1188,8 @@ class TransactionHandler:
             header=f"🏷️ Which variant?",
             body=f"💰 {format_amount(amount)} sale — *{product_name}*\n\nSelect the variant sold:",
             button_text="Select Variant",
-            sections=[{"title": "Variants", "rows": rows}]
+            sections=[{"title": "Variants", "rows": rows}],
+            tap_first=True,
         )]
 
     def handle_variant_selection(self, phone_number: str, text: str, session: dict) -> list:
@@ -3093,7 +3095,8 @@ class TransactionHandler:
             header=f"🏷️ {level_name}",
             body=f"📍 {path_str}\n\nSelect {level_name.lower()}:",
             button_text=f"Select {level_name}",
-            sections=[{"title": level_name, "rows": rows}]
+            sections=[{"title": level_name, "rows": rows}],
+            tap_first=True,
         )]
 
     def _catrec_quantity(self, phone_number: str, text: str, context: dict) -> list:

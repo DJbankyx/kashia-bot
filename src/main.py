@@ -485,9 +485,11 @@ class KashiaBot:
             # `no_paginate` lets a rich action card (e.g. the product card) opt
             # out so its buttons are never split into pages.
             no_paginate = bool(content.get("no_paginate"))
+            tap_first = bool(content.get("tap_first"))
             if no_paginate or not self._maybe_send_paginated_list(
                     phone_number, client, header, body, sections):
-                client.send_list(phone_number, header, body, button_text, sections)
+                client.send_list(phone_number, header, body, button_text, sections,
+                                 tap_first=tap_first)
 
         elif resp_type == "document":
             link = content.get("link", "")

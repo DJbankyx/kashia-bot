@@ -88,9 +88,12 @@ class WhatsAppClient(MessagingClient):
         }
         return self._send(payload)
 
-    def send_list(self, to, header, body_text, button_text, sections):
+    def send_list(self, to, header, body_text, button_text, sections, tap_first=False):
         """
         Send a list message (up to 10 items per section).
+
+        `tap_first` is a Telegram-only rendering hint and is ignored here —
+        WhatsApp keeps its native list picker.
 
         Args:
             to: recipient phone number
