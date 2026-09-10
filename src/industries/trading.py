@@ -52,6 +52,7 @@ class TradingIndustry(BaseIndustry):
                         {"id": "record_sale", "title": "💰 Record Sale", "description": "Sold goods to customer"},
                         {"id": "record_purchase", "title": "📦 Record Purchase", "description": "Bought stock/goods"},
                         {"id": "record_expense", "title": "💸 Record Expense", "description": "Rent, transport, bills"},
+                        {"id": "menu_dashboard", "title": "📊 Dashboard & Reports", "description": "Sales, profit, margins at a glance"},
                     ]
                 },
                 {
@@ -161,11 +162,10 @@ class TradingIndustry(BaseIndustry):
             sections=[{
                 "title": "Business Tools",
                 "rows": [
-                    {"id": "biz_dashboard", "title": "📈 Dashboard", "description": "Today + month overview"},
+                    {"id": "biz_dashboard", "title": "📊 Dashboard & Reports", "description": "Sales, profit, margins, periods"},
                     {"id": "biz_sales", "title": "💰 Sales", "description": "View all sales records"},
                     {"id": "biz_purchases", "title": "📦 Purchases", "description": "View all purchase records"},
                     {"id": "biz_expenses", "title": "💸 Expenses", "description": "View all expenses"},
-                    {"id": "biz_reports", "title": "📊 Reports", "description": "Today, week, month, custom"},
                     {"id": "biz_debts", "title": "💳 Debts & Credits", "description": "Who owes, payments"},
                     {"id": "biz_docs", "title": "🧾 Documents", "description": "Invoice, receipt, statement"},
                     {"id": "biz_export", "title": "📁 Export Data", "description": "Excel, CSV download"},

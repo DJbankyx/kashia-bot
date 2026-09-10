@@ -76,9 +76,24 @@ class ButtonDispatcher:
             return r._start_guided_recording(phone_number, bid)
 
         # ── Feature menu buttons ──
+        # Single source of truth for "open the dashboard": Telegram gets the
+        # tap-first Stage-3 dashboard card (reports.dashboard); WhatsApp keeps its
+        # existing text profile / per-industry dashboards. Every dashboard entry
+        # point (menu_profile, biz_dashboard, the merged Dashboard row, the
+        # standalone home-menu item) funnels through here so they never diverge.
+        def _open_dashboard():
+            try:
+                from services.messaging_client import platform_for_user
+                if platform_for_user(phone_number) == "telegram":
+                    return r.reports.dashboard(phone_number, "month")
+            except Exception:
+                pass
+            return r.profile.show(phone_number)
+
         feature_map = {
             "menu_report": lambda: r.reports.show(phone_number),
-            "menu_profile": lambda: r.profile.show(phone_number),
+            "menu_dashboard": _open_dashboard,
+            "menu_profile": _open_dashboard,
             "menu_catalog": lambda: r.catalog.show_menu(phone_number),
             "menu_debts": lambda: r.debt.show_summary(phone_number),
             "menu_contacts": lambda: r.contacts.show(phone_number),
@@ -227,9 +242,11 @@ class ButtonDispatcher:
                     return r.settings.handle_button(phone_number, bid)
 
             # ── Business tab buttons → reports handler ──
+            # Dashboard + Reports are merged: both open the unified Stage-3
+            # dashboard on Telegram (reports.dashboard) via _open_dashboard.
             biz_map = {
-                "biz_dashboard":  lambda: r.profile.show(phone_number),
-                "biz_reports":    lambda: r.reports.show(phone_number),
+                "biz_dashboard":  _open_dashboard,
+                "biz_reports":    _open_dashboard,
                 "biz_sales":      lambda: r.reports.handle_button(phone_number, "biz_sales", session),
                 "biz_purchases":  lambda: r.reports.handle_button(phone_number, "biz_purchases", session),
                 "biz_expenses":   lambda: r.reports.handle_button(phone_number, "biz_expenses", session),

@@ -87,27 +87,24 @@ class TelegramClient(MessagingClient):
         }
         return self._call("sendMessage", payload)
 
-    def send_list(self, to, header, body_text, button_text, sections) -> bool:
-        """
-        Send a selectable menu.
-
-        WhatsApp renders this as a native list picker (with a trigger button
-        labelled `button_text`). Telegram has no equivalent modal, and it does
-        not need one: we render the header + body as the message text, fold
-        each row's description into that text, and turn every row into an
-        inline keyboard button. `button_text` is unused on Telegram.
-        """
+    def _render_list(self, header, body_text, sections):
+        """Build the (text, inline_keyboard) for a list card. Shared by send_list
+        (new message) and edit_list_in_place (edit an existing message), so a
+        re-rendered card looks identical whether it's sent or edited."""
         lines = []
-        header_clean = self._strip_markup(header) if header else ""
         # De-dup: some cards (dashboard, product card) put the same title in BOTH
         # the header and the first body line, which rendered the title twice on
         # Telegram. If the body already starts with the header text, skip the
-        # separate header line.
-        body_first = ""
+        # separate header line. We normalize markup AND internal whitespace so a
+        # difference of a single/double space or stray whitespace can't defeat it.
+        def _norm(s):
+            return " ".join(self._strip_markup(s).split()) if s else ""
+        header_clean = self._strip_markup(header) if header else ""
+        header_key = _norm(header)
+        body_first_key = ""
         if body_text:
-            first_line = body_text.split("\n", 1)[0]
-            body_first = self._strip_markup(first_line).strip()
-        if header_clean and body_first != header_clean:
+            body_first_key = _norm(body_text.split("\n", 1)[0])
+        if header_clean and body_first_key != header_key:
             lines.append(f"*{header_clean}*")
         if body_text:
             lines.append(self._prepare_text(body_text))
@@ -148,14 +145,34 @@ class TelegramClient(MessagingClient):
             keyboard = self._buttons_to_keyboard(flat_buttons)
 
         text = "\n".join(l for l in lines if l).strip() or "Choose an option:"
+        return self._truncate(text, MESSAGE_TEXT_MAX), keyboard
+
+    def send_list(self, to, header, body_text, button_text, sections) -> bool:
+        """
+        Send a selectable menu.
+
+        WhatsApp renders this as a native list picker (with a trigger button
+        labelled `button_text`). Telegram has no equivalent modal, and it does
+        not need one: we render the header + body as the message text, fold
+        each row's description into that text, and turn every row into an
+        inline keyboard button. `button_text` is unused on Telegram.
+        """
+        text, keyboard = self._render_list(header, body_text, sections)
         payload = {
             "chat_id": to,
-            "text": self._truncate(text, MESSAGE_TEXT_MAX),
+            "text": text,
             "parse_mode": "Markdown",
             "disable_web_page_preview": True,
             "reply_markup": {"inline_keyboard": keyboard},
         }
         return self._call("sendMessage", payload)
+
+    def edit_list_in_place(self, to, message_id, header, body_text, sections) -> bool:
+        """Re-render a list card into an EXISTING message (edit in place) instead
+        of sending a new one. Used by the dashboard's period/drill taps so the
+        card updates live rather than stacking a new message on every tap."""
+        text, keyboard = self._render_list(header, body_text, sections)
+        return self.edit_message_text(to, message_id, text, keyboard=keyboard)
 
     def send_document(self, to, document_link, filename, caption="") -> bool:
         """Send a document by URL (Telegram fetches it server-side)."""

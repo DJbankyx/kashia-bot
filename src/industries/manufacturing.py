@@ -66,6 +66,8 @@ class ManufacturingIndustry(BaseIndustry):
                          "description": "Purchased inputs/supplies"},
                         {"id": "record_expense", "title": "💸 Record Expense",
                          "description": "Labour, overhead, utilities"},
+                        {"id": "menu_dashboard", "title": "📊 Dashboard & Reports",
+                         "description": "Output, costs, margins at a glance"},
                     ]
                 },
                 {
@@ -110,7 +112,13 @@ class ManufacturingIndustry(BaseIndustry):
             return self._show_settings_menu(phone_number)
 
         # ── Manufacturing dashboard ──
+        # Telegram uses the unified Stage-3 dashboard (reports.dashboard) via the
+        # dispatcher's _open_dashboard; return None so biz_dashboard falls through
+        # to it. WhatsApp keeps this industry's tailored text dashboard.
         if button_id == "biz_dashboard":
+            from services.messaging_client import platform_for_user
+            if platform_for_user(phone_number) == "telegram":
+                return None
             return self._show_dashboard(phone_number)
 
         # ── Production-specific buttons ──
@@ -148,8 +156,8 @@ class ManufacturingIndustry(BaseIndustry):
                      "description": "What materials were consumed"},
                     {"id": "prod_recalc_costs", "title": "🔄 Recalculate Costs",
                      "description": "Sync recipe costs from purchases"},
-                    {"id": "biz_dashboard", "title": "📈 Dashboard",
-                     "description": "Output, yield, costs this month"},
+                    {"id": "biz_dashboard", "title": "📊 Dashboard & Reports",
+                     "description": "Output, yield, costs, margins"},
                     {"id": "menu_catalog", "title": "📋 Products & Materials",
                      "description": "Catalog, recipes, stock levels"},
                 ]
@@ -171,8 +179,8 @@ class ManufacturingIndustry(BaseIndustry):
                      "description": "Inputs purchased"},
                     {"id": "biz_expenses", "title": "💸 Production Costs",
                      "description": "Labour, overhead, utilities"},
-                    {"id": "biz_reports", "title": "📊 Reports",
-                     "description": "P&L, margins, costs breakdown"},
+                    {"id": "biz_dashboard", "title": "📊 Dashboard & Reports",
+                     "description": "P&L, margins, costs, periods"},
                     {"id": "biz_debts", "title": "💳 Debts & Credits",
                      "description": "Who owes, supplier credits"},
                     {"id": "biz_docs", "title": "🧾 Documents",

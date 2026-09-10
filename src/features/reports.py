@@ -405,8 +405,11 @@ class ReportsHandler:
         cogs_label = {"manufacturing": "Materials", "services": "Job costs"}\
             .get(industry, "Purchases")
 
+        # NOTE: the title is supplied via the list_response `header`; we do NOT
+        # repeat it as the body's first line. Previously both were present and the
+        # send_list dedup (which compares stripped header vs body-first-line) could
+        # miss on internal whitespace/dash differences, rendering the title twice.
         lines = [
-            f"📊 *Dashboard — {d['label']}*",
             "────────────────────",
             f"💰 {rev_label}:  *{format_amount(d['revenue'])}*",
             f"📦 {cogs_label}:  {format_amount(d['cogs'])}",
@@ -457,10 +460,22 @@ class ReportsHandler:
     def _dash_drill(self, phone_number: str, what: str, period: str) -> list:
         """Drill-down views off the dashboard. Each ends with a ← Dashboard back."""
         d = self._period_totals(phone_number, period)
-        back = [
+        # Back row keeps the drill on the SAME editable card (Telegram edits in
+        # place; ← Dashboard re-renders the dashboard into this same message).
+        back_rows = [
             {"id": f"dash_period_{period}", "title": "← Dashboard"},
             {"id": "menu_home", "title": "☰ Menu"},
         ]
+
+        def _drill_card(header_title, lines):
+            # A single list_response so the whole dashboard is one editable card.
+            return [list_response(
+                header=header_title,
+                body="\n".join(lines),
+                button_text="Back",
+                sections=[{"title": "", "rows": back_rows}],
+                no_paginate=True,
+            )]
 
         if what == "expenses":
             cats = {}
@@ -476,13 +491,11 @@ class ReportsHandler:
                     pct = int(amt / total * 100) if total else 0
                     lines.append(f"  • {c}: {format_amount(amt)} ({pct}%)")
                 lines.append(f"\n*Total: {format_amount(total)}*")
-            return [text_response("\n".join(lines)), button_response("Back:", back)]
+            return _drill_card(f"💸 Expenses — {d['label']}", lines)
 
         if what == "top":
             # Rank sales by revenue; show qty + margin where cost is known.
             import re
-            from features.catalog import CatalogHandler
-            cat = CatalogHandler(self.session, self.db)
             agg = {}
             for t in d["sales"]:
                 name = _clean_desc(t)
@@ -499,7 +512,7 @@ class ReportsHandler:
                 ranked = sorted(agg.items(), key=lambda x: x[1]["rev"], reverse=True)[:10]
                 for name, a in ranked:
                     lines.append(f"  • *{name}* — {format_amount(a['rev'])} ({a['qty']} sold)")
-            return [text_response("\n".join(lines)), button_response("Back:", back)]
+            return _drill_card(f"🏆 Top Products — {d['label']}", lines)
 
         if what == "profit":
             lines = [
@@ -509,12 +522,13 @@ class ReportsHandler:
                 + (f" ({int(d['gross_margin']/d['costed_revenue']*100)}%)"
                    if d['costed_revenue'] else ""),
                 f"💸 Expenses: {format_amount(d['opex'])}",
-                f"📊 Net (cash): {format_amount(d['net'])}",
+                (f"📈 Net (cash): +{format_amount(d['net'])}" if d['net'] >= 0
+                 else f"📉 Net (cash): −{format_amount(abs(d['net']))}"),
             ]
             if d["uncosted_sales"] > 0:
                 lines.append(f"\n_⚠️ {d['uncosted_sales']} sale(s) have no cost recorded._\n"
                              "_Set costs on those items for an accurate margin._")
-            return [text_response("\n".join(lines)), button_response("Back:", back)]
+            return _drill_card(f"📈 Profit / Margin — {d['label']}", lines)
 
         return self.dashboard(phone_number, period)
 

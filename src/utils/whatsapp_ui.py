@@ -96,23 +96,32 @@ def done_cancel_buttons():
 # ─── Formatting helpers ───
 
 def format_amount(amount) -> str:
-    """Format number as ₦X,XXX. Shows decimals for amounts < 1 or with significant decimals."""
+    """Format number as ₦X,XXX. Shows decimals for amounts < 1 or with significant decimals.
+
+    Sign-aware: negatives render as -₦X,XXX (previously any negative fell into the
+    sub-naira branch because `num < 1` is true for negatives, producing an
+    unformatted string like "₦-170020000"). We format the magnitude and prepend
+    the sign so thousands separators always apply.
+    """
     try:
         num = float(amount)
         if num == 0:
             return "₦0"
-        elif num < 1:
+        sign = "-" if num < 0 else ""
+        mag = abs(num)
+        if mag < 1:
             # Sub-naira amounts: show up to 4 decimal places
-            return f"₦{num:.4f}".rstrip('0').rstrip('.')
-        elif num < 100 and num != int(num):
+            body = f"{mag:.4f}".rstrip('0').rstrip('.')
+        elif mag < 100 and mag != int(mag):
             # Small amounts with decimals: show 2dp
-            return f"₦{num:,.2f}"
-        elif num == int(num):
+            body = f"{mag:,.2f}"
+        elif mag == int(mag):
             # Whole number
-            return f"₦{int(num):,}"
+            body = f"{int(mag):,}"
         else:
             # Large amount with decimals
-            return f"₦{num:,.2f}"
+            body = f"{mag:,.2f}"
+        return f"{sign}₦{body}"
     except (ValueError, TypeError):
         return f"₦{amount}"
 

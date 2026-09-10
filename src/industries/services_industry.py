@@ -65,6 +65,8 @@ class ServicesIndustry(BaseIndustry):
                          "description": "Consumables, tools, materials"},
                         {"id": "record_expense", "title": "💸 Record Expense",
                          "description": "Transport, rent, utilities"},
+                        {"id": "menu_dashboard", "title": "📊 Dashboard & Reports",
+                         "description": "Revenue, jobs, margins at a glance"},
                     ]
                 },
                 {
@@ -107,7 +109,12 @@ class ServicesIndustry(BaseIndustry):
             return self._show_settings_menu(phone_number)
 
         # ── Services dashboard ──
+        # Telegram uses the unified Stage-3 dashboard; return None to fall through
+        # to the dispatcher's _open_dashboard. WhatsApp keeps the services dashboard.
         if button_id == "biz_dashboard":
+            from services.messaging_client import platform_for_user
+            if platform_for_user(phone_number) == "telegram":
+                return None
             return self._show_dashboard(phone_number)
 
         # ── Sub-buttons delegate to router ──
@@ -135,16 +142,14 @@ class ServicesIndustry(BaseIndustry):
             sections=[{
                 "title": "Business Tools",
                 "rows": [
-                    {"id": "biz_dashboard", "title": "📈 Dashboard",
-                     "description": "Revenue, jobs this month"},
+                    {"id": "biz_dashboard", "title": "📊 Dashboard & Reports",
+                     "description": "Revenue, jobs, margins, periods"},
                     {"id": "biz_sales", "title": "💼 Jobs/Services",
                      "description": "All completed jobs"},
                     {"id": "biz_expenses", "title": "💸 Expenses",
                      "description": "Operating costs"},
                     {"id": "biz_purchases", "title": "📦 Supply Purchases",
                      "description": "Consumables & equipment bought"},
-                    {"id": "biz_reports", "title": "📊 Reports",
-                     "description": "P&L, this week, this month"},
                     {"id": "biz_debts", "title": "💳 Debts & Credits",
                      "description": "Who owes, payments"},
                     {"id": "biz_recurring", "title": "🔁 Recurring Services",

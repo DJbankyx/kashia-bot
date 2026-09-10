@@ -207,6 +207,17 @@ def _handle_callback_query(callback: dict):
         _handle_fastentry(user_id, chat_id, data)
         return
 
+    # ── Dashboard live-update: period toggles + drill-downs EDIT the card in
+    #    place instead of stacking a new message on every tap. Only the dash_*
+    #    follow-up taps (period switch, drill open, ← Dashboard) edit in place;
+    #    the initial open (menu_dashboard) sends a fresh card via normal dispatch
+    #    so there's a message to keep editing. ──
+    if data.startswith("dash_period_") or data.startswith("dash_drill_") or data == "dash_open":
+        if _handle_dashboard_tap(user_id, chat_id, message_id, data):
+            return
+        # If the in-place edit couldn't run (no client / unexpected response),
+        # fall through to normal dispatch so the user still gets a response.
+
     # Show "typing…" while the engine builds the response to the tap.
     _show_typing(chat_id)
     logger.info(f"Telegram button from {user_id}: {data}")
@@ -611,6 +622,51 @@ def _get_telegram_client():
     bot = get_bot()
     client = bot.get_client("telegram")
     return client
+
+
+def _handle_dashboard_tap(user_id: str, chat_id, message_id, data: str) -> bool:
+    """Run a dashboard period/drill tap through the engine and EDIT the tapped
+    card in place (instead of sending a new message, which stacked cards).
+
+    Returns True if the card was edited in place; False to let the caller fall
+    back to normal dispatch (e.g. no client, or the engine returned something
+    other than a single list card — a marker, menu, etc.).
+    """
+    if message_id is None:
+        return False
+    try:
+        from main import get_bot
+        bot = get_bot()
+        client = bot.get_client("telegram")
+        if client is None:
+            return False
+
+        responses = bot.router.process(user_id, data, "interactive") or []
+
+        # Only edit in place when the engine returned exactly ONE plain list
+        # card (the dashboard / drill). Anything else (markers like PDF/Excel,
+        # multi-message replies, menu_home navigation) should go the normal
+        # route so it renders correctly.
+        real = [r for r in responses if isinstance(r, dict)]
+        if len(real) != 1 or real[0].get("type") != "list":
+            bot._deliver_engine_responses(user_id, responses, platform="telegram")
+            return True
+
+        content = real[0].get("content", {}) or {}
+        ok = client.edit_list_in_place(
+            chat_id, message_id,
+            content.get("header", ""),
+            content.get("body", ""),
+            content.get("sections", []),
+        )
+        # If the edit API call fails (e.g. message too old / identical content),
+        # fall back to sending a fresh card so the user still sees the update.
+        if not ok:
+            bot._deliver_engine_responses(user_id, responses, platform="telegram")
+        return True
+    except Exception as e:
+        logger.warning(f"Dashboard in-place update failed for {user_id} msg {message_id}: {e}")
+        return False
 
 
 def _handle_page_nav(user_id: str, chat_id, message_id, data: str):
