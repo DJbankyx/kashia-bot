@@ -50,8 +50,15 @@ delivered. **WhatsApp stays working**: Telegram-specific building is gated by
    dump; keep an explicit "Forward to customer" action).
 5. **Statement delivery tuple-truthiness quirk** + `get_transaction` unused by
    doc paths (list+filter). → Minor correctness cleanups.
-6. Address/TIN not rendered. → Optional: render `business_address` + a new
-   `tin` profile field when set (deferred unless you want it).
+6. Address/TIN on documents (DECIDED):
+   - **Business address = COMPULSORY** on invoices/quotes. Render
+     `business_address` from the profile. If it's missing, prompt the user to
+     add it as part of the document flow (don't silently omit).
+   - **TIN = OPTIONAL, user-controlled.** Not every business wants to share it.
+     Add a `tin` profile field + a "show TIN on documents" preference
+     (default OFF). Render the TIN on invoices/quotes ONLY when the user has
+     set a TIN AND enabled the toggle. Surface the toggle in Personal Info
+     (pi_*), alongside bank details.
 
 ## The design — one boxed "Document" flow
 
