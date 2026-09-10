@@ -368,15 +368,18 @@ class SettingsHandler:
         """Show reset warning with confirmation buttons."""
         return [button_response(
             "🧹 *Clear My Data*\n\n"
-            "This will permanently delete:\n"
+            "This clears from your account:\n"
             "  • All your transactions\n"
             "  • All contacts & debts\n"
             "  • Your product catalog\n"
             "  • All reports\n\n"
             "*Your account login will remain.*\n\n"
-            "This cannot be undone. Are you sure?",
+            "_For your protection, financial records are kept securely and\n"
+            "hidden from your account for the legal retention period, then\n"
+            "removed automatically._\n\n"
+            "Are you sure?",
             [
-                {"id": "set_reset_yes", "title": "🗑️ Yes, Delete All"},
+                {"id": "set_reset_yes", "title": "🗑️ Yes, Clear It"},
                 {"id": "set_reset_no",  "title": "← Keep My Data"},
             ]
         )]
@@ -429,13 +432,16 @@ class SettingsHandler:
         """Show the hard-reset warning with confirmation buttons."""
         return [button_response(
             "⚠️ *Full Reset (start over)*\n\n"
-            "This permanently deletes *everything*:\n"
+            "This clears *everything* and starts you fresh:\n"
             "  • All transactions\n"
             "  • All contacts & debts\n"
             "  • Your product catalog\n"
             "  • Your business profile & industry\n\n"
-            "You'll start again from onboarding and pick your industry fresh.\n\n"
-            "This cannot be undone. Are you sure?",
+            "You'll begin again from onboarding and pick your industry fresh.\n\n"
+            "_For your protection, financial records are kept securely and\n"
+            "hidden from your account for the legal retention period, then\n"
+            "removed automatically._\n\n"
+            "Are you sure?",
             [
                 {"id": "set_hardreset_yes", "title": "🗑️ Yes, Start Over"},
                 {"id": "set_hardreset_no",  "title": "← Keep My Data"},
@@ -443,15 +449,23 @@ class SettingsHandler:
         )]
 
     def _execute_hard_reset(self, phone_number: str) -> list:
-        """Delete all data and clear onboarding so the user re-onboards fresh.
+        """Clear all data from view and reset onboarding so the user re-onboards
+        fresh.
 
-        Unlike _execute_reset (which keeps the profile + industry), this clears
-        the fields the router uses to decide a user is 'known', so the next
-        message drops them into onboarding from step one (industry re-pick).
+        Like _execute_reset, this ARCHIVES transactions + contacts (soft-delete)
+        rather than physically deleting them, so financial records stay
+        recoverable/auditable for the retention window (compliance: 6-year
+        FIRS/tax minimum). No user-facing action ever hard-deletes; true erasure
+        happens only via the time-based retention purge or a deliberate admin
+        action (audit tool). Unlike _execute_reset (which keeps the profile +
+        industry), this ALSO clears the fields the router uses to decide a user
+        is 'known', so the next message drops them into onboarding from step one
+        (industry re-pick).
         """
         try:
-            self._delete_all_transactions(phone_number)
-            self._delete_all_contacts(phone_number)
+            # Archive (soft-delete) — recoverable for the retention window.
+            self.db.archive_all_transactions(phone_number)
+            self.db.archive_all_contacts(phone_number)
 
             # Clear the profile fields that mark the user as onboarded. The
             # router's _user_exists() returns False when onboarding_complete is
@@ -486,58 +500,10 @@ class SettingsHandler:
                 "❌ Reset failed. Please try again or contact support."
             )]
 
-    def _delete_all_transactions(self, phone_number: str):
-        """Batch delete all transactions for a user."""
-        try:
-            from boto3.dynamodb.conditions import Key
-            response = self.db.transactions.query(
-                KeyConditionExpression=Key("phone_number").eq(phone_number)
-            )
-            items = response.get("Items", [])
-
-            # Paginate
-            while "LastEvaluatedKey" in response:
-                response = self.db.transactions.query(
-                    KeyConditionExpression=Key("phone_number").eq(phone_number),
-                    ExclusiveStartKey=response["LastEvaluatedKey"]
-                )
-                items.extend(response.get("Items", []))
-
-            # Delete in batches of 25 (DynamoDB limit per batch_write)
-            with self.db.transactions.batch_writer() as batch:
-                for item in items:
-                    batch.delete_item(Key={
-                        "phone_number":   phone_number,
-                        "transaction_id": item["transaction_id"],
-                    })
-
-            logger.info(f"Deleted {len(items)} transactions for {phone_number}")
-        except Exception as e:
-            logger.error(f"Error deleting transactions: {e}")
-
-    def _delete_all_contacts(self, phone_number: str):
-        """Batch delete all contacts for a user."""
-        try:
-            from boto3.dynamodb.conditions import Key
-            response = self.db.contacts.query(
-                KeyConditionExpression=Key("phone_number").eq(phone_number)
-            )
-            items = response.get("Items", [])
-
-            while "LastEvaluatedKey" in response:
-                response = self.db.contacts.query(
-                    KeyConditionExpression=Key("phone_number").eq(phone_number),
-                    ExclusiveStartKey=response["LastEvaluatedKey"]
-                )
-                items.extend(response.get("Items", []))
-
-            with self.db.contacts.batch_writer() as batch:
-                for item in items:
-                    batch.delete_item(Key={
-                        "phone_number": phone_number,
-                        "contact_id":   item["contact_id"],
-                    })
-
-            logger.info(f"Deleted {len(items)} contacts for {phone_number}")
-        except Exception as e:
-            logger.error(f"Error deleting contacts: {e}")
+    # NOTE: the old physical batch-delete helpers (_delete_all_transactions /
+    # _delete_all_contacts) were removed. No user-facing action hard-deletes
+    # records anymore — both "Clear My Data" and "Full Reset" ARCHIVE
+    # (soft-delete) so financial records survive for the 6-year retention window
+    # (compliance). True erasure happens only via the scheduled retention purge
+    # (past retain_until) or a deliberate admin action (scripts/audit_user.py
+    # --edit purge → db.purge_user_records).

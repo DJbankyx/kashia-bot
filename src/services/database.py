@@ -20,11 +20,13 @@ logger.setLevel(logging.INFO)
 # for a retention window (compliance: tax/AML, warrants). Every read path
 # filters archived rows out, so the user and reports never see them.
 #
-# ⚠️ LEGAL: RETENTION_DAYS below is a PLACEHOLDER. Retention periods are
-# jurisdiction-specific — CONFIRM the real window for Nigeria / where we operate
-# with a professional before launch, then set it here. Full erasure (true
-# delete) is a separate, deliberate admin action (see purge_user / audit tool).
-RETENTION_DAYS = 2555  # ~7 years placeholder (common finance-record default)
+# ⚠️ LEGAL: RETENTION_DAYS is set to 6 years — the binding minimum for the data
+# this system retains (transactions/contacts). Nigeria: FIRS/tax records must be
+# kept 6 years (beats the 5-year MLPPA/CBN AML floor for KYC/CRM). CAMA 2020
+# wants accounting records for the life of the company, so we err long. Full
+# erasure (true delete) is a separate, deliberate admin action (see purge_user /
+# audit tool). Confirm with counsel before shortening this.
+RETENTION_DAYS = 2190  # 6 years (365 * 6) — Nigeria FIRS/tax minimum
 
 
 def _is_deleted(item) -> bool:
