@@ -228,8 +228,10 @@ class KashiaBot:
                 continue
 
             if resp.get("type") == "__EXPORT_PDF_STATEMENT__":
-                # Generate and send PDF financial statement
-                pdf_responses = self.pdf_generator.handle_statement_request(phone_number)
+                # Generate and send PDF financial statement for the requested
+                # period (carried from the dashboard/report), defaulting to month.
+                period = (resp.get("content") or {}).get("period", "month")
+                pdf_responses = self.pdf_generator.handle_statement_request(phone_number, period=period)
                 resolved.extend(pdf_responses)
                 continue
 

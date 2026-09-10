@@ -995,8 +995,7 @@ class PDFGenerator:
                 f"To: {customer_name}\n"
                 f"Amount: \u20a6{int(amount):,}\n"
                 f"For: {description}\n\n"
-                f"📎 Check your chat for the PDF.\n\n"
-                f"\ud83d\udd17 *Shareable link* (valid 24hrs):\n{s3_url}"
+                f"📎 Check your chat for the PDF."
             )}]
             # Add forward-to-customer metadata
             if customer_name and customer_name.lower() != 'customer':
@@ -1053,8 +1052,7 @@ class PDFGenerator:
                 f"To: {customer_name}\n"
                 f"Items: {len(items)}\n"
                 f"Total: \u20a6{total_amount:,}\n\n"
-                f"\ud83d\udcce Check your chat for the PDF.\n\n"
-                f"\ud83d\udd17 *Shareable link* (valid 24hrs):\n{s3_url}"
+                f"\ud83d\udcce Check your chat for the PDF."
             )}]
             if customer_name and customer_name.lower() != 'customer':
                 responses.append({"type": "forward_prompt", "content": {
@@ -1085,7 +1083,11 @@ class PDFGenerator:
             delivered, s3_url = self.deliver_pdf(phone_number, filepath, filename, caption="Payment Receipt")
             if not delivered:
                 return [{"type": "text", "content": "\u26a0\ufe0f Receipt generated but delivery failed."}]
-            responses = [{"type": "text", "content": f"\u2705 Receipt sent! Check your chat for the PDF.\n\n\ud83d\udd17 *Shareable link* (valid 24hrs):\n{s3_url}"}]
+            # The PDF is already delivered to the chat. We no longer dump the raw
+            # presigned URL as text — the optional forward_prompt below hands the
+            # shareable link WITH context ("Forward to {customer}?") when there's
+            # a real customer, so the link isn't shown twice.
+            responses = [{"type": "text", "content": "\u2705 Receipt sent! Check your chat for the PDF."}]
             # Add forward prompt if there's a customer
             vendor = tx.get('vendor', '')
             if vendor and vendor.lower() not in {'unknown', 'sold', 'bought', 'paid', 'received', ''}:
@@ -1156,12 +1158,13 @@ class PDFGenerator:
             delivered, s3_url = self.deliver_pdf(phone_number, filepath, filename, caption=f"Receipt - {len(transactions)} items")
             if not delivered:
                 return [{"type": "text", "content": "\u26a0\ufe0f Receipt generated but delivery failed."}]
+            # PDF already delivered; drop the raw URL dump (see single-receipt
+            # note) — forward_prompt below carries the shareable link with context.
             responses = [{"type": "text", "content": (
                 f"\u2705 Combined receipt sent!\n\n"
                 f"Items: {len(transactions)}\n"
                 f"Total: \u20a6{total:,}\n\n"
-                f"\ud83d\udcce Check your chat for the PDF.\n\n"
-                f"\ud83d\udd17 *Shareable link* (valid 24hrs):\n{s3_url}"
+                f"\ud83d\udcce Check your chat for the PDF."
             )}]
             # Add forward prompt — use first customer found
             customer_name = ''
@@ -1179,19 +1182,27 @@ class PDFGenerator:
             logger.error(f"Error generating multi-receipt: {e}")
             return [{"type": "text", "content": "Sorry, couldn't generate the receipt. Please try again."}]
 
-    def handle_statement_request(self, phone_number):
+    def handle_statement_request(self, phone_number, period="month"):
         """
         Handle financial statement generation and delivery.
+
+        period: which range the statement covers ("today"/"week"/"month"/
+        "last_month"). Defaults to "month". Passed through from the dashboard so
+        the statement matches the period the user is looking at.
         Returns: list of response dicts
         """
         # Get user's industry class for tailored P&L
         user = self.db.get_user(phone_number)
         industry_class = user.get('industry_class', 'trading') if user else 'trading'
-        result = self.generate_financial_statement(phone_number, industry_class=industry_class)
+        result = self.generate_financial_statement(
+            phone_number, period=period, industry_class=industry_class)
 
         if result and result[0]:
             filepath, filename = result
-            delivered = self.deliver_pdf(phone_number, filepath, filename,
+            # deliver_pdf returns (success, s3_url) — unpack it. The old code did
+            # `if not delivered:` on the whole tuple, which is always truthy, so a
+            # failed delivery would still report success. Unpack the bool.
+            delivered, _s3_url = self.deliver_pdf(phone_number, filepath, filename,
                             caption="Your Financial Statement - ready for your accountant!")
             if not delivered:
                 return [{"type": "text", "content": "⚠️ Statement generated but delivery failed. Please try again."}]

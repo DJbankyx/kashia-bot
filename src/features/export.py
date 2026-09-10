@@ -95,10 +95,24 @@ class ExportHandler:
         # open the boxed builder (4C–4E); until those land they route to the
         # existing invoice flow / a clear placeholder so no tap dead-ends.
         if button_id == "doc_statement":
+            # Period-aware (Telegram): let the user pick the range first. WhatsApp
+            # reaches the statement via export_statement (defaults to month).
+            if self._is_telegram(phone_number):
+                return self._doc_statement_period_picker(phone_number)
             pin_check = requires_pin(self.db, self.session, phone_number, button_id)
             if pin_check:
                 return pin_check
             return self.pdf_generator.handle_statement_request(phone_number)
+
+        if button_id.startswith("doc_statement_"):
+            # doc_statement_<period> — generate for the chosen range (PIN-gated).
+            period = button_id[len("doc_statement_"):] or "month"
+            if period not in ("today", "week", "month", "last_month"):
+                period = "month"
+            pin_check = requires_pin(self.db, self.session, phone_number, "doc_statement")
+            if pin_check:
+                return pin_check
+            return self.pdf_generator.handle_statement_request(phone_number, period=period)
 
         if button_id == "doc_receipt":
             return self.pdf_generator.handle_receipt_request(phone_number)
@@ -134,6 +148,27 @@ class ExportHandler:
             return self.pdf_generator.handle_statement_request(phone_number)
 
         return self.show_options(phone_number)
+
+    def _doc_statement_period_picker(self, phone_number: str) -> list:
+        """Tap-first period picker for the financial statement (Telegram). Each
+        choice generates the statement PDF for that range."""
+        rows = [
+            {"id": "doc_statement_today", "title": "📅 Today"},
+            {"id": "doc_statement_week", "title": "📆 This Week"},
+            {"id": "doc_statement_month", "title": "🗓️ This Month"},
+            {"id": "doc_statement_last_month", "title": "📅 Last Month"},
+            {"id": "menu_export", "title": "← Documents"},
+        ]
+        return [list_response(
+            header="📊 Financial Statement",
+            body=("📊 *Financial Statement*\n"
+                  "────────────────────\n"
+                  "Pick the period to cover. I'll build a clean P&L PDF you can "
+                  "send to your accountant."),
+            button_text="Choose Period",
+            sections=[{"title": "Period", "rows": rows}],
+            no_paginate=True,
+        )]
 
     def _doc_quote_placeholder(self, phone_number: str) -> list:
         """Interim Quote entry (4A). The full tap-first quote builder + quote

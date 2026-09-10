@@ -104,7 +104,10 @@ class ReportsHandler:
 
         # ── PDF export from report ──
         if button_id.startswith("report_pdf_"):
-            return [{"type": "__EXPORT_PDF_STATEMENT__", "content": {}}]
+            # Carry the period so the statement PDF matches what the user is
+            # viewing (dashboard/report period) instead of always defaulting.
+            period = button_id[len("report_pdf_"):] or "month"
+            return [{"type": "__EXPORT_PDF_STATEMENT__", "content": {"period": period}}]
 
         # ── Edit records from tab (report_edit_sale, report_edit_purchase, etc) ──
         if button_id.startswith("report_edit_"):
