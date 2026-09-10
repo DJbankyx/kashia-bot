@@ -142,73 +142,68 @@ class ReportsHandler:
                 f"_Start recording sales and expenses to see your P&L._"
             )]
 
-        # ── Separate into buckets ──
+        # ── Buckets kept for the downstream sub-reports (hybrid split, margin,
+        #    production). The headline numbers now come from the shared engine. ──
         sales       = [t for t in transactions if t.get("type") == "sale"]
         purchases   = [t for t in transactions if t.get("type") == "purchase"]
         expenses    = [t for t in transactions if t.get("type") == "expense"
                        and t.get("category") not in COGS_CATEGORIES]
         cogs_txns   = [t for t in transactions if t.get("type") == "expense"
                        and t.get("category") in COGS_CATEGORIES]
-        # Purchases are always COGS for trading
-        all_cogs    = purchases + cogs_txns
-
-        # ── Totals ──
-        revenue     = _sum(sales)
-        cogs        = _sum(all_cogs)
-        gross       = revenue - cogs
-        opex        = _sum(expenses)
-        net         = gross - opex
         tx_count    = len(transactions)
 
-        # ── Get user industry for labels ──
         user = self.db.get_user(phone_number) or {}
         industry = user.get("industry_class", user.get("business_type", "trading"))
 
-        # ── Gross margin % ──
-        gross_pct   = f"{int(gross / revenue * 100)}%" if revenue > 0 else "—"
-        net_pct     = f"{int(net / revenue * 100)}%" if revenue > 0 else "—"
-
-        # ════════════════════════════════════════════════════
-        # REPORT — Cash Flow Summary
-        # Shows money in (revenue) vs money out (purchases + expenses)
-        # ════════════════════════════════════════════════════
+        # ── Accrual P&L from the shared accounting engine (single source) ──
+        from services.accounting import Accounting
+        acct = Accounting(self.db, self.session)
+        pnl = acct.period_pnl(phone_number, start_date, end_date, label)
+        revenue  = pnl["revenue"]
+        cogs     = pnl["cogs"]            # cost of goods SOLD (accrual), NOT purchases
+        gross    = pnl["gross_profit"]
+        opex     = pnl["opex"]
+        net      = pnl["net_profit"]
+        uncosted = pnl["uncosted_count"]
 
         # Industry-specific labels
         if industry == "manufacturing":
-            cogs_label = "Materials & Production"
+            cogs_label = "Cost of Output (sold)"
             revenue_label = "Output Sales"
         elif industry == "services":
-            cogs_label = "Supplies & Job Costs"
+            cogs_label = "Job Costs"
             revenue_label = "Service Revenue"
         else:
-            cogs_label = "Stock Purchases"
+            cogs_label = "Cost of Goods Sold"
             revenue_label = "Sales"
 
+        gm_pct  = f"{int(gross / pnl['costed_revenue'] * 100)}%" if pnl["costed_revenue"] > 0 else "—"
+        net_pct = f"{int(net / revenue * 100)}%" if revenue > 0 else "—"
+
+        # ════════════════════════════════════════════════════
+        # SECTION 1 — Profit & Loss (ACCRUAL)
+        # Revenue − COGS(of goods SOLD) − Expenses = Net Profit.
+        # A stock purchase you haven't sold is inventory, not an expense here.
+        # ════════════════════════════════════════════════════
         lines = [
-            f"📊 *{label} — Cash Flow*",
+            f"📊 *{label} — Profit & Loss*",
             f"",
             f"━━━━━━━━━━━━━━━━━━━━",
-            f"💰 *MONEY IN*",
-            f"  {revenue_label}:  {format_amount(revenue)}",
-            f"",
-            f"💸 *MONEY OUT*",
-            f"  {cogs_label}:  {format_amount(cogs)}",
-            f"  Expenses:     {format_amount(opex)}",
-            f"  *Total Out:*  {format_amount(cogs + opex)}",
-            f"",
+            f"💰 {revenue_label}:  *{format_amount(revenue)}*",
+            f"📦 {cogs_label}:  {format_amount(cogs)}",
+            f"🟢 *Gross Profit:*  {format_amount(gross)}  _({gm_pct})_",
+            f"💸 Operating Expenses:  {format_amount(opex)}",
             f"━━━━━━━━━━━━━━━━━━━━",
         ]
-
-        # Net cash position
         if net >= 0:
-            lines.append(f"📈 *NET CASH:*  +{format_amount(net)} _({net_pct} margin)_")
+            lines.append(f"📈 *NET PROFIT:*  +{format_amount(net)}  _({net_pct})_")
         else:
-            lines.append(f"📉 *NET CASH:*  -{format_amount(abs(net))}")
-
-        lines.append(f"━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"")
-        lines.append(f"📝 {tx_count} transaction{'s' if tx_count != 1 else ''}")
-        lines.append(f"_This is a cash flow view (money in vs out)._")
+            lines.append(f"📉 *NET LOSS:*  −{format_amount(abs(net))}")
+        if uncosted > 0:
+            lines.append(
+                f"\n_⚠️ {uncosted} sale(s) have no recorded cost — excluded from "
+                f"COGS/margin. Set their cost for an accurate profit._"
+            )
 
         # ── Top expense categories breakdown ──
         if expenses:
@@ -222,6 +217,28 @@ class ReportsHandler:
             for cat, amt in top:
                 pct = int(amt / opex * 100) if opex > 0 else 0
                 lines.append(f"  • {cat}: {format_amount(amt)} ({pct}%)")
+
+        # ════════════════════════════════════════════════════
+        # SECTION 2 — Cash Flow (money in vs out)
+        # This is where purchases (incl. unsold stock) show as cash out.
+        # ════════════════════════════════════════════════════
+        cash_out = _sum(purchases + cogs_txns) + opex
+        net_cash = revenue - cash_out
+        lines.append(f"")
+        lines.append(f"━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"💵 *Cash Flow*")
+        lines.append(f"  Money in:   {format_amount(revenue)}")
+        lines.append(f"  Money out:  {format_amount(cash_out)}  _(incl. all stock bought)_")
+        if net_cash >= 0:
+            lines.append(f"  *Net cash:*  +{format_amount(net_cash)}")
+        else:
+            lines.append(f"  *Net cash:*  −{format_amount(abs(net_cash))}")
+        lines.append(f"")
+        lines.append(f"📝 {tx_count} transaction{'s' if tx_count != 1 else ''}")
+        lines.append(
+            f"_P&L = profit on goods sold (accrual). Cash flow = money movement. "
+            f"Unsold stock is inventory, not a loss._"
+        )
 
         responses = [text_response("\n".join(lines))]
 

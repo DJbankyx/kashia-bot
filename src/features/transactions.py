@@ -782,6 +782,18 @@ class TransactionHandler:
             if tx_data["type"] == "purchase":
                 qty = self._parse_qty(tx_data.get("quantity", "1"))
                 unit_cost = int(tx_data.get("unit_cost") or 0)
+                # R2b — strict cost for weighted-average: a purchase can NEVER be
+                # cost-less. The amount paid IS the money spent on the goods, so
+                # if no explicit unit_cost was captured (e.g. a total-only entry,
+                # or a WhatsApp AI parse that didn't isolate a per-unit price),
+                # derive it from amount ÷ qty. This guarantees update_stock always
+                # gets a valid cost to fold into the running weighted average —
+                # without blocking the flow or unwinding a mid-save.
+                if unit_cost <= 0:
+                    amt = int(tx_data.get("amount") or 0)
+                    if amt > 0 and qty > 0:
+                        unit_cost = amt // qty
+                        tx_data["unit_cost"] = unit_cost
                 desc = tx_data.get("description", "")
                 brand = tx_data.get("brand", "")
                 search_name = f"{brand} {desc}".strip() if brand else desc

@@ -583,15 +583,24 @@ class PDFGenerator:
             opex_txns = [tx for tx in transactions
                         if tx.get('type') == 'expense' and tx.get('category', '') not in COGS_CATEGORIES]
 
-            # Calculate totals
-            total_revenue = sum(int(tx.get('amount', 0)) for tx in income_txns)
-            total_cogs = sum(int(tx.get('amount', 0)) for tx in cogs_txns)
             total_opex = sum(int(tx.get('amount', 0)) for tx in opex_txns)
             total_debt_received = sum(int(tx.get('amount', 0)) for tx in debt_payments)
-            gross_profit = total_revenue - total_cogs
-            net_profit = gross_profit - total_opex
-            gross_margin = int((gross_profit / total_revenue * 100)) if total_revenue > 0 else 0
-            net_margin = int((net_profit / total_revenue * 100)) if total_revenue > 0 else 0
+
+            # ─── ACCRUAL TOTALS from the shared accounting engine ───
+            # COGS = cost of goods actually SOLD (weighted-average), NOT the sum
+            # of purchases in the period. Buying unsold stock is inventory, not
+            # an expense — the old code summed purchases here and turned a big
+            # stock buy into a fake loss. Revenue/opex still reconcile to the
+            # category tables above; only COGS/gross/net become accrual-correct.
+            from services.accounting import Accounting
+            _pnl = Accounting(self.db).period_pnl(phone_number, start_date, end_date, period_label)
+            total_revenue = _pnl["revenue"]
+            total_cogs = _pnl["cogs"]
+            gross_profit = _pnl["gross_profit"]
+            net_profit = _pnl["net_profit"]
+            gross_margin = _pnl["gross_margin_pct"]
+            net_margin = _pnl["net_margin_pct"]
+            uncosted_count = _pnl["uncosted_count"]
 
             # ─── REVENUE SECTION ───
             story.append(Paragraph(f"<b>{pnl_labels['revenue_title']}</b>", self.styles['KashiaHeading']))
@@ -628,17 +637,11 @@ class PDFGenerator:
             story.append(Paragraph(f"<b>{pnl_labels['cogs_title']}</b>", self.styles['KashiaHeading']))
             story.append(Paragraph(f"<i>{pnl_labels['cogs_subtitle']}</i>", self.styles['KashiaSmall']))
 
-            cogs_cats = {}
-            for tx in cogs_txns:
-                cat = tx.get('category', 'Goods & Stock')
-                cogs_cats[cat] = cogs_cats.get(cat, 0) + int(tx.get('amount', 0))
-
+            # Accrual COGS = cost of the goods SOLD this period (weighted-average),
+            # not a breakdown of purchases. We show it as a single line so it can
+            # never be confused with total stock bought.
             cogs_data = [['', 'Amount (NGN)']]
-            if cogs_cats:
-                for cat, amt in sorted(cogs_cats.items(), key=lambda x: x[1], reverse=True):
-                    cogs_data.append([f"  {cat}", f"({amt:,})"])
-            else:
-                cogs_data.append(['  No COGS recorded', '-'])
+            cogs_data.append(['  Cost of goods sold this period', f"({total_cogs:,})"])
             cogs_data.append(['TOTAL COGS', f"({total_cogs:,})"])
 
             cogs_table = Table(cogs_data, colWidths=[10*cm, 6*cm])
@@ -655,6 +658,20 @@ class PDFGenerator:
                 ('LINEABOVE', (0, -1), (-1, -1), 1.5, black),
             ]))
             story.append(cogs_table)
+            # Integrity disclosure: sales with no recorded cost are excluded from
+            # COGS/margin (never faked as zero) — say so on the statement.
+            if uncosted_count > 0:
+                story.append(Paragraph(
+                    f"<i>Note: {uncosted_count} sale(s) had no recorded cost and are "
+                    f"excluded from COGS/margin. Record their cost for an accurate "
+                    f"profit.</i>",
+                    self.styles['KashiaSmall']
+                ))
+            story.append(Paragraph(
+                "<i>COGS reflects only goods SOLD this period. Unsold stock is "
+                "inventory (an asset), not a cost.</i>",
+                self.styles['KashiaSmall']
+            ))
             story.append(Spacer(1, 6*mm))
 
             # ─── GROSS PROFIT ───
