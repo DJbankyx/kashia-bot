@@ -603,7 +603,7 @@ class PDFGenerator:
                 cat = tx.get('category', 'Sales Revenue')
                 revenue_cats[cat] = revenue_cats.get(cat, 0) + int(tx.get('amount', 0))
 
-            rev_data = [['', 'Amount (\u20a6)']]
+            rev_data = [['', 'Amount (NGN)']]
             for cat, amt in sorted(revenue_cats.items(), key=lambda x: x[1], reverse=True):
                 rev_data.append([f"  {cat}", f"{amt:,}"])
             rev_data.append(['TOTAL REVENUE', f"{total_revenue:,}"])
@@ -633,7 +633,7 @@ class PDFGenerator:
                 cat = tx.get('category', 'Goods & Stock')
                 cogs_cats[cat] = cogs_cats.get(cat, 0) + int(tx.get('amount', 0))
 
-            cogs_data = [['', 'Amount (\u20a6)']]
+            cogs_data = [['', 'Amount (NGN)']]
             if cogs_cats:
                 for cat, amt in sorted(cogs_cats.items(), key=lambda x: x[1], reverse=True):
                     cogs_data.append([f"  {cat}", f"({amt:,})"])
@@ -685,7 +685,7 @@ class PDFGenerator:
                 cat = tx.get('category', 'Other Expenses')
                 opex_cats[cat] = opex_cats.get(cat, 0) + int(tx.get('amount', 0))
 
-            opex_data = [['', 'Amount (\u20a6)']]
+            opex_data = [['', 'Amount (NGN)']]
             if opex_cats:
                 for cat, amt in sorted(opex_cats.items(), key=lambda x: x[1], reverse=True):
                     pct = int((amt / total_opex * 100)) if total_opex > 0 else 0
@@ -736,7 +736,7 @@ class PDFGenerator:
             if debt_payments:
                 story.append(Paragraph("<b>MEMO: Debt Payments Received</b>", self.styles['KashiaHeading']))
                 story.append(Paragraph(
-                    f"Total debt collected this period: \u20a6{total_debt_received:,} ({len(debt_payments)} payments)",
+                    f"Total debt collected this period: NGN {total_debt_received:,} ({len(debt_payments)} payments)",
                     self.styles['KashiaBody']
                 ))
                 story.append(Paragraph(
@@ -807,7 +807,7 @@ class PDFGenerator:
                 margin_profit     = margin_total_rev - margin_total_cost
                 margin_pct        = int(margin_profit / margin_total_rev * 100) if margin_total_rev > 0 else 0
 
-                margin_data = [['', 'Amount (\u20a6)']]
+                margin_data = [['', 'Amount (NGN)']]
                 margin_data.append(['Revenue (costed sales)', f"{margin_total_rev:,}"])
                 margin_data.append(['Landing Cost', f"({margin_total_cost:,})"])
                 margin_data.append(['GROSS MARGIN', f"{margin_profit:,} ({margin_pct}%)"])

@@ -297,7 +297,25 @@ class ExportService:
         """Upload a file to S3 and return a presigned URL (24hr expiry)."""
         try:
             s3_key = f"exports/{datetime.now().strftime('%Y%m%d')}/{filename}"
-            self.s3.upload_file(filepath, BUCKET_NAME, s3_key)
+
+            # Set an explicit Content-Type. Without it S3 serves the object as
+            # binary/octet-stream, which Telegram's sendDocument-by-URL rejects
+            # for spreadsheets (the "File sent!" but no file bug) — PDFs happened
+            # to work. Deriving from the extension fixes xlsx/csv/pdf uniformly.
+            ext = (filename.rsplit(".", 1)[-1] if "." in filename else "").lower()
+            content_type = {
+                "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "xls": "application/vnd.ms-excel",
+                "csv": "text/csv",
+                "pdf": "application/pdf",
+                "png": "image/png",
+                "jpg": "image/jpeg",
+                "jpeg": "image/jpeg",
+            }.get(ext, "application/octet-stream")
+            self.s3.upload_file(
+                filepath, BUCKET_NAME, s3_key,
+                ExtraArgs={"ContentType": content_type},
+            )
 
             presigned_url = self.s3.generate_presigned_url(
                 'get_object',
@@ -343,31 +361,40 @@ class ExportService:
         Args: export_type: "month", "csv", "contacts"
         Returns: list of response dicts
         """
+        # deliver_file returns (success, url). We MUST check success — the old
+        # code ignored it and always said "File sent!", so a failed delivery
+        # (e.g. Telegram rejecting the upload) looked successful with no file.
         if export_type in ["month", "export_month", "1"]:
             result = self.generate_monthly_excel(phone_number)
             if result:
                 filepath, filename = result
-                self.deliver_file(phone_number, filepath, filename,
+                ok, _ = self.deliver_file(phone_number, filepath, filename,
                                   caption="Your monthly report - open in Excel or Google Sheets!")
-                return [{"type": "text", "content": "File sent! Check your chat for the Excel file."}]
+                if ok:
+                    return [{"type": "text", "content": "📊 Excel report sent! Check your chat for the file."}]
+                return [{"type": "text", "content": "⚠️ I built the Excel report but couldn't deliver it. Please try again in a moment."}]
             else:
                 return [{"type": "text", "content": "No transactions this month yet."}]
 
         elif export_type in ["csv", "export_csv", "2", "full"]:
             filepath, filename = self.generate_csv(phone_number)
             if filepath:
-                self.deliver_file(phone_number, filepath, filename,
+                ok, _ = self.deliver_file(phone_number, filepath, filename,
                                   caption="Full transaction history (CSV)")
-                return [{"type": "text", "content": "CSV file sent!"}]
+                if ok:
+                    return [{"type": "text", "content": "📄 CSV file sent! Check your chat."}]
+                return [{"type": "text", "content": "⚠️ I built the CSV but couldn't deliver it. Please try again in a moment."}]
             else:
                 return [{"type": "text", "content": "No transactions to export."}]
 
         elif export_type in ["contacts", "export_contacts", "3"]:
             filepath, filename = self.generate_contacts_export(phone_number)
             if filepath:
-                self.deliver_file(phone_number, filepath, filename,
+                ok, _ = self.deliver_file(phone_number, filepath, filename,
                                   caption="Your contacts list")
-                return [{"type": "text", "content": "Contacts list sent!"}]
+                if ok:
+                    return [{"type": "text", "content": "📇 Contacts list sent! Check your chat."}]
+                return [{"type": "text", "content": "⚠️ I built the contacts list but couldn't deliver it. Please try again in a moment."}]
             else:
                 return [{"type": "text", "content": "No contacts to export yet."}]
 
