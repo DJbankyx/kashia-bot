@@ -101,16 +101,21 @@ class TGInvoice:
 
     # ── entry ────────────────────────────────────────────────────────────
 
-    def start(self, phone_number: str) -> list:
-        """Begin the invoice builder — ask who it's for. Returns [] (owns its
-        own message)."""
-        inv = {"step": "who", "customer": "", "items": [],
+    def start(self, phone_number: str, kind: str = "invoice") -> list:
+        """Begin the builder for an invoice OR a quote. Same tap-first flow;
+        `kind` controls titles and the generated document type. Returns []
+        (owns its own message)."""
+        kind = "quote" if kind == "quote" else "invoice"
+        inv = {"step": "who", "kind": kind, "customer": "", "items": [],
                "discount": None, "tax": None, "msg_id": None}
         self._save(phone_number, inv)
         recent = self._recent_contacts(phone_number)
+        title = "📄 *New Quote*" if kind == "quote" else "🧾 *New Invoice*"
+        who = ("👤 Who is this quote for?" if kind == "quote"
+               else "👤 Who is this invoice for?")
         self._render(
             phone_number, inv,
-            "🧾 *New Invoice*\n────────────────\n👤 Who is this invoice for?",
+            f"{title}\n────────────────\n{who}",
             tg_ui.inv_customer_keyboard(recent=recent),
         )
         return []
@@ -141,7 +146,9 @@ class TGInvoice:
 
     def _show_builder(self, phone_number: str, inv: dict):
         items = inv.get("items", [])
-        lines = ["🧾 *New Invoice*", "────────────────",
+        is_quote = inv.get("kind") == "quote"
+        title = "📄 *New Quote*" if is_quote else "🧾 *New Invoice*"
+        lines = [title, "────────────────",
                  f"👤 *Customer:* {inv.get('customer') or '—'}", ""]
         if not items:
             lines.append("_No items yet. Add one below._")
@@ -164,7 +171,7 @@ class TGInvoice:
                 lines.append(f"  *Total: {format_amount(self._total(inv))}*")
         if inv.get("due_label"):
             lines.append("")
-            lines.append(f"📅 Due: {inv['due_label']}")
+            lines.append(f"📅 {'Valid until' if is_quote else 'Due'}: {inv['due_label']}")
         if inv.get("note"):
             lines.append(f"📝 Note: {inv['note']}")
         inv["step"] = "builder"
@@ -266,8 +273,9 @@ class TGInvoice:
         if action == "due":
             inv["step"] = "due"
             self._save(phone_number, inv)
-            self._render(phone_number, inv, "📅 When is payment due?",
-                         tg_ui.inv_due_keyboard())
+            prompt = ("📅 How long is this quote valid?" if inv.get("kind") == "quote"
+                      else "📅 When is payment due?")
+            self._render(phone_number, inv, prompt, tg_ui.inv_due_keyboard())
             return []
 
         if action == "dueset":
@@ -475,7 +483,9 @@ class TGInvoice:
             return []
         customer = inv.get("customer") or "Customer"
         total = self._total(inv)
-        self._edit_plain(phone_number, inv, "🧾 Building your invoice…")
+        is_quote = inv.get("kind") == "quote"
+        self._edit_plain(phone_number, inv,
+                         "📄 Building your quote…" if is_quote else "🧾 Building your invoice…")
         self.session.reset(phone_number)
         # Hand off to the existing PDF engine (single source for document render).
         return self.pdf.handle_invoice_request(
@@ -483,4 +493,5 @@ class TGInvoice:
             discount=inv.get("discount"), tax=inv.get("tax"),
             items=items, note=inv.get("note", ""),
             due_label=inv.get("due_label", ""),
+            kind="quote" if is_quote else "invoice",
         )

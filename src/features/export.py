@@ -128,6 +128,13 @@ class ExportHandler:
             return self._start_invoice(phone_number)
 
         if button_id == "doc_quote":
+            # Telegram: the tap-first builder in QUOTE mode. WhatsApp keeps the
+            # existing text quote tracker / falls back to the invoice placeholder.
+            if self._is_telegram(phone_number):
+                from main import get_bot
+                builder = getattr(get_bot().router, "tg_invoice", None)
+                if builder is not None:
+                    return builder.start(phone_number, kind="quote")
             return self._doc_quote_placeholder(phone_number)
 
         # PIN-protected actions

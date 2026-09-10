@@ -175,7 +175,7 @@ class PDFGenerator:
             logger.warning(f"Could not add logo to PDF: {e}")
             # Non-critical — continue without logo
 
-    def generate_invoice(self, phone_number, customer_name, amount, description, items=None, discount=None, tax=None, note="", due_label=""):
+    def generate_invoice(self, phone_number, customer_name, amount, description, items=None, discount=None, tax=None, note="", due_label="", kind="invoice"):
         """
         Generate a professional invoice PDF.
 
@@ -195,10 +195,15 @@ class PDFGenerator:
             user = self.db.get_user(phone_number)
             business_name = user.get('business_name', 'My Business') if user else 'My Business'
 
-            # Generate invoice number
-            invoice_number = self._generate_doc_number(phone_number, "INV")
+            # Quote vs invoice: same layout, different title / numbering / labels.
+            is_quote = (kind == "quote")
+            doc_prefix = "QTE" if is_quote else "INV"
+            doc_word = "Quote" if is_quote else "Invoice"
 
-            filename = f"Invoice_{invoice_number}.pdf"
+            # Generate document number
+            invoice_number = self._generate_doc_number(phone_number, doc_prefix)
+
+            filename = f"{doc_word}_{invoice_number}.pdf"
             filepath = f"/tmp/{filename}"
 
             doc = SimpleDocTemplate(
@@ -213,7 +218,7 @@ class PDFGenerator:
             self._add_logo_to_story(story, user)
 
             # Header
-            story.append(Paragraph("INVOICE", self.styles['KashiaTitle']))
+            story.append(Paragraph("QUOTE" if is_quote else "INVOICE", self.styles['KashiaTitle']))
             story.append(Spacer(1, 5*mm))
 
             # Invoice details table (From | Invoice info). The "From" block uses
@@ -225,11 +230,18 @@ class PDFGenerator:
             if identity:
                 from_info += f"<br/>{identity}"
 
-            invoice_info = (
-                f"<b>Invoice #:</b> {invoice_number}<br/>"
-                f"<b>Date:</b> {datetime.now().strftime('%d %B %Y')}<br/>"
-                f"<b>Due:</b> {due_label or 'On Receipt'}"
-            )
+            if is_quote:
+                invoice_info = (
+                    f"<b>Quote #:</b> {invoice_number}<br/>"
+                    f"<b>Date:</b> {datetime.now().strftime('%d %B %Y')}<br/>"
+                    f"<b>Valid until:</b> {due_label or '30 days'}"
+                )
+            else:
+                invoice_info = (
+                    f"<b>Invoice #:</b> {invoice_number}<br/>"
+                    f"<b>Date:</b> {datetime.now().strftime('%d %B %Y')}<br/>"
+                    f"<b>Due:</b> {due_label or 'On Receipt'}"
+                )
 
             header_table = Table(
                 [[Paragraph(from_info, self.styles['KashiaBody']),
@@ -317,38 +329,49 @@ class PDFGenerator:
                 story.append(Paragraph(f"<b>Note:</b> {note}", self.styles['KashiaBody']))
                 story.append(Spacer(1, 6*mm))
 
-            # Payment details
-            story.append(Paragraph("<b>Payment Details:</b>", self.styles['KashiaHeading']))
-
-            # Pull bank details from user profile
-            bank_details = user.get('bank_details', {}) if user else {}
-            bank_name = bank_details.get('bank_name', '') or user.get('bank_name', '')
-            account_number = bank_details.get('account_number', '') or user.get('account_number', '')
-            account_name = bank_details.get('account_name', business_name) or user.get('account_name', business_name)
-
-            story.append(Paragraph(
-                "Please make payment to:" if bank_name else "Please contact for payment details:",
-                self.styles['KashiaBody']
-            ))
-            if bank_name:
+            if is_quote:
+                # A quote is NOT a request for payment — no bank/paid block.
                 story.append(Paragraph(
-                    f"Bank: {bank_name}<br/>"
-                    f"Account Number: {account_number}<br/>"
-                    f"Account Name: {account_name}",
+                    "<i>This is a quotation, not a request for payment. "
+                    "Prices are valid until the date shown above.</i>",
                     self.styles['KashiaBody']
                 ))
+                story.append(Spacer(1, 8*mm))
             else:
-                contact_line = business_name
-                if identity:
-                    contact_line += f"<br/>{identity}"
-                story.append(Paragraph(contact_line, self.styles['KashiaBody']))
-            story.append(Spacer(1, 10*mm))
+                # Payment details (invoice only)
+                story.append(Paragraph("<b>Payment Details:</b>", self.styles['KashiaHeading']))
+
+                # Pull bank details from user profile
+                bank_details = user.get('bank_details', {}) if user else {}
+                bank_name = bank_details.get('bank_name', '') or user.get('bank_name', '')
+                account_number = bank_details.get('account_number', '') or user.get('account_number', '')
+                account_name = bank_details.get('account_name', business_name) or user.get('account_name', business_name)
+
+                story.append(Paragraph(
+                    "Please make payment to:" if bank_name else "Please contact for payment details:",
+                    self.styles['KashiaBody']
+                ))
+                if bank_name:
+                    story.append(Paragraph(
+                        f"Bank: {bank_name}<br/>"
+                        f"Account Number: {account_number}<br/>"
+                        f"Account Name: {account_name}",
+                        self.styles['KashiaBody']
+                    ))
+                else:
+                    contact_line = business_name
+                    if identity:
+                        contact_line += f"<br/>{identity}"
+                    story.append(Paragraph(contact_line, self.styles['KashiaBody']))
+                story.append(Spacer(1, 10*mm))
 
             # Terms
             story.append(Paragraph("<b>Terms &amp; Conditions:</b>", self.styles['KashiaSmall']))
             # Use custom T&C from user profile, or default
             custom_terms = user.get('terms_conditions', '') if user else ''
-            terms_text = custom_terms if custom_terms else "Payment is due upon receipt."
+            default_terms = ("Quotation valid until the date shown. Prices subject to change thereafter."
+                             if is_quote else "Payment is due upon receipt.")
+            terms_text = custom_terms if custom_terms else default_terms
             story.append(Paragraph(
                 terms_text,
                 self.styles['KashiaSmall']
@@ -1114,26 +1137,26 @@ class PDFGenerator:
         return ' '.join(parts)
 
 
-    def handle_invoice_request(self, phone_number, customer_name, amount, description, discount=None, tax=None, items=None, note="", due_label=""):
+    def handle_invoice_request(self, phone_number, customer_name, amount, description, discount=None, tax=None, items=None, note="", due_label="", kind="invoice"):
         """
         Handle full invoice generation and delivery.
         Returns: list of response dicts
         """
         result = self.generate_invoice(phone_number, customer_name, amount, description,
                                        items=items, discount=discount, tax=tax,
-                                       note=note, due_label=due_label)
+                                       note=note, due_label=due_label, kind=kind)
+        doc_label = "Quote" if kind == "quote" else "Invoice"
 
         if result and result[0]:
             filepath, filename = result
             delivered, s3_url = self.deliver_pdf(phone_number, filepath, filename,
-                            caption=f"Invoice for {customer_name} - \u20a6{int(amount):,}")
+                            caption=f"{doc_label} for {customer_name} - \u20a6{int(amount):,}")
             if not delivered:
-                return [{"type": "text", "content": "⚠️ Invoice generated but delivery failed. Please try again."}]
+                return [{"type": "text", "content": f"⚠️ {doc_label} generated but delivery failed. Please try again."}]
             responses = [{"type": "text", "content": (
-                f"✅ Invoice sent!\n\n"
+                f"✅ {doc_label} sent!\n\n"
                 f"To: {customer_name}\n"
-                f"Amount: \u20a6{int(amount):,}\n"
-                f"For: {description}\n\n"
+                f"Amount: \u20a6{int(amount):,}\n\n"
                 f"📎 Check your chat for the PDF."
             )}]
             # Add forward-to-customer metadata
