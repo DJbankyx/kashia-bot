@@ -269,29 +269,45 @@ class ReportsHandler:
     # ─────────────────────────────────────────────────────────
 
     def _period_totals(self, phone_number: str, period: str) -> dict:
-        """SINGLE source of truth for a period's headline numbers. Both the
-        dashboard card and (in future) the text P&L read from this so they can
-        never disagree. Reuses the same buckets/COGS logic as _pnl_report."""
+        """SINGLE source of truth for a period's headline numbers. Delegates the
+        accrual P&L (revenue, COGS-of-SOLD, gross/net profit) to the shared
+        services.accounting.Accounting engine so every surface agrees.
+
+        Also computes the CASH view (money in/out) separately — the dashboard
+        shows accrual profit as the headline and cash net as a secondary line.
+        NOTE: `cogs` here is now the cost of goods SOLD (accrual), NOT the total
+        of purchases (the old bug that made a big stock purchase look like a
+        loss). The cash out for purchases lives in `cash_out`/`purchases`.
+        """
+        from services.accounting import Accounting
         start_date, end_date, label = _date_range(period)
         txns = self.db.get_transactions_by_period(phone_number, start_date, end_date) or []
 
-        sales     = [t for t in txns if t.get("type") == "sale"]
-        purchases = [t for t in txns if t.get("type") == "purchase"]
-        expenses  = [t for t in txns if t.get("type") == "expense"
-                     and t.get("category") not in COGS_CATEGORIES]
-        cogs_txns = [t for t in txns if t.get("type") == "expense"
-                     and t.get("category") in COGS_CATEGORIES]
+        sales      = [t for t in txns if t.get("type") == "sale"]
+        purchases  = [t for t in txns if t.get("type") == "purchase"]
+        expenses   = [t for t in txns if t.get("type") == "expense"
+                      and t.get("category") not in COGS_CATEGORIES]
+        cogs_txns  = [t for t in txns if t.get("type") == "expense"
+                      and t.get("category") in COGS_CATEGORIES]
         production = [t for t in txns if t.get("type") == "production"]
 
-        revenue = _sum(sales)
-        cogs    = _sum(purchases + cogs_txns)          # cash "money out" for goods
-        opex    = _sum(expenses)
-        net     = revenue - cogs - opex                # net cash (money in − out)
+        # ── Accrual P&L (shared engine) ──
+        acct = Accounting(self.db, self.session)
+        pnl = acct.period_pnl(phone_number, start_date, end_date, label)
 
-        # True gross margin from recorded costs (revenue of costed sales − their cost)
-        gross_margin, costed_rev, uncosted = self._costed_margin(phone_number, sales)
+        revenue      = pnl["revenue"]
+        cogs         = pnl["cogs"]              # cost of goods SOLD (accrual)
+        opex         = pnl["opex"]
+        net_profit   = pnl["net_profit"]        # accrual net — the headline
+        gross_margin = pnl["gross_profit"]
+        costed_rev   = pnl["costed_revenue"]
+        uncosted     = pnl["uncosted_count"]
 
-        # Debt position (who owes me / I owe) — best-effort.
+        # ── Cash view (money in vs out) — purchases hit cash here, not P&L ──
+        cash_out = _sum(purchases + cogs_txns) + opex
+        net_cash = revenue - cash_out
+
+        # Debt position (who owes me / I owe) — receivables/payables.
         owed_to_me = owe_out = 0
         try:
             owed_to_me = sum(int(d.get("amount", 0)) for d in
@@ -306,7 +322,10 @@ class ReportsHandler:
 
         return {
             "period": period, "label": label,
-            "revenue": revenue, "cogs": cogs, "opex": opex, "net": net,
+            "revenue": revenue, "cogs": cogs, "opex": opex,
+            # `net` = accrual net profit (the headline). Cash net is separate.
+            "net": net_profit, "net_profit": net_profit,
+            "cash_out": cash_out, "net_cash": net_cash,
             "gross_margin": gross_margin, "costed_revenue": costed_rev,
             "uncosted_sales": uncosted,
             "owed_to_me": owed_to_me, "owe_out": owe_out,
@@ -402,8 +421,10 @@ class ReportsHandler:
 
         rev_label = {"manufacturing": "Output sales", "services": "Service revenue"}\
             .get(industry, "Revenue")
-        cogs_label = {"manufacturing": "Materials", "services": "Job costs"}\
-            .get(industry, "Purchases")
+        # `cogs` is now the cost of goods SOLD (accrual), so the label is
+        # "Cost of sales" — NOT "Purchases" (purchases are cash-out, shown below).
+        cogs_label = {"manufacturing": "Cost of output", "services": "Job costs"}\
+            .get(industry, "Cost of sales")
 
         # NOTE: the title is supplied via the list_response `header`; we do NOT
         # repeat it as the body's first line. Previously both were present and the
@@ -416,14 +437,22 @@ class ReportsHandler:
             f"💸 Expenses:  {format_amount(d['opex'])}",
             "────────────────────",
         ]
+        # Headline = ACCRUAL net profit (revenue − cost of sales − expenses).
         if d["net"] >= 0:
             net_pct = f" ({int(d['net']/d['revenue']*100)}%)" if d["revenue"] > 0 else ""
-            lines.append(f"📈 *Net (cash): +{format_amount(d['net'])}*{net_pct}")
+            lines.append(f"📈 *Net profit: +{format_amount(d['net'])}*{net_pct}")
         else:
-            lines.append(f"📉 *Net (cash): −{format_amount(abs(d['net']))}*")
+            lines.append(f"📉 *Net profit: −{format_amount(abs(d['net']))}*")
         if d["costed_revenue"] > 0:
             gm_pct = int(d["gross_margin"] / d["costed_revenue"] * 100) if d["costed_revenue"] else 0
             lines.append(f"🟢 Gross margin: {format_amount(d['gross_margin'])} ({gm_pct}%)")
+        # Secondary cash line so the owner still sees actual money movement
+        # (this is where a big stock purchase shows up — as cash out, not a loss).
+        nc = d.get("net_cash", d["net"])
+        if nc >= 0:
+            lines.append(f"💵 _Net cash flow: +{format_amount(nc)}_")
+        else:
+            lines.append(f"💵 _Net cash flow: −{format_amount(abs(nc))}_")
         if d["uncosted_sales"] > 0:
             lines.append(f"_⚠️ {d['uncosted_sales']} sale(s) missing cost — set costs for true profit._")
         if d["owed_to_me"] or d["owe_out"]:
