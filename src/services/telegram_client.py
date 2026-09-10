@@ -98,8 +98,17 @@ class TelegramClient(MessagingClient):
         inline keyboard button. `button_text` is unused on Telegram.
         """
         lines = []
-        if header:
-            lines.append(f"*{self._strip_markup(header)}*")
+        header_clean = self._strip_markup(header) if header else ""
+        # De-dup: some cards (dashboard, product card) put the same title in BOTH
+        # the header and the first body line, which rendered the title twice on
+        # Telegram. If the body already starts with the header text, skip the
+        # separate header line.
+        body_first = ""
+        if body_text:
+            first_line = body_text.split("\n", 1)[0]
+            body_first = self._strip_markup(first_line).strip()
+        if header_clean and body_first != header_clean:
+            lines.append(f"*{header_clean}*")
         if body_text:
             lines.append(self._prepare_text(body_text))
 
