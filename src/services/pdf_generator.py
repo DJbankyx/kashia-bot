@@ -749,6 +749,47 @@ class PDFGenerator:
             story.append(np_table)
             story.append(Spacer(1, 8*mm))
 
+            # ─── POSITION (Inventory + Receivables/Payables) ───
+            # A balance-sheet snapshot. This is where unsold stock appears as an
+            # ASSET (inventory at cost) rather than distorting the P&L. Reuses the
+            # shared accounting engine so it reconciles with the dashboard.
+            try:
+                _pos = Accounting(self.db).position(phone_number)
+                story.append(Paragraph("<b>POSITION (as of today)</b>", self.styles['KashiaHeading']))
+                story.append(Paragraph(
+                    "<i>What the business is holding now — not part of the P&L above.</i>",
+                    self.styles['KashiaSmall']
+                ))
+                pos_data = [
+                    ['', 'Amount (NGN)'],
+                    [f"  Inventory at cost ({_pos['inventory_units']:,} units)", f"{_pos['inventory_value']:,}"],
+                    ['  Receivables (owed to you)', f"{_pos['receivables']:,}"],
+                    ['  Payables (you owe)', f"({_pos['payables']:,})"],
+                    ['NET POSITION', f"{_pos['net_worth_proxy']:,}"],
+                ]
+                pos_table = Table(pos_data, colWidths=[10*cm, 6*cm])
+                pos_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), HexColor('#2c3e50')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), white),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 10),
+                    ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+                    ('GRID', (0, 0), (-1, -1), 0.5, HexColor('#cccccc')),
+                    ('TOPPADDING', (0, 0), (-1, -1), 6),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                    ('LINEABOVE', (0, -1), (-1, -1), 1.5, black),
+                ]))
+                story.append(pos_table)
+                story.append(Paragraph(
+                    "<i>Net position = inventory + receivables − payables. Unsold "
+                    "stock is an asset, not a cost.</i>",
+                    self.styles['KashiaSmall']
+                ))
+                story.append(Spacer(1, 8*mm))
+            except Exception as _e:
+                logger.debug(f"position section skipped: {_e}")
+
             # ─── DEBT PAYMENTS RECEIVED (memo) ───
             if debt_payments:
                 story.append(Paragraph("<b>MEMO: Debt Payments Received</b>", self.styles['KashiaHeading']))

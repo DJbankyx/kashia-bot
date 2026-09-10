@@ -498,6 +498,7 @@ class ReportsHandler:
             {"id": f"dash_drill_top_{period}", "title": "🏆 Top Products"},
             {"id": f"dash_drill_profit_{period}", "title": "📈 Profit / Margin"},
             {"id": f"dash_drill_expenses_{period}", "title": "💸 Expenses by Category"},
+            {"id": f"dash_drill_position_{period}", "title": "🏦 Inventory & Debts"},
             {"id": f"report_pdf_{period}", "title": "📄 PDF"},
             {"id": f"report_export_{period}", "title": "📎 Excel"},
             {"id": "menu_home", "title": "☰ Menu"},
@@ -575,13 +576,42 @@ class ReportsHandler:
                 + (f" ({int(d['gross_margin']/d['costed_revenue']*100)}%)"
                    if d['costed_revenue'] else ""),
                 f"💸 Expenses: {format_amount(d['opex'])}",
-                (f"📈 Net (cash): +{format_amount(d['net'])}" if d['net'] >= 0
-                 else f"📉 Net (cash): −{format_amount(abs(d['net']))}"),
+                (f"📈 Net profit: +{format_amount(d['net'])}" if d['net'] >= 0
+                 else f"📉 Net loss: −{format_amount(abs(d['net']))}"),
             ]
             if d["uncosted_sales"] > 0:
                 lines.append(f"\n_⚠️ {d['uncosted_sales']} sale(s) have no cost recorded._\n"
                              "_Set costs on those items for an accurate margin._")
             return _drill_card(f"📈 Profit / Margin — {d['label']}", lines)
+
+        if what == "position":
+            # R5: balance-sheet snapshot — inventory value + receivables/payables.
+            # Period-independent (a point-in-time position), but we keep the back
+            # row on the selected period so the card stays one editable surface.
+            from services.accounting import Accounting
+            pos = Accounting(self.db, self.session).position(phone_number)
+            lines = ["🏦 *Position — right now*", ""]
+            lines.append(f"📦 Inventory (at cost):  *{format_amount(pos['inventory_value'])}*")
+            lines.append(f"   _{pos['inventory_units']:,} unit(s) across {pos['item_count']} item(s)_")
+            lines.append("")
+            lines.append(f"🟢 Owed to you (receivables):  {format_amount(pos['receivables'])}")
+            lines.append(f"🔴 You owe (payables):  {format_amount(pos['payables'])}")
+            lines.append("────────────────────")
+            nw = pos["net_worth_proxy"]
+            if nw >= 0:
+                lines.append(f"💎 *Net position: +{format_amount(nw)}*")
+            else:
+                lines.append(f"⚠️ *Net position: −{format_amount(abs(nw))}*")
+            lines.append("_= inventory + receivables − payables_")
+            if pos["top_items"]:
+                lines.append("\n*Top stock by value:*")
+                for name, units, value in pos["top_items"][:5]:
+                    lines.append(f"  • {name}: {format_amount(value)} _({units:,} units)_")
+            lines.append(
+                "\n_Unsold stock is an ASSET here, not a loss. This is what your "
+                "business is holding right now._"
+            )
+            return _drill_card("🏦 Inventory & Debts", lines)
 
         return self.dashboard(phone_number, period)
 

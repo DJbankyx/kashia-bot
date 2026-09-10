@@ -289,6 +289,98 @@ class Accounting:
             "tx_count": len(txns),
         }
 
+    # ── Position / Inventory (balance-sheet snapshot) ───────────────────
+
+    def position(self, phone_number, as_of=None):
+        """A point-in-time position snapshot:
+          * inventory_value  — stock on hand valued at weighted-average cost
+          * inventory_units  — total units on hand
+          * receivables      — total owed TO the user (debtors)
+          * payables         — total the user OWES (creditors)
+          * net_worth_proxy  — inventory + receivables − payables (a rough
+                               owner's-equity signal, NOT a full balance sheet)
+
+        Inventory is valued per product, walking (in order): a variant TREE's
+        leaves (stock × leaf cost), else flat variant_stock × variant_costs, else
+        the base stock × weighted-avg cost (landing_cost). Non-sellable items
+        (raw materials/overhead) are still stock you hold, so they're included;
+        callers can break them out later if needed.
+        """
+        products = self._products(phone_number)
+        inv_value = 0
+        inv_units = 0
+        priced_items = []   # (name, units, value) for the top-items breakdown
+
+        for key, p in (products.items() if isinstance(products, dict) else []):
+            if not isinstance(p, dict):
+                continue
+            name = p.get("name", key)
+            units, value = self._value_product(p)
+            if units or value:
+                inv_units += units
+                inv_value += value
+                priced_items.append((name, units, value))
+
+        # Receivables / payables from the debt ledger (contacts).
+        receivables = payables = 0
+        try:
+            receivables = sum(int(d.get("amount", 0)) for d in
+                              (self.db.get_all_debtors(phone_number) or []))
+            payables = sum(int(c.get("amount", 0)) for c in
+                           (self.db.get_all_creditors(phone_number) or []))
+        except Exception as e:
+            logger.debug(f"position debt read failed: {e}")
+
+        priced_items.sort(key=lambda x: x[2], reverse=True)
+
+        return {
+            "inventory_value": inv_value,
+            "inventory_units": inv_units,
+            "receivables": receivables,
+            "payables": payables,
+            "net_worth_proxy": inv_value + receivables - payables,
+            "item_count": len(priced_items),
+            "top_items": priced_items[:10],
+        }
+
+    def _value_product(self, product):
+        """Return (units, value_at_cost) for one product across its stock model."""
+        tree = product.get("variant_tree")
+        if isinstance(tree, dict) and tree.get("children"):
+            return self._value_tree(tree)
+
+        # Flat variants: variant_stock{} × variant_costs{} (fall back to base cost).
+        vstock = product.get("variant_stock") or {}
+        if isinstance(vstock, dict) and vstock:
+            vcosts = product.get("variant_costs") or {}
+            base_cost = product_avg_cost(product)
+            units = value = 0
+            for variant, qty in vstock.items():
+                q = _to_int(qty)
+                c = _to_int(vcosts.get(variant, base_cost))
+                units += q
+                value += q * c
+            return units, value
+
+        # Base product: stock × weighted-average cost.
+        qty = _to_int(product.get("stock", 0))
+        cost = product_avg_cost(product)
+        return qty, qty * cost
+
+    def _value_tree(self, node):
+        """Recursively value a variant tree: leaves contribute stock × cost."""
+        children = node.get("children") or {}
+        if not children:
+            q = _to_int(node.get("stock", 0))
+            c = _to_int(node.get("cost", 0))
+            return q, q * c
+        units = value = 0
+        for child in children.values():
+            u, v = self._value_tree(child)
+            units += u
+            value += v
+        return units, value
+
     # ── Helpers ─────────────────────────────────────────────────────────
 
     def _products(self, phone_number):
