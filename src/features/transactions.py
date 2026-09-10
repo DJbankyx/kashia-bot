@@ -614,6 +614,8 @@ class TransactionHandler:
                     extra["catalog_product"] = tx_data["catalog_product"]
                 if tx_data.get("catalog_product_name"):
                     extra["catalog_product_name"] = tx_data["catalog_product_name"]
+                if tx_data.get("scan_extra"):
+                    extra.update(tx_data["scan_extra"])
 
                 result = self.db.save_transaction(
                     phone_number,
@@ -682,6 +684,10 @@ class TransactionHandler:
             # from the category text.
             if tx_data.get("type") == "sale":
                 extra["sale_kind"] = "service" if tx_data.get("is_service_job") else "product"
+            # Carry document-scan provenance (source image, doc type, etc.)
+            # through when this transaction originated from a scanned document.
+            if tx_data.get("scan_extra"):
+                extra.update(tx_data["scan_extra"])
 
             result = self.db.save_transaction(
                 phone_number,
@@ -964,6 +970,8 @@ class TransactionHandler:
             credit_extra = {}
             if tx_type == "sale":
                 credit_extra["sale_kind"] = "service" if tx_data.get("is_service_job") else "product"
+            if tx_data.get("scan_extra"):
+                credit_extra.update(tx_data["scan_extra"])
 
             # Save the transaction
             result = self.db.save_transaction(

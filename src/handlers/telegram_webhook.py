@@ -207,6 +207,9 @@ def _handle_callback_query(callback: dict):
     if data == "scan_save":
         _handle_scan_save(user_id)
         return
+    if data == "scan_edit":
+        _handle_scan_edit(user_id)
+        return
     if data == "scan_cancel":
         _handle_scan_cancel(user_id)
         return
@@ -602,10 +605,12 @@ def _build_scan_card(data: dict, decision: dict = None):
         if decision.get("low_confidence"):
             lines.append("\n⚠️ I'm not fully sure I read this right — please "
                          "double-check the total before recording.")
-        lines.append(f"\n📝 Tap to record this as an *{side}* of "
-                     f"{_money(decision.get('amount'))}.")
+        lines.append(f"\n📝 Record this as an *{side}* of "
+                     f"{_money(decision.get('amount'))}, or *Edit* to fix "
+                     f"details / add payment method + notes.")
         buttons = [
             {"id": "scan_save", "title": f"✅ Record {side}"},
+            {"id": "scan_edit", "title": "✏️ Edit first"},
             {"id": "scan_cancel", "title": "✖️ Discard"},
         ]
         return "\n".join(lines), buttons
@@ -722,6 +727,76 @@ def _handle_scan_save(user_id: str):
     except Exception as e:
         logger.error(f"Scan save error for {user_id}: {e}")
         _send_text(user_id, "❌ Couldn't record that scan. Please record it the usual way.")
+
+
+def _handle_scan_edit(user_id: str):
+    """Edit a scanned document before saving (N4.5 follow-on).
+
+    Instead of a scan-specific editor, we seed the SAME confirmation/correction
+    flow the app uses for typed entries: the user lands on the familiar
+    confirmation card (Yes / Edit / Cancel), can fix any field, pick a payment
+    method (cash/transfer/credit/deposit), and the source document stays
+    attached via `scan_extra` all the way to the save.
+    """
+    try:
+        from main import get_bot
+        from core import states
+        bot = get_bot()
+        ctx = bot.session.get_context(user_id) or {}
+        pending = ctx.get("pending_scan")
+        if not pending:
+            _send_text(user_id, "⏳ That scan has expired. Please send the photo again.")
+            bot.session.reset(user_id)
+            return
+
+        data = pending.get("data") or {}
+        route = pending.get("route") or {}
+        image_url = pending.get("image_url", "")
+
+        # Map the scanner's direction to the transaction flow's `type`. The flow
+        # understands sale / purchase / expense; a scanned purchase keeps the
+        # richer "purchase" type so the payment-method step reads naturally.
+        direction = data.get("direction", "unknown")
+        tx_type = "sale" if direction == "sale" else "purchase"
+
+        vendor = data.get("vendor") or ""
+        doc_type = data.get("doc_type", "unknown")
+        amount = route.get("amount") or data.get("total") or 0
+
+        desc_word = "Sale" if tx_type == "sale" else "Purchase"
+        description = f"{desc_word} from scanned {doc_type}"
+        if vendor:
+            description += f" ({vendor})"
+
+        scan_extra = {
+            "source": "scan",
+            "image_url": image_url,
+            "doc_type": doc_type,
+            "scan_confidence": int(data.get("confidence", 0) or 0),
+            "scanned_at": _now_iso(),
+        }
+        if data.get("date"):
+            scan_extra["document_date"] = data["date"]
+
+        tx_data = {
+            "type": tx_type,
+            "amount": int(round(float(amount))) if amount else 0,
+            "description": description,
+            "category": route.get("category") or "",
+            "vendor": vendor,
+            "scan_extra": scan_extra,
+        }
+
+        # Seed the standard confirmation flow, then render the standard card.
+        bot.session.save(user_id, states.AWAITING_CONFIRMATION, {
+            "pending_transaction": tx_data,
+        })
+        responses = bot.router.transactions._build_confirmation(tx_data, False)
+        bot._deliver_engine_responses(user_id, responses, platform="telegram")
+
+    except Exception as e:
+        logger.error(f"Scan edit error for {user_id}: {e}")
+        _send_text(user_id, "✏️ Couldn't open the editor. Please record it the usual way.")
 
 
 def _handle_scan_cancel(user_id: str):
