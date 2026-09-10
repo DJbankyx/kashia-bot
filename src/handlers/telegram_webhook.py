@@ -38,6 +38,8 @@ TG_USER_PREFIX = "tg:"
 from services.telegram_client import PAGE_NAV_PREFIX
 # Reserved prefix for Telegram fast-entry taps (app-like sale/purchase flow).
 from utils.tg_ui import TGFX_PREFIX
+# Reserved prefix for the Telegram invoice-builder taps (Stage 4C).
+from utils.tg_ui import TGINV_PREFIX
 
 # ── Update deduplication ──
 # Telegram re-delivers updates if we don't answer 200 quickly. Same in-memory
@@ -205,6 +207,13 @@ def _handle_callback_query(callback: dict):
     #    the final hand-off (confirmation card) flows back through the engine. ──
     if data.startswith(TGFX_PREFIX):
         _handle_fastentry(user_id, chat_id, data)
+        return
+
+    # ── Invoice-builder taps (Stage 4C). Own prefix, own handler; edits its own
+    #    card in place. Only the final "generate" hands back engine responses
+    #    (the PDF delivery). ──
+    if data.startswith(TGINV_PREFIX):
+        _handle_invoice_builder(user_id, chat_id, data)
         return
 
     # ── Dashboard live-update: period toggles + drill-downs EDIT the card in
@@ -731,6 +740,30 @@ def _handle_fastentry(user_id: str, chat_id, data: str):
             bot._deliver_engine_responses(user_id, responses, platform="telegram")
     except Exception as e:
         logger.error(f"Fast-entry handling error for {user_id}: {e}")
+
+
+def _handle_invoice_builder(user_id: str, chat_id, data: str):
+    """Route an invoice-builder tap ("__tginv__:action:value") to tg_invoice.
+
+    Mirrors _handle_fastentry: the builder edits its own single card in place and
+    returns [] for intermediate steps; the final "generate" returns the PDF
+    delivery responses, which we send through the normal engine path.
+    """
+    rest = data[len(TGINV_PREFIX):].lstrip(":")
+    parts = rest.split(":", 1)
+    action = parts[0] if parts else ""
+    value = parts[1] if len(parts) > 1 else ""
+    try:
+        from main import get_bot
+        bot = get_bot()
+        builder = getattr(bot.router, "tg_invoice", None)
+        if builder is None:
+            return
+        responses = builder.handle_callback(user_id, action, value) or []
+        if responses:
+            bot._deliver_engine_responses(user_id, responses, platform="telegram")
+    except Exception as e:
+        logger.error(f"Invoice-builder handling error for {user_id}: {e}")
 
 
 def _show_typing(chat_id):

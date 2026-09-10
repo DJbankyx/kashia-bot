@@ -120,6 +120,11 @@ class KashiaBot:
         from features.tg_fastentry import TGFastEntry
         self.router.tg_fastentry = TGFastEntry(self.router)
 
+        # Telegram invoice builder (Stage 4C). Telegram-only tap-first invoice
+        # assembly; holds a router ref for catalog/contacts/pdf access.
+        from features.tg_invoice import TGInvoice
+        self.router.tg_invoice = TGInvoice(self.router)
+
     def get_client(self, platform: str = "whatsapp"):
         """
         Return the MessagingClient for a platform.

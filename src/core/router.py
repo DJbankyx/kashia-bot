@@ -52,6 +52,7 @@ class Router:
         self.recurring = None
         self.quotes = None
         self.tg_fastentry = None  # Telegram-only app-like sale/purchase flow
+        self.tg_invoice = None    # Telegram-only tap-first invoice builder (4C)
 
         # Industry handlers — set after construction by main.py
         self.industries = {}  # {"trading": TradingIndustry, ...}
@@ -197,6 +198,10 @@ class Router:
         # ── Telegram fast-entry: typed value (custom amount) while collecting ──
         if state == states.TG_FASTENTRY and self.tg_fastentry is not None:
             return self.tg_fastentry.handle_text(phone_number, text_stripped)
+
+        # ── Telegram invoice builder: typed value (customer name / item line) ──
+        if state == states.INVOICE_BUILDER and getattr(self, "tg_invoice", None) is not None:
+            return self.tg_invoice.handle_text(phone_number, text_stripped)
 
         # ═══════════════════════════════════════════════════════
         # 5. IDLE STATE — the default

@@ -118,6 +118,13 @@ class ExportHandler:
             return self.pdf_generator.handle_receipt_request(phone_number)
 
         if button_id == "doc_invoice":
+            # Telegram: tap-first boxed invoice builder (4C). WhatsApp keeps the
+            # existing free-text invoice flow.
+            if self._is_telegram(phone_number):
+                from main import get_bot
+                builder = getattr(get_bot().router, "tg_invoice", None)
+                if builder is not None:
+                    return builder.start(phone_number)
             return self._start_invoice(phone_number)
 
         if button_id == "doc_quote":

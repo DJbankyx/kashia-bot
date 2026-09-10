@@ -235,3 +235,76 @@ def _fmt_preset(amount: int) -> str:
     if amount >= 1000 and amount % 1000 == 0:
         return f"₦{amount // 1000}k"
     return f"₦{amount:,}"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# INVOICE BUILDER (Stage 4C) — own reserved namespace so its taps route to the
+# invoice builder handler, never the sale/purchase fast-entry flow.
+#   Format: "__tginv__:<action>:<value>"
+# ═══════════════════════════════════════════════════════════════════════
+
+TGINV_PREFIX = "__tginv__"
+
+
+def _icb(action: str, value: str = "") -> str:
+    """Build a namespaced invoice-builder callback string."""
+    return f"{TGINV_PREFIX}:{action}:{value}" if value != "" else f"{TGINV_PREFIX}:{action}"
+
+
+def inv_customer_keyboard(recent=None) -> list:
+    """Invoice 'Who is this for?' step: recent customers + type-a-name."""
+    rows = []
+    for cid, name in (recent or [])[:6]:
+        rows.append([{"text": f"👤 {name}"[:40], "callback_data": _icb("cust", str(cid))}])
+    rows.append([{"text": "✍️ Type a name", "callback_data": _icb("custtype")}])
+    rows.append([{"text": "❌ Cancel", "callback_data": _icb("cancel")}])
+    return rows
+
+
+def inv_builder_keyboard(has_items: bool) -> list:
+    """The main invoice-builder card: add items (3 ways), then generate."""
+    rows = [
+        [{"text": "➕ Type an item", "callback_data": _icb("add_type")}],
+        [{"text": "🗂️ From catalog", "callback_data": _icb("add_cat")},
+         {"text": "🧾 From a past sale", "callback_data": _icb("add_sale")}],
+    ]
+    if has_items:
+        rows.append([{"text": "💵 Discount", "callback_data": _icb("discount")},
+                     {"text": "🧾 Tax", "callback_data": _icb("tax")}])
+        rows.append([{"text": "✅ Generate & Send", "callback_data": _icb("generate")}])
+        rows.append([{"text": "🗑️ Remove last item", "callback_data": _icb("rmlast")}])
+    rows.append([{"text": "❌ Cancel", "callback_data": _icb("cancel")}])
+    return rows
+
+
+def inv_catalog_grid(rows, page: int = 0, page_size: int = 8) -> list:
+    """Catalog products for adding an invoice line (own namespace)."""
+    rows = rows or []
+    total = len(rows)
+    pages = max(1, (total + page_size - 1) // page_size)
+    page = max(0, min(page, pages - 1))
+    start = page * page_size
+    slice_ = rows[start:start + page_size]
+    kb = []
+    for r in slice_:
+        kb.append([{"text": (r.get("title", "") or "item")[:40],
+                    "callback_data": _icb("cat", r.get("id", ""))}])
+    nav = []
+    if page > 0:
+        nav.append({"text": "◀ Prev", "callback_data": _icb("catpage", str(page - 1))})
+    if page < pages - 1:
+        nav.append({"text": "Next ▶", "callback_data": _icb("catpage", str(page + 1))})
+    if nav:
+        kb.append(nav)
+    kb.append([{"text": "⬅️ Back", "callback_data": _icb("back")}])
+    return kb
+
+
+def inv_sales_keyboard(sales) -> list:
+    """Recent sales to pull into the invoice as a line. `sales` = list of
+    (tx_id, label) tuples."""
+    kb = []
+    for tx_id, label in (sales or [])[:8]:
+        kb.append([{"text": label[:40], "callback_data": _icb("sale", str(tx_id))}])
+    kb.append([{"text": "⬅️ Back", "callback_data": _icb("back")}])
+    return kb

@@ -1108,12 +1108,13 @@ class PDFGenerator:
         return ' '.join(parts)
 
 
-    def handle_invoice_request(self, phone_number, customer_name, amount, description, discount=None, tax=None):
+    def handle_invoice_request(self, phone_number, customer_name, amount, description, discount=None, tax=None, items=None):
         """
         Handle full invoice generation and delivery.
         Returns: list of response dicts
         """
-        result = self.generate_invoice(phone_number, customer_name, amount, description, discount=discount, tax=tax)
+        result = self.generate_invoice(phone_number, customer_name, amount, description,
+                                       items=items, discount=discount, tax=tax)
 
         if result and result[0]:
             filepath, filename = result
