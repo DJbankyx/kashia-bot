@@ -89,6 +89,34 @@ class PersonalInfoHandler:
                 "_Used for digital receipts (optional)_"
             )
 
+        if button_id == "pi_tin":
+            return self._start_edit_field(
+                phone_number, "tin",
+                "🧾 *Tax ID (TIN)*",
+                "Type your Tax Identification Number:\n\n"
+                "_Optional. It only appears on your documents if you turn it on "
+                "(next step). Type *clear* to remove it._"
+            )
+
+        if button_id == "pi_tin_toggle":
+            # Flip whether the TIN prints on invoices/quotes/statements.
+            user = self.db.get_user(phone_number) or {}
+            new_val = not bool(user.get("show_tin_on_documents"))
+            self.db.update_user_field(phone_number, "show_tin_on_documents", new_val)
+            has_tin = bool((user.get("tin", "") or "").strip())
+            if new_val and not has_tin:
+                return [button_response(
+                    "🧾 TIN will show on documents — but you haven't set one yet.",
+                    [{"id": "pi_tin", "title": "➕ Add TIN"},
+                     {"id": "sec_personal", "title": "← Personal Info"}]
+                )]
+            state = "ON — shows on documents" if new_val else "OFF — hidden from documents"
+            return [button_response(
+                f"🧾 TIN display is now *{state}*.",
+                [{"id": "sec_personal", "title": "← Personal Info"},
+                 {"id": "menu_home", "title": "☰ Menu"}]
+            )]
+
         if button_id == "pi_edit":
             return self._show_edit_menu(phone_number)
 
@@ -223,6 +251,29 @@ class PersonalInfoHandler:
                 f"Your documents will be numbered: {prefix}-00001, {prefix}-00002, etc."
             )
 
+        # ── TIN (optional, toggle-gated on documents) ──
+        if step == "edit_tin":
+            if text_s.lower() == "skip":
+                self.session.reset(phone_number)
+                return [text_response("👍 Skipped. TIN not set.")]
+            if text_s.lower() == "clear":
+                self.db.update_user_field(phone_number, "show_tin_on_documents", False)
+                return self._save_field(
+                    phone_number, "tin", "",
+                    "✅ TIN cleared and hidden from documents."
+                )
+            return [
+                *self._save_field(
+                    phone_number, "tin", text_s,
+                    f"✅ TIN saved: {text_s}"
+                ),
+                button_response(
+                    "Show your TIN on invoices, quotes & statements?",
+                    [{"id": "pi_tin_toggle", "title": "✅ Show on documents"},
+                     {"id": "sec_personal", "title": "🙈 Keep hidden"}]
+                ),
+            ]
+
         # ── Bank details — 3 steps ──
         if step == "bank_step_name":
             return self._bank_next(phone_number, context, "bank_name", text_s,
@@ -332,11 +383,17 @@ class PersonalInfoHandler:
         acct    = user.get("account_number", "")
         address = user.get("business_address", "")
         email   = user.get("email", "")
+        tin     = user.get("tin", "")
+        tin_on  = bool(user.get("show_tin_on_documents"))
         has_pin = bool(user.get("pin_hash", ""))
 
         bank_desc    = f"{bank} · {acct}" if bank and acct else "Not set"
         address_desc = address[:40] if address else "Not set"
         email_desc   = email if email else "Not set"
+        if tin:
+            tin_desc = f"{tin} · {'shown on docs' if tin_on else 'hidden'}"
+        else:
+            tin_desc = "Not set (optional)"
         pin_desc     = "PIN is set ✅" if has_pin else "No PIN set"
 
         return [list_response(
@@ -354,6 +411,8 @@ class PersonalInfoHandler:
                      "description": address_desc},
                     {"id": "pi_email",   "title": "📧 Email",
                      "description": email_desc},
+                    {"id": "pi_tin",     "title": "🧾 Tax ID (TIN)",
+                     "description": tin_desc},
                     {"id": "pi_logo",    "title": "🖼️ Business Logo",
                      "description": "For invoices & receipts"},
                     {"id": "pi_terms",   "title": "📋 Terms & Conditions",
@@ -522,7 +581,7 @@ class PersonalInfoHandler:
             "pi_step": f"edit_{field}",
         })
         # Optional fields allow skip
-        optional_fields = {"email", "business_address", "terms_conditions", "invoice_prefix"}
+        optional_fields = {"email", "business_address", "terms_conditions", "invoice_prefix", "tin"}
         skip_hint = " or *skip*" if field in optional_fields else ""
         return [text_response(
             f"{title}\n\n{prompt}\n\n_Type *back* to go back{skip_hint}_"

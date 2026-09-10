@@ -245,6 +245,38 @@ class Accounting:
             "opex_txns": opex_txns,
         }
 
+    def product_margins(self, phone_number, start_date, end_date, top=10):
+        """Per-product margin for a period: revenue, COGS (weighted-avg), margin,
+        units sold — ranked by revenue. Excludes debt-settlement rows. Uncosted
+        sales still contribute revenue but 0 cost (flagged via has_uncosted)."""
+        txns = self.db.get_transactions_by_period(phone_number, start_date, end_date) or []
+        products = self._products(phone_number)
+        agg = {}
+        for t in txns:
+            if t.get("type") != "sale" or _is_debt_settlement(t):
+                continue
+            name = (t.get("item_name") or t.get("description") or "Item").strip()
+            key = name.lower()
+            product = self._match_product(products, t)
+            cost, source = self.cogs_for_sale(t, product)
+            rev = _to_int(t.get("amount", 0))
+            qty = _qty_of(t)
+            row = agg.setdefault(key, {"name": name, "revenue": 0, "cogs": 0,
+                                       "qty": 0, "has_uncosted": False})
+            row["revenue"] += rev
+            row["qty"] += qty
+            if source == COST_MISSING:
+                row["has_uncosted"] = True
+            else:
+                row["cogs"] += cost
+        rows = []
+        for r in agg.values():
+            r["margin"] = r["revenue"] - r["cogs"]
+            r["margin_pct"] = int(r["margin"] / r["revenue"] * 100) if r["revenue"] else 0
+            rows.append(r)
+        rows.sort(key=lambda x: x["revenue"], reverse=True)
+        return rows[:top]
+
     # ── Cash Flow (paid-only) ───────────────────────────────────────────
 
     def period_cashflow(self, phone_number, start_date, end_date, label=""):

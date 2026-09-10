@@ -121,6 +121,33 @@ class PDFGenerator:
                 spaceAfter=10
             ))
 
+    def _business_identity_lines(self, user: dict) -> str:
+        """Build the business identity block for document/statement headers.
+
+        Compulsory (always rendered when present): business address.
+        Optional (rendered only when set): phone, email, and TIN — TIN ONLY when
+        the user has both set a `tin` AND enabled `show_tin_on_documents` (some
+        businesses don't want to share it). Returns an HTML-ish string for a
+        ReportLab Paragraph, or "" when there's nothing to show.
+        """
+        if not user:
+            return ""
+        parts = []
+        address = (user.get("business_address", "") or "").strip()
+        if address:
+            parts.append(address)
+        phone = (user.get("phone", "") or "").strip()
+        if phone and not phone.startswith("tg:"):
+            parts.append(f"Phone: {phone}")
+        email = (user.get("business_email", "") or user.get("email", "") or "").strip()
+        if email:
+            parts.append(f"Email: {email}")
+        # TIN — optional AND toggle-gated.
+        tin = (user.get("tin", "") or "").strip()
+        if tin and user.get("show_tin_on_documents"):
+            parts.append(f"TIN: {tin}")
+        return "<br/>".join(parts)
+
     def _add_logo_to_story(self, story: list, user: dict):
         """Add business logo to the top of a PDF document if user has one uploaded."""
         logo_s3_key = user.get("logo_s3_key", "") if user else ""
@@ -557,6 +584,11 @@ class PDFGenerator:
             # ─── HEADER ───
             self._add_logo_to_story(story, user)
             story.append(Paragraph(business_name, self.styles['KashiaTitle']))
+            # Compulsory/optional identity block (address always if set; phone/
+            # email optional; TIN only when set AND toggled on).
+            _identity = self._business_identity_lines(user)
+            if _identity:
+                story.append(Paragraph(_identity, self.styles['KashiaSmall']))
             # Industry-specific title
             industry = industry_class or 'trading'
             ind_titles = {'trading': 'Profit & Loss Statement', 'manufacturing': 'Manufacturing P&L Statement',
@@ -789,6 +821,47 @@ class PDFGenerator:
                 story.append(Spacer(1, 8*mm))
             except Exception as _e:
                 logger.debug(f"position section skipped: {_e}")
+
+            # ─── PER-PRODUCT MARGIN (weighted-average cost) ───
+            # Which items actually make money. Uses the shared engine so it
+            # reconciles with the P&L COGS above.
+            try:
+                _margins = Accounting(self.db).product_margins(phone_number, start_date, end_date, top=10)
+                if _margins:
+                    story.append(Paragraph("<b>PRODUCT MARGINS</b>", self.styles['KashiaHeading']))
+                    story.append(Paragraph(
+                        "<i>Profit per product (revenue − weighted-average cost of units sold).</i>",
+                        self.styles['KashiaSmall']
+                    ))
+                    m_data = [['Product', 'Qty', 'Revenue', 'Cost', 'Margin']]
+                    for r in _margins:
+                        nm = r["name"][:24]
+                        if r["has_uncosted"]:
+                            nm += " *"
+                        m_data.append([
+                            nm, f"{r['qty']:,}", f"{r['revenue']:,}",
+                            f"{r['cogs']:,}", f"{r['margin']:,} ({r['margin_pct']}%)",
+                        ])
+                    m_table = Table(m_data, colWidths=[5.5*cm, 1.8*cm, 3.2*cm, 2.8*cm, 3.7*cm])
+                    m_table.setStyle(TableStyle([
+                        ('BACKGROUND', (0, 0), (-1, 0), HexColor('#8e44ad')),
+                        ('TEXTCOLOR', (0, 0), (-1, 0), white),
+                        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                        ('FONTSIZE', (0, 0), (-1, -1), 8),
+                        ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
+                        ('GRID', (0, 0), (-1, -1), 0.5, HexColor('#cccccc')),
+                        ('TOPPADDING', (0, 0), (-1, -1), 4),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                    ]))
+                    story.append(m_table)
+                    if any(r["has_uncosted"] for r in _margins):
+                        story.append(Paragraph(
+                            "<i>* includes sale(s) with no recorded cost — margin understated.</i>",
+                            self.styles['KashiaSmall']
+                        ))
+                    story.append(Spacer(1, 8*mm))
+            except Exception as _e:
+                logger.debug(f"product margin section skipped: {_e}")
 
             # ─── DEBT PAYMENTS RECEIVED (memo) ───
             if debt_payments:
