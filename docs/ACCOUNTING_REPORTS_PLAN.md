@@ -202,3 +202,30 @@ Optional (shown when set / toggled by the user):
 - Multi-currency. FIFO/specific-lot ledger UI. Full double-entry GL. Tax
   computation/filing. Depreciation of fixed assets. Prior-period comparatives
   (R6+ candidate).
+
+---
+
+## STATUS: COMPLETE (R1–R8 shipped)
+
+- R1 (c00a753) — shared `services/accounting.py`; `cogs_for_sale` + `period_pnl`
+  (accrual, weighted-avg COGS-of-sold). reports._period_totals delegates here.
+- R2 (8941051) — sale-time cost no longer overwrites the product weighted
+  average (seed-only when empty); purchases already weighted-average via
+  update_stock.
+- R2b + R3 (2a9b3e2) — strict purchase cost (derive unit_cost = amount/qty when
+  missing); true accrual P&L in the chat report + PDF statement (COGS = goods
+  sold, uncosted disclosure).
+- R4 (7cc29db) — paid-only Cash Flow (period_cashflow); fixed P&L double-counting
+  of debt settlements (excluded from revenue/opex).
+- R5 (09023bb) — Position/Inventory: inventory at weighted-avg cost +
+  receivables + payables; unsold stock is an asset. Chat drill + PDF section.
+- R6 (765ff63) — details pass: business identity block (address compulsory, TIN
+  optional + toggle), per-product margin table.
+- R7 (da4a77a) — clean dashboard redesign (P&L / Cash & Debts sections, clear
+  labels, no doubled titles, renamed drills).
+- R8 — reconciliation harness: 19 identity checks across 5 scenarios PASS;
+  WhatsApp path confirmed intact (classic report), Telegram gets the dashboard.
+
+Guarantee met: one shared engine; accrual P&L; paid-only cash flow; credit =
+receivables/payables (never P&L); weighted-average cost; uncosted flagged not
+faked; NGN in PDFs. All surfaces read the same numbers.
