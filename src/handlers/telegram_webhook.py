@@ -886,6 +886,20 @@ def _handle_voice_note(user_id: str, chat_id, file_id: str):
         # 4. Confirm what we heard, then route it exactly like typed text.
         logger.info(f"Voice transcribed for {user_id}: {transcript[:80]}")
         _send_text(user_id, f"🎤 _Heard:_ \"{transcript}\"")
+
+        # Provenance: stamp the session so a transaction parsed from this
+        # transcript is tagged source=voice (consumed by transactions.record).
+        # Preserve the current state/context so we don't disturb any flow.
+        try:
+            from main import get_bot
+            bot = get_bot()
+            sess = bot.session.get(user_id) or {}
+            ctx = dict(sess.get("context", {}) or {})
+            ctx["pending_source"] = "voice"
+            bot.session.save(user_id, sess.get("state", "") or "IDLE", ctx)
+        except Exception as e:
+            logger.warning(f"Could not stamp voice provenance for {user_id}: {e}")
+
         _dispatch(user_id, transcript, "text")
 
     except Exception as e:

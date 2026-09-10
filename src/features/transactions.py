@@ -143,6 +143,15 @@ class TransactionHandler:
                 "has_credit": has_credit,
             }
 
+            # Provenance: if this message originated from a voice note (the
+            # webhook stamps pending_source on the session before dispatching
+            # the transcript), record it so the audit trail can tell voice from
+            # typed. Consumed here — the fresh pending_transaction context that
+            # follows drops the flag, so it never leaks onto a later entry.
+            src = (session.get("context", {}) or {}).get("pending_source")
+            if src:
+                tx_data["scan_extra"] = {"source": src}
+
             # ── Auto-match to catalog product ──
             catalog_match = self._match_to_catalog(phone_number, description, brand, text_lower)
             if catalog_match:
