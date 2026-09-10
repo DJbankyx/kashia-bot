@@ -175,7 +175,7 @@ class PDFGenerator:
             logger.warning(f"Could not add logo to PDF: {e}")
             # Non-critical — continue without logo
 
-    def generate_invoice(self, phone_number, customer_name, amount, description, items=None, discount=None, tax=None):
+    def generate_invoice(self, phone_number, customer_name, amount, description, items=None, discount=None, tax=None, note="", due_label=""):
         """
         Generate a professional invoice PDF.
 
@@ -216,17 +216,19 @@ class PDFGenerator:
             story.append(Paragraph("INVOICE", self.styles['KashiaTitle']))
             story.append(Spacer(1, 5*mm))
 
-            # Invoice details table (From | Invoice info)
-            from_info = (
-                f"<b>From:</b><br/>"
-                f"{business_name}<br/>"
-                f"Phone: {phone_number}"
-            )
+            # Invoice details table (From | Invoice info). The "From" block uses
+            # the shared identity block: business address (compulsory when set),
+            # phone/email (optional), TIN (only when set AND toggled on). This
+            # also avoids printing a raw "tg:..." id as a phone on Telegram.
+            identity = self._business_identity_lines(user)
+            from_info = f"<b>From:</b><br/>{business_name}"
+            if identity:
+                from_info += f"<br/>{identity}"
 
             invoice_info = (
                 f"<b>Invoice #:</b> {invoice_number}<br/>"
                 f"<b>Date:</b> {datetime.now().strftime('%d %B %Y')}<br/>"
-                f"<b>Due:</b> On Receipt"
+                f"<b>Due:</b> {due_label or 'On Receipt'}"
             )
 
             header_table = Table(
@@ -310,6 +312,11 @@ class PDFGenerator:
             story.append(items_table)
             story.append(Spacer(1, 15*mm))
 
+            # Note (optional, from the builder)
+            if note:
+                story.append(Paragraph(f"<b>Note:</b> {note}", self.styles['KashiaBody']))
+                story.append(Spacer(1, 6*mm))
+
             # Payment details
             story.append(Paragraph("<b>Payment Details:</b>", self.styles['KashiaHeading']))
 
@@ -331,11 +338,10 @@ class PDFGenerator:
                     self.styles['KashiaBody']
                 ))
             else:
-                story.append(Paragraph(
-                    f"{business_name}<br/>"
-                    f"Phone: {phone_number}",
-                    self.styles['KashiaBody']
-                ))
+                contact_line = business_name
+                if identity:
+                    contact_line += f"<br/>{identity}"
+                story.append(Paragraph(contact_line, self.styles['KashiaBody']))
             story.append(Spacer(1, 10*mm))
 
             # Terms
@@ -1108,13 +1114,14 @@ class PDFGenerator:
         return ' '.join(parts)
 
 
-    def handle_invoice_request(self, phone_number, customer_name, amount, description, discount=None, tax=None, items=None):
+    def handle_invoice_request(self, phone_number, customer_name, amount, description, discount=None, tax=None, items=None, note="", due_label=""):
         """
         Handle full invoice generation and delivery.
         Returns: list of response dicts
         """
         result = self.generate_invoice(phone_number, customer_name, amount, description,
-                                       items=items, discount=discount, tax=tax)
+                                       items=items, discount=discount, tax=tax,
+                                       note=note, due_label=due_label)
 
         if result and result[0]:
             filepath, filename = result

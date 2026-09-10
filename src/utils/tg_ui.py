@@ -271,10 +271,23 @@ def inv_builder_keyboard(has_items: bool) -> list:
     if has_items:
         rows.append([{"text": "💵 Discount", "callback_data": _icb("discount")},
                      {"text": "🧾 Tax", "callback_data": _icb("tax")}])
+        rows.append([{"text": "📝 Note", "callback_data": _icb("note")},
+                     {"text": "📅 Due date", "callback_data": _icb("due")}])
         rows.append([{"text": "✅ Generate & Send", "callback_data": _icb("generate")}])
         rows.append([{"text": "🗑️ Remove last item", "callback_data": _icb("rmlast")}])
     rows.append([{"text": "❌ Cancel", "callback_data": _icb("cancel")}])
     return rows
+
+
+def inv_due_keyboard() -> list:
+    """Quick due-date choices for an invoice."""
+    return [
+        [{"text": "On receipt", "callback_data": _icb("dueset", "0")},
+         {"text": "7 days", "callback_data": _icb("dueset", "7")}],
+        [{"text": "14 days", "callback_data": _icb("dueset", "14")},
+         {"text": "30 days", "callback_data": _icb("dueset", "30")}],
+        [{"text": "⬅️ Back", "callback_data": _icb("back")}],
+    ]
 
 
 def inv_catalog_grid(rows, page: int = 0, page_size: int = 8) -> list:

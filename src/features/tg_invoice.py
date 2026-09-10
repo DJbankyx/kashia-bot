@@ -162,6 +162,11 @@ class TGInvoice:
                 lines.append(f"  + Tax: {format_amount(tax.get('amount', 0))}")
             if disc or tax:
                 lines.append(f"  *Total: {format_amount(self._total(inv))}*")
+        if inv.get("due_label"):
+            lines.append("")
+            lines.append(f"📅 Due: {inv['due_label']}")
+        if inv.get("note"):
+            lines.append(f"📝 Note: {inv['note']}")
         inv["step"] = "builder"
         self._render(phone_number, inv, "\n".join(lines),
                      tg_ui.inv_builder_keyboard(has_items=bool(items)))
@@ -239,12 +244,43 @@ class TGInvoice:
             return []
 
         if action in ("discount", "tax"):
-            # 4D wires the full discount/tax capture; for now prompt a simple amount.
             inv["step"] = f"await_{action}"
             self._save(phone_number, inv)
-            label = "discount" if action == "discount" else "tax"
+            if action == "discount":
+                prompt = ("💵 Enter a discount — a flat amount (e.g. *5000*) or a "
+                          "percentage (e.g. *10%*).\nType *0* to remove it.")
+            else:
+                prompt = ("🧾 Enter tax — a percentage (e.g. *7.5%* for VAT) or a flat "
+                          "amount (e.g. *3000*).\nType *0* to remove it.")
+            self._render(phone_number, inv, prompt, [])
+            return []
+
+        if action == "note":
+            inv["step"] = "await_note"
+            self._save(phone_number, inv)
             self._render(phone_number, inv,
-                         f"Enter the {label} amount (e.g. 5000), or type *0* to skip:", [])
+                         "📝 Type a note for the invoice (e.g. delivery terms, "
+                         "thank-you). Type *clear* to remove it:", [])
+            return []
+
+        if action == "due":
+            inv["step"] = "due"
+            self._save(phone_number, inv)
+            self._render(phone_number, inv, "📅 When is payment due?",
+                         tg_ui.inv_due_keyboard())
+            return []
+
+        if action == "dueset":
+            days = int(value or 0)
+            if days <= 0:
+                inv["due_label"] = "On receipt"
+                inv["due_date"] = ""
+            else:
+                from datetime import datetime, timedelta
+                d = datetime.now() + timedelta(days=days)
+                inv["due_label"] = f"{d.strftime('%d %b %Y')} ({days} days)"
+                inv["due_date"] = d.strftime("%Y-%m-%d")
+            self._show_builder(phone_number, inv)
             return []
 
         if action == "generate":
@@ -278,14 +314,41 @@ class TGInvoice:
             return []
 
         if step in ("await_discount", "await_tax"):
-            from utils.parser import parse_amount
-            amt = parse_amount(t) or 0
             kind = "discount" if step == "await_discount" else "tax"
-            inv[kind] = {"amount": int(amt)} if amt else None
+            subtotal = self._subtotal(inv)
+            spec = self._parse_pct_or_amount(t, subtotal)
+            if spec is None or spec.get("amount", 0) <= 0:
+                inv[kind] = None   # 0 / unparseable = remove
+            else:
+                if kind == "tax":
+                    spec.setdefault("type", "VAT")
+                inv[kind] = spec
+            self._show_builder(phone_number, inv)
+            return []
+
+        if step == "await_note":
+            inv["note"] = "" if t.lower() == "clear" else t
             self._show_builder(phone_number, inv)
             return []
 
         return []
+
+    def _parse_pct_or_amount(self, text: str, base: int):
+        """Parse '10%' (percent of subtotal) or a flat amount ('5000'/'5k').
+        Returns {"amount": int, "percent": float?} or None."""
+        from utils.parser import parse_amount
+        t = (text or "").strip()
+        if not t:
+            return None
+        m = re.match(r'^([\d.]+)\s*%$', t)
+        if m:
+            pct = float(m.group(1))
+            amt = int(round(base * pct / 100))
+            return {"amount": amt, "percent": pct}
+        amt = parse_amount(t)
+        if not amt:
+            return None
+        return {"amount": int(amt)}
 
     def _parse_item_text(self, text: str):
         """Parse 'name qty price' or 'name price'. qty defaults to 1; amount =
@@ -418,5 +481,6 @@ class TGInvoice:
         return self.pdf.handle_invoice_request(
             phone_number, customer, float(total), "",
             discount=inv.get("discount"), tax=inv.get("tax"),
-            items=items,
+            items=items, note=inv.get("note", ""),
+            due_label=inv.get("due_label", ""),
         )
