@@ -351,6 +351,44 @@ class ReportsHandler:
     _PERIOD_LABELS = {"today": "Today", "week": "This Week",
                       "month": "This Month", "last_month": "Last Month"}
 
+    def _dash_industry_lines(self, d: dict) -> list:
+        """3F: compact per-industry lines for the dashboard card.
+          - hybrid: product vs service revenue split,
+          - manufacturing: production output (count + value),
+          - services: jobs count.
+        Kept to 1-2 lines so the card stays scannable; full detail is in the
+        text P&L / drills."""
+        industry = d.get("industry", "trading")
+        out = []
+        if industry == "hybrid":
+            prod = svc = 0
+            for t in d.get("sales", []):
+                amt = int(t.get("amount", 0))
+                sk = (t.get("extra_details") or {}).get("sale_kind", "")
+                if sk == "service":
+                    is_service = True
+                elif sk == "product":
+                    is_service = False
+                else:
+                    cat = (t.get("category", "") or "").lower()
+                    is_service = ("service" in cat or t.get("item_type") == "service")
+                if is_service:
+                    svc += amt
+                else:
+                    prod += amt
+            if prod or svc:
+                out.append(f"⚡ Products {format_amount(prod)} · Services {format_amount(svc)}")
+        elif industry == "manufacturing":
+            prod_txns = d.get("production", [])
+            if prod_txns:
+                pval = sum(int(t.get("amount", 0)) for t in prod_txns)
+                out.append(f"🏭 Production: {len(prod_txns)} run(s) · {format_amount(pval)}")
+        elif industry == "services":
+            n = d.get("sales_count", 0)
+            if n:
+                out.append(f"🛠️ Jobs done: {n}")
+        return out
+
     def dashboard(self, phone_number: str, period: str = "month") -> list:
         """The tap-first, in-place Telegram dashboard card. Period toggles +
         drill-downs re-render this same card. Numbers from _period_totals."""
@@ -385,6 +423,10 @@ class ReportsHandler:
         if d["owed_to_me"] or d["owe_out"]:
             lines.append(f"🔴 Owed to you: {format_amount(d['owed_to_me'])}  ·  "
                          f"📝 You owe: {format_amount(d['owe_out'])}")
+
+        # 3F: per-industry tailoring — compact lines on the card.
+        lines.extend(self._dash_industry_lines(d))
+
         lines.append(f"\n_📝 {d['tx_count']} transaction(s) in this period._")
 
         # Rows: period toggle, drill-downs, exports, menu.
