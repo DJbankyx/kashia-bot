@@ -12,6 +12,30 @@ from boto3.dynamodb.conditions import Key, Attr
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+# ─────────────────────────────────────────────────────────────────────────
+# Data retention (soft-delete) — N1.
+#
+# "Clear My Data" ARCHIVES rows (stamps `deleted`/`deleted_at`/`retain_until`)
+# instead of physically deleting them, so records remain recoverable/auditable
+# for a retention window (compliance: tax/AML, warrants). Every read path
+# filters archived rows out, so the user and reports never see them.
+#
+# ⚠️ LEGAL: RETENTION_DAYS below is a PLACEHOLDER. Retention periods are
+# jurisdiction-specific — CONFIRM the real window for Nigeria / where we operate
+# with a professional before launch, then set it here. Full erasure (true
+# delete) is a separate, deliberate admin action (see purge_user / audit tool).
+RETENTION_DAYS = 2555  # ~7 years placeholder (common finance-record default)
+
+
+def _is_deleted(item) -> bool:
+    """True if a row has been soft-deleted (archived)."""
+    return bool(item.get("deleted")) if isinstance(item, dict) else False
+
+
+def _live(items):
+    """Filter out soft-deleted (archived) rows from a result list."""
+    return [it for it in (items or []) if not _is_deleted(it)]
+
 
 def generate_id():
     """Generate a unique ID (timestamp + random)"""
@@ -286,12 +310,18 @@ class Database:
     def get_transactions(self, phone_number, limit=20):
         """Get recent transactions for a user (newest first)"""
         try:
+            # Over-fetch a little so soft-deleted rows filtered below don't eat
+            # into the caller's limit right after an archive.
             response = self.transactions.query(
                 KeyConditionExpression=Key('phone_number').eq(phone_number),
                 ScanIndexForward=False,  # newest first
-                Limit=limit
+                Limit=limit * 3 if limit else None,
+            ) if limit else self.transactions.query(
+                KeyConditionExpression=Key('phone_number').eq(phone_number),
+                ScanIndexForward=False,
             )
-            return response.get('Items', [])
+            items = _live(response.get('Items', []))
+            return items[:limit] if limit else items
         except Exception as e:
             logger.error(f"Error getting transactions: {e}")
             return []
@@ -321,12 +351,117 @@ class Database:
                 )
                 items.extend(response.get('Items', []))
 
+            # Drop soft-deleted (archived) rows so reports never count them.
+            items = _live(items)
             # Sort chronologically (oldest first)
             items.sort(key=lambda x: x.get('created_at', x.get('date', '')))
             return items
         except Exception as e:
             logger.error(f"Error querying by period: {e}")
             return []
+
+    # ==========================================
+    # ARCHIVE / RETENTION (soft-delete)
+    # ==========================================
+
+    def _archive_rows(self, table, phone_number, sort_key):
+        """Stamp every row for a user as soft-deleted (archived) — rows STAY in
+        the table so they're recoverable/auditable. Returns the count archived.
+        `sort_key` is the table's sort attribute ('transaction_id'/'contact_id').
+        """
+        now = datetime.now()
+        retain_until = (now + timedelta(days=RETENTION_DAYS)).isoformat()
+        stamped_at = now.isoformat()
+        try:
+            resp = table.query(KeyConditionExpression=Key('phone_number').eq(phone_number))
+            items = resp.get('Items', [])
+            while 'LastEvaluatedKey' in resp:
+                resp = table.query(
+                    KeyConditionExpression=Key('phone_number').eq(phone_number),
+                    ExclusiveStartKey=resp['LastEvaluatedKey'])
+                items.extend(resp.get('Items', []))
+
+            count = 0
+            for it in items:
+                if it.get('deleted'):
+                    continue  # already archived
+                table.update_item(
+                    Key={'phone_number': phone_number, sort_key: it[sort_key]},
+                    UpdateExpression="SET deleted = :d, deleted_at = :da, retain_until = :ru",
+                    ExpressionAttributeValues={':d': True, ':da': stamped_at, ':ru': retain_until},
+                )
+                count += 1
+            return count
+        except Exception as e:
+            logger.error(f"Error archiving rows for {phone_number}: {e}")
+            return 0
+
+    def archive_all_transactions(self, phone_number):
+        """Soft-delete (archive) all of a user's transactions. Recoverable."""
+        n = self._archive_rows(self.transactions, phone_number, 'transaction_id')
+        logger.info(f"Archived {n} transactions for {phone_number}")
+        return n
+
+    def archive_all_contacts(self, phone_number):
+        """Soft-delete (archive) all of a user's contacts. Recoverable."""
+        n = self._archive_rows(self.contacts, phone_number, 'contact_id')
+        logger.info(f"Archived {n} contacts for {phone_number}")
+        return n
+
+    def purge_user_records(self, phone_number):
+        """TRUE erasure of a user's RECORDS — physically delete their
+        transactions + contacts (archived or not) while KEEPING the account row.
+        A separate, deliberate admin action (warrant satisfied / retention
+        elapsed / explicit erasure request), NOT the normal reset. For full
+        account erasure use purge_user(). Returns (tx_deleted, contacts_deleted)."""
+        tx = self._purge_rows(self.transactions, phone_number, 'transaction_id')
+        ct = self._purge_rows(self.contacts, phone_number, 'contact_id')
+        logger.info(f"PURGED records for {phone_number}: {tx} txns, {ct} contacts (true delete)")
+        return tx, ct
+
+    def _purge_rows(self, table, phone_number, sort_key):
+        try:
+            resp = table.query(KeyConditionExpression=Key('phone_number').eq(phone_number))
+            items = resp.get('Items', [])
+            while 'LastEvaluatedKey' in resp:
+                resp = table.query(
+                    KeyConditionExpression=Key('phone_number').eq(phone_number),
+                    ExclusiveStartKey=resp['LastEvaluatedKey'])
+                items.extend(resp.get('Items', []))
+            with table.batch_writer() as batch:
+                for it in items:
+                    batch.delete_item(Key={'phone_number': phone_number, sort_key: it[sort_key]})
+            return len(items)
+        except Exception as e:
+            logger.error(f"Error purging rows for {phone_number}: {e}")
+            return 0
+
+    def purge_expired(self, table_name="transactions", dry_run=True):
+        """Retention cleanup: TRUE-delete archived rows whose retain_until has
+        passed. Intended for a scheduled job. dry_run=True only counts. Scans the
+        table (admin/low-frequency)."""
+        table = self.transactions if table_name == "transactions" else self.contacts
+        sort_key = 'transaction_id' if table_name == "transactions" else 'contact_id'
+        now_iso = datetime.now().isoformat()
+        try:
+            resp = table.scan(FilterExpression=Attr('deleted').eq(True) &
+                              Attr('retain_until').lt(now_iso))
+            items = resp.get('Items', [])
+            while 'LastEvaluatedKey' in resp:
+                resp = table.scan(
+                    FilterExpression=Attr('deleted').eq(True) & Attr('retain_until').lt(now_iso),
+                    ExclusiveStartKey=resp['LastEvaluatedKey'])
+                items.extend(resp.get('Items', []))
+            if dry_run:
+                return len(items)
+            with table.batch_writer() as batch:
+                for it in items:
+                    batch.delete_item(Key={'phone_number': it['phone_number'], sort_key: it[sort_key]})
+            logger.info(f"purge_expired({table_name}): deleted {len(items)} expired archived rows")
+            return len(items)
+        except Exception as e:
+            logger.error(f"Error in purge_expired({table_name}): {e}")
+            return 0
 
     def delete_last_transaction(self, phone_number):
         """Delete the most recent transaction (undo)"""
@@ -662,13 +797,16 @@ class Database:
         return item
 
     def get_contacts(self, phone_number, limit=20):
-        """Get all contacts for a user"""
+        """Get all contacts for a user (excludes soft-deleted/archived)."""
         try:
             response = self.contacts.query(
                 KeyConditionExpression=Key('phone_number').eq(phone_number),
-                Limit=limit
+                Limit=limit * 3 if limit else None,
+            ) if limit else self.contacts.query(
+                KeyConditionExpression=Key('phone_number').eq(phone_number),
             )
-            return response.get('Items', [])
+            items = _live(response.get('Items', []))
+            return items[:limit] if limit else items
         except Exception as e:
             logger.error(f"Error getting contacts: {e}")
             return []

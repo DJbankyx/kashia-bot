@@ -382,13 +382,17 @@ class SettingsHandler:
         )]
 
     def _execute_reset(self, phone_number: str) -> list:
-        """Delete all user data except the account record."""
+        """Clear the user's data from view — ARCHIVES it (soft-delete) rather
+        than physically deleting, so records stay recoverable/auditable for the
+        retention window (compliance). To the user the effect is identical: their
+        transactions, contacts and catalog vanish from every screen and report.
+        True erasure is a separate, deliberate admin action (see audit tool)."""
         try:
-            # 1. Delete all transactions (scan + delete in batches)
-            self._delete_all_transactions(phone_number)
+            # 1. Archive all transactions (soft-delete — recoverable)
+            self.db.archive_all_transactions(phone_number)
 
-            # 2. Delete all contacts
-            self._delete_all_contacts(phone_number)
+            # 2. Archive all contacts (soft-delete — recoverable)
+            self.db.archive_all_contacts(phone_number)
 
             # 3. Wipe catalog, debts, sessions from user record
             self.db.update_user(phone_number, {

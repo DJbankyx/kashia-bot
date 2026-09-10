@@ -169,6 +169,15 @@ def do_edit(db, user_id, action, field, value, confirm):
         print(f"✅ {field}: {old!r} -> {value!r} for {user_id}.")
         return
 
+    if action == "purge":
+        # TRUE erasure — irreversible. Distinct from the in-app "Clear My Data"
+        # (which only archives). Use for a satisfied warrant / elapsed retention /
+        # an explicit erasure request.
+        tx, ct = db.purge_user_records(user_id)
+        print(f"🗑️  PURGED {user_id}: {tx} transaction(s) + {ct} contact(s) "
+              f"physically deleted (irreversible). Account row kept.")
+        return
+
     print(f"❌ Unknown --edit action: {action}")
 
 
@@ -178,8 +187,9 @@ def main():
     ap.add_argument("--name", help="Search users by business name / @username / display name")
     ap.add_argument("--stage", default="dev", help="DynamoDB stage (default: dev)")
     ap.add_argument("--limit", type=int, default=10, help="How many recent transactions to show")
-    ap.add_argument("--edit", choices=["reset-session", "set-field"],
-                    help="Guarded fix (requires --confirm)")
+    ap.add_argument("--edit", choices=["reset-session", "set-field", "purge"],
+                    help="Guarded fix (requires --confirm). 'purge' TRULY deletes "
+                         "the user's transactions+contacts (erasure) — irreversible.")
     ap.add_argument("--field", help="Field name for --edit set-field")
     ap.add_argument("--value", help="New value for --edit set-field")
     ap.add_argument("--confirm", action="store_true", help="Actually apply an --edit")
