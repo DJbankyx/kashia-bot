@@ -12,7 +12,6 @@ STEP_WELCOME = "welcome"
 STEP_BUSINESS_NAME = "business_name"
 STEP_INDUSTRY = "industry"
 STEP_WHAT_YOU_DO = "what_you_do"
-STEP_LIST_PRODUCTS = "list_products"
 STEP_COMPLETE = "complete"
 
 # Button IDs that can leak in as text if a user taps a stale button mid-onboarding.
@@ -47,6 +46,13 @@ class OnboardingHandler:
         self.session = session_mgr
         self.db = database
 
+    def _is_telegram(self, phone_number: str) -> bool:
+        try:
+            from services.messaging_client import platform_for_user
+            return platform_for_user(phone_number) == "telegram"
+        except Exception:
+            return False
+
     def handle(self, phone_number: str, text: str, session: dict) -> list:
         """Route to correct onboarding step."""
         state = session.get("state", NEW_USER)
@@ -65,9 +71,6 @@ class OnboardingHandler:
         if step == STEP_WHAT_YOU_DO:
             return self._save_what_you_do(phone_number, text)
 
-        if step == STEP_LIST_PRODUCTS:
-            return self._save_product_list(phone_number, text)
-
         # Fallback — restart onboarding
         return self._welcome(phone_number)
 
@@ -82,10 +85,9 @@ class OnboardingHandler:
         platform_name = "Telegram" if platform_for_user(phone_number) == "telegram" else "WhatsApp"
 
         return [text_response(
-            "👋 Welcome to *Kashia*!\n\n"
-            "I'm your AI bookkeeper. I'll help you track sales, expenses, "
-            f"debts, and more — all right here on {platform_name}.\n\n"
-            "Let's get you set up in 30 seconds.\n\n"
+            "👋 Welcome to *Kashia* — your AI bookkeeper on "
+            f"{platform_name}.\n\n"
+            "Let's get you set up in under a minute.\n\n"
             "*Step 1 of 3*\n"
             "📝 *What's your business name?*"
         )]
@@ -113,35 +115,37 @@ class OnboardingHandler:
             "business_name": business_name,
         })
 
+        rows = [
+            {
+                "id": "industry_trading",
+                "title": "🛍️ Trading & Retail",
+                "description": "Buy and sell goods (shop, market, online store)"
+            },
+            {
+                "id": "industry_manufacturing",
+                "title": "🏭 Manufacturing",
+                "description": "Produce/make goods (factory, workshop, food)"
+            },
+            {
+                "id": "industry_services",
+                "title": "💼 Services",
+                "description": "Provide services (cleaning, consulting, repair)"
+            },
+            {
+                "id": "industry_hybrid",
+                "title": "🔄 Hybrid / Mixed",
+                "description": "Combination of goods + services"
+            },
+        ]
+
+        # Telegram: show all four as a visible tappable grid (no dropdown).
+        # WhatsApp: keep the classic "Select Industry" list picker.
         return [list_response(
             header="🏢 " + business_name,
-            body="*Step 2 of 3*\nWhat type of industry are you in?",
+            body="*Step 2 of 3*\nWhat type of business are you in?",
             button_text="Select Industry",
-            sections=[{
-                "title": "Choose your industry",
-                "rows": [
-                    {
-                        "id": "industry_trading",
-                        "title": "🛍️ Trading & Retail",
-                        "description": "Buy and sell goods (shop, market, online store)"
-                    },
-                    {
-                        "id": "industry_manufacturing",
-                        "title": "🏭 Manufacturing",
-                        "description": "Produce/make goods (factory, workshop, food)"
-                    },
-                    {
-                        "id": "industry_services",
-                        "title": "💼 Services",
-                        "description": "Provide services (cleaning, consulting, repair)"
-                    },
-                    {
-                        "id": "industry_hybrid",
-                        "title": "🔄 Hybrid / Mixed",
-                        "description": "Combination of goods + services"
-                    },
-                ]
-            }]
+            sections=[{"title": "Choose your industry", "rows": rows}],
+            no_paginate=self._is_telegram(phone_number),
         )]
 
     def _save_industry(self, phone_number: str, text: str) -> list:
@@ -181,150 +185,93 @@ class OnboardingHandler:
             "industry": industry,
         })
 
-        # Step 3: general list of what they sell/make/offer, comma-separated.
-        # These become STARTING CATEGORIES to expand in the Catalog — not priced
-        # products. So we ask for the broad things, not specific SKUs.
-        _skip_hint = "\n\n_Separate with commas. Or type *skip* — you can set up your products in the Catalog anytime._"
+        # Step 3: a plain-language DESCRIPTION of what the business does — NOT a
+        # product list. We store it for reassurance/echo-back and seed nothing.
+        # Products are built (or skipped) only at the Done card that follows.
         prompts = {
             "trading": (
                 "*Step 3 of 3*\n"
-                "🛍️ Great! *What do you sell?*\n\n"
-                "List the main things (we'll set up details like models, prices "
-                "and stock next):\n\n"
-                "_e.g. Cars, Trucks, Buses_\n"
-                "_e.g. Shoes, Bags, Accessories_\n"
-                "_e.g. Rice, Oil, Provisions_" + _skip_hint
+                "🛍️ *Tell me a bit about what you do.*\n\n"
+                "Just a sentence in your own words — no need to list every "
+                "product.\n\n"
+                "_e.g. \"I sell cars and spare parts\"_"
             ),
             "manufacturing": (
                 "*Step 3 of 3*\n"
-                "🏭 Great! *What do you make?*\n\n"
-                "List your main products (details come next):\n\n"
-                "_e.g. Soap, Detergent, Bleach_\n"
-                "_e.g. Bread, Cakes, Pastries_\n"
-                "_e.g. Tables, Chairs, Cabinets_" + _skip_hint
+                "🏭 *Tell me a bit about what you make.*\n\n"
+                "Just a sentence in your own words.\n\n"
+                "_e.g. \"I produce soap and detergent\"_"
             ),
             "services": (
                 "*Step 3 of 3*\n"
-                "💼 Great! *What services do you offer?*\n\n"
-                "List them (you'll set rates next):\n\n"
-                "_e.g. Braiding, Nails, Makeup_\n"
-                "_e.g. Cleaning, Fumigation_\n"
-                "_e.g. Web Design, Marketing_" + _skip_hint
+                "💼 *Tell me a bit about what you do.*\n\n"
+                "Just a sentence in your own words.\n\n"
+                "_e.g. \"I do catering and event planning\"_"
             ),
             "hybrid": (
                 "*Step 3 of 3*\n"
-                "🔄 Great! *What do you sell and/or offer?*\n\n"
-                "List the main things (details come next):\n\n"
-                "_e.g. Phones, Phone Repairs_\n"
-                "_e.g. Food Items, Catering_" + _skip_hint
+                "🔄 *Tell me a bit about what you do.*\n\n"
+                "Just a sentence in your own words.\n\n"
+                "_e.g. \"I sell phones and also repair them\"_"
             ),
         }
+        prompt = prompts.get(industry, prompts["trading"])
 
-        return [text_response(prompts.get(industry, prompts["trading"]))]
+        # Telegram: offer a real tappable Skip. WhatsApp keeps typed *skip*.
+        if self._is_telegram(phone_number):
+            return [button_response(prompt, [
+                {"id": "onboard_skip_desc", "title": "⏭️ Skip"},
+            ])]
+        return [text_response(prompt + "\n\n_Or type *skip*._")]
 
     def _save_what_you_do(self, phone_number: str, text: str) -> list:
-        """Step 3 (final): take the general 'what do you sell/make/offer' as a
-        comma-separated list of GENERAL terms, seed them as category placeholders
-        (name + item_type only — NO price/stock/unit), then complete and hand off
-        to the Catalog where real products get built.
+        """Step 3 (final): capture a plain-language DESCRIPTION of the business
+        (what they do), store it for echo-back, then complete and hand off to
+        the Catalog where real products get built.
 
-        Design (docs/TG_ONBOARDING_PLAN.md): "I sell cars, trucks, buses" means
-        the LINE OF BUSINESS, not 3 priced SKUs. We store them as starting
-        categories to expand in the Catalog — never as priced products here.
+        Design (docs/TG_ONBOARDING_PLAN.md): step 3 describes the LINE OF
+        BUSINESS — it is NOT a product list and seeds NOTHING. Products are
+        created only at the Done card (Set up Catalog / Skip).
         """
         context = self.session.get_context(phone_number)
         business_name = context.get("business_name", "My Business")
         industry = context.get("industry", "trading")
         description = text.strip()
 
-        # Let users skip if they'd rather build the catalog later.
-        if description.lower() in ("skip", "later", "not now"):
+        # Skip — via the Telegram button or a typed keyword.
+        if description.lower() in ("skip", "later", "not now", "onboard_skip_desc"):
             return self._complete_onboarding(phone_number, business_name, industry, "", [])
 
         # Reject stray button taps / commands saved verbatim (e.g. "menu_home").
         if _looks_like_button_or_command(description):
-            return [text_response(
-                f"Just list what you {self._sell_verb(industry)} (separate with commas).\n\n"
-                f"_e.g. \"{self._what_you_do_example(industry)}\"_\n\n"
-                f"_Or type *skip* to set this up in the Catalog later._"
-            )]
+            return self._reprompt_description(phone_number, industry)
 
         if len(description) < 2:
-            return [text_response(
-                f"Please list what you {self._sell_verb(industry)} (even one is fine),\n"
-                "_or type *skip* to set it up in the Catalog later._"
-            )]
+            return self._reprompt_description(phone_number, industry)
 
         # Onboarding only DESCRIBES the business — it must NOT create catalog
-        # products. Previously the comma list was seeded as zero-stock
-        # placeholder products, which polluted the catalog with abstract items.
-        # We keep the description (shown back for reassurance) and hand off to a
-        # clear "set up your catalog now or later" step. items=[] → no seeding.
+        # products. We keep the description (echoed back for reassurance) and
+        # hand off to the Catalog step. items=[] → no seeding, ever.
         return self._complete_onboarding(phone_number, business_name, industry, description, [])
 
-    def _parse_category_list(self, text: str) -> list:
-        """Split a comma/'and' list into clean starting-category names.
-
-        Deliberately simple: no prose extraction, no location stripping games —
-        the user is listing general terms. Just split, tidy, de-dupe.
-        """
-        import re
-        parts = re.split(r'[,&]|\band\b', text)
-        seen, items = set(), []
-        for part in parts:
-            item = part.strip().strip('.').strip()
-            # Drop obvious lead-ins if the user still typed "I sell ..."
-            item = re.sub(r'^\s*(i|we)\s+(sell|make|produce|offer|do|provide)\s+', '',
-                          item, flags=re.IGNORECASE).strip()
-            if len(item) < 2 or len(item) > 40:
-                continue
-            if item.lower() in seen:
-                continue
-            seen.add(item.lower())
-            items.append(item.title())
-        return items
+    def _reprompt_description(self, phone_number: str, industry: str) -> list:
+        """Re-ask step 3 as a description (not a product list), with a Skip on
+        Telegram."""
+        msg = (
+            f"Just tell me in a sentence what you {self._sell_verb(industry)}.\n\n"
+            f"_e.g. \"{self._what_you_do_example(industry)}\"_"
+        )
+        if self._is_telegram(phone_number):
+            return [button_response(msg, [
+                {"id": "onboard_skip_desc", "title": "⏭️ Skip"},
+            ])]
+        return [text_response(msg + "\n\n_Or type *skip* to set this up later._")]
 
     def _sell_verb(self, industry: str) -> str:
         return {
             "trading": "sell", "manufacturing": "make",
             "services": "offer", "hybrid": "sell or offer",
         }.get(industry, "sell")
-
-    def _save_product_list(self, phone_number: str, text: str) -> list:
-        """Manufacturing-specific: save the explicit product list to catalog."""
-        context = self.session.get_context(phone_number)
-        business_name = context.get("business_name", "My Business")
-        industry = context.get("industry", "manufacturing")
-        description = context.get("business_description", "")
-
-        product_text = text.strip()
-
-        # Let the user skip listing products now — finish with an empty catalog.
-        if product_text.lower() in ("skip", "later", "not now"):
-            return self._complete_onboarding(phone_number, business_name, industry, description, [])
-
-        if len(product_text) < 2:
-            return [text_response(
-                "Please list at least one product you manufacture,\n"
-                "_or type *skip* to add them later._\n\n"
-                "_Separate with commas: e.g. Liquid Soap, Bar Soap, Detergent_"
-            )]
-
-        # Parse comma-separated product names
-        items = [item.strip().title() for item in product_text.split(",") if item.strip() and len(item.strip()) >= 2]
-
-        if not items:
-            return [text_response(
-                "I couldn't find product names. Please list them separated by commas:\n\n"
-                "_e.g. Liquid Soap 1L, Bar Soap, Dish Wash, Detergent 5L_"
-            )]
-
-        # Onboarding describes the business only — do NOT seed products here.
-        # Keep the listed names in the description so they're echoed back, but
-        # let the user build real products (with stock/price/variants) in the
-        # Catalog via the explicit set-up step. items=[] → no seeding.
-        combined_desc = description or product_text
-        return self._complete_onboarding(phone_number, business_name, industry, combined_desc, [])
 
     def _complete_onboarding(self, phone_number: str, business_name: str, industry: str, description: str, items: list) -> list:
         """Finalize onboarding: create user, seed catalog, show completion."""
@@ -334,7 +281,9 @@ class OnboardingHandler:
         self.db.update_user_field(phone_number, "industry_class", industry)
         self.db.update_user_field(phone_number, "business_description", description)
 
-        # Seed catalog if products were extracted
+        # Onboarding seeds NOTHING into the catalog by design — `items` is
+        # always [] from the current flow. This guarded block is kept only as a
+        # defensive no-op; products are built exclusively in the Catalog.
         if items:
             catalog = {"products": {}}
             # Set item_type based on industry
@@ -391,10 +340,21 @@ class OnboardingHandler:
                 note = note[:90] + "…"
             lines.append("")
             lines.append(f"📝 Noted what you {noun}: _{note}_")
+
+        # ── Telegram: ONE clean card (profile + catalog fork together) ──
+        if self._is_telegram(phone_number):
+            lines.append("")
+            lines.append(f"📋 *Next:* add your {setup_word} in the Catalog so")
+            lines.append("every sale shows profit and stock stays accurate.")
+            return [button_response("\n".join(lines), [
+                {"id": "menu_catalog", "title": "📋 Set Up Catalog Now"},
+                {"id": "menu_home", "title": "⏭️ Skip for now"},
+            ])]
+
+        # ── WhatsApp: keep the classic three-part completion ──
         lines.append("")
         lines.append("That's your profile done. 🎉")
 
-        # The catalog is a SEPARATE step now — nothing was added automatically.
         catalog_lines = [
             "📋 *Next: set up your Catalog*",
             "",
@@ -412,68 +372,6 @@ class OnboardingHandler:
                 {"id": "menu_home", "title": "⏭️ Skip for now"},
             ]),
         ]
-
-    def _extract_products_from_description(self, description: str, industry: str) -> list:
-        """
-        Extract product/service names from a natural business description.
-        Uses keyword parsing — no AI call needed (keeps onboarding fast).
-        """
-        import re
-
-        desc = description.lower()
-
-        # Strip trailing location / audience phrases so they don't leak into the
-        # catalog, e.g. "beans in Lagos" → "beans", "shoes for customers" → "shoes".
-        # Applied to the whole description before splitting.
-        desc = re.sub(
-            r'\b(in|at|around|for|to)\b[\s\w]*$',
-            '',
-            desc,
-        ) if re.search(r'\b(in|at|around)\b\s+\w+\s*$', desc) else desc
-
-        # Remove common filler words / lead-ins
-        fillers = [
-            "i sell", "we sell", "i make", "we make", "we produce", "i produce",
-            "i do", "we do", "i offer", "we offer", "i provide", "we provide",
-            "i deal in", "we deal in", "i run", "we run", "my business",
-            "new and", "second hand", "brand new", "fairly used", "quality",
-            "all kinds of", "all sorts of", "different types of", "various",
-            "like", "such as", "including", "e.g.", "for example",
-            "and also", "as well as", "mainly", "mostly",
-        ]
-        cleaned = desc
-        for filler in fillers:
-            cleaned = cleaned.replace(filler, " ")
-
-        # Split on common separators: comma, "and", "&"
-        parts = re.split(r'[,&]|\band\b', cleaned)
-
-        # Clean each part
-        items = []
-        for part in parts:
-            item = part.strip().strip('.')
-            # Remove trailing "etc", "products", "items", "services"
-            item = re.sub(r'\s*(etc|products?|items?|services?|goods?)\s*$', '', item)
-            # Drop a trailing location phrase on this specific part too
-            # ("beans in lagos" → "beans")
-            item = re.sub(r'\b(in|at|around)\b\s+.*$', '', item)
-            item = item.strip()
-            # Reject junk: empty, too long, or too many words to be a product name
-            if len(item) < 2 or len(item) > 40:
-                continue
-            if len(item.split()) > 4:
-                continue
-            items.append(item.title())
-
-        # Deduplicate
-        seen = set()
-        unique = []
-        for item in items:
-            if item.lower() not in seen:
-                seen.add(item.lower())
-                unique.append(item)
-
-        return unique
 
     def _what_you_do_example(self, industry: str) -> str:
         """Short industry-specific example for the 'what you do' prompt/guard."""
