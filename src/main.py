@@ -31,6 +31,7 @@ from features.production import ProductionHandler
 from features.recurring import RecurringHandler
 from features.quotes import QuotesHandler
 from features.returns import ReturnsHandler
+from features.billdoc import BillDocHandler
 
 from core.states import EXEMPT_STATES
 
@@ -119,6 +120,11 @@ class KashiaBot:
         # to reach the shared TransactionHandler.record_return (no forked logic).
         self.router.returns = ReturnsHandler(self.router.session, self.db)
         self.router.returns.router = self.router
+        # Bill a customer (Option A): multi-item single invoice/receipt. Reuses
+        # the shared PDF generators via the __GEN_INVOICE__/__GEN_RECEIPT__ markers.
+        self.router.pdf_generator = self.pdf_generator  # shared label helper
+        self.router.billdoc = BillDocHandler(self.router.session, self.db)
+        self.router.billdoc.router = self.router
 
         # Telegram fast-entry (app-like tappable sale/purchase). Telegram-only;
         # holds a router ref for engine access (catalog builders, confirm/save).
@@ -267,23 +273,25 @@ class KashiaBot:
                 continue
 
             if resp.get("type") == "__GEN_INVOICE__":
-                # Generate invoice for a specific transaction
+                # Generate an invoice for one OR several transactions. Accepts a
+                # tx_ids LIST (multi-item "Bill a customer" — Option A) or a
+                # single tx_id (post-sale one-tap). The multi builder handles both.
                 content = resp.get("content", {})
-                tx_id = content.get("tx_id", "")
-                if tx_id:
+                tx_ids = content.get("tx_ids") or ([content["tx_id"]] if content.get("tx_id") else [])
+                if tx_ids:
                     inv_responses = self.pdf_generator.handle_multi_invoice_request(
-                        phone_number, [tx_id]
+                        phone_number, tx_ids
                     )
                     resolved.extend(inv_responses)
                 continue
 
             if resp.get("type") == "__GEN_RECEIPT__":
-                # Generate receipt for a specific transaction
+                # Generate a receipt for one OR several transactions (see above).
                 content = resp.get("content", {})
-                tx_id = content.get("tx_id", "")
-                if tx_id:
+                tx_ids = content.get("tx_ids") or ([content["tx_id"]] if content.get("tx_id") else [])
+                if tx_ids:
                     rcpt_responses = self.pdf_generator.handle_multi_receipt_request(
-                        phone_number, [tx_id]
+                        phone_number, tx_ids
                     )
                     resolved.extend(rcpt_responses)
                 continue

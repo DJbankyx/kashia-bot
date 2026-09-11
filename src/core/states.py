@@ -69,6 +69,11 @@ SCAN_CONFIRM = "SCAN_CONFIRM"
 #     purchase, then confirm the return quantity (full or partial). ───
 RETURN_RECORDING = "RETURN_RECORDING"
 
+# ─── Bill a customer (Option A): Telegram tap-first multi-item single document.
+#     Pick a customer, toggle several of their sales, generate ONE invoice/
+#     receipt from the selected set. Holds the selection set in context. ───
+BILLDOC_SELECT = "BILLDOC_SELECT"
+
 # ─── Personal Info ───
 PERSONAL_INFO = "PERSONAL_INFO"
 
@@ -95,5 +100,5 @@ EXEMPT_STATES = {
     PERSONAL_INFO, SETTINGS_FLOW, CRM_ADDING, CATALOG_RECORDING, PIN_VERIFYING,
     LANDING_COST, PAYMENT_METHOD, PRODUCTION_RECORDING, RECURRING_SERVICES,
     VARIANT_SELECTION, TG_FASTENTRY, INVOICE_BUILDER,
-    SCAN_CONFIRM, RETURN_RECORDING,
+    SCAN_CONFIRM, RETURN_RECORDING, BILLDOC_SELECT,
 }

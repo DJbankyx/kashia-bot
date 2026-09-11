@@ -54,6 +54,8 @@ class Router:
         self.recurring = None
         self.quotes = None
         self.returns = None       # Returns/Refunds (build #4) — Telegram tap-first
+        self.billdoc = None       # Bill-a-customer multi-item single doc (Option A)
+        self.pdf_generator = None # shared PDF generator (label helper for billdoc)
         self.tg_fastentry = None  # Telegram-only app-like sale/purchase flow
         self.tg_invoice = None    # Telegram-only tap-first invoice builder (4C)
 
@@ -213,6 +215,10 @@ class Router:
         # ── Returns/Refunds: typed custom return quantity ──
         if state == states.RETURN_RECORDING and getattr(self, "returns", None) is not None:
             return self.returns.handle(phone_number, text_stripped, session)
+
+        # ── Bill-a-customer selection (tap-driven; any text just re-shows) ──
+        if state == states.BILLDOC_SELECT and getattr(self, "billdoc", None) is not None:
+            return self.billdoc.handle(phone_number, text_stripped, session)
 
         # ═══════════════════════════════════════════════════════
         # 5. IDLE STATE — the default

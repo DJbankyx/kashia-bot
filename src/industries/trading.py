@@ -169,6 +169,7 @@ class TradingIndustry(BaseIndustry):
                     {"id": "biz_debts", "title": "💳 Debts & Credits", "description": "Who owes, payments"},
                     {"id": "menu_returns", "title": "↩️ Record a Return", "description": "Reverse a sale or purchase"},
                     {"id": "biz_docs", "title": "🧾 Documents", "description": "Invoice, receipt, statement"},
+                    {"id": "menu_billdoc", "title": "🧾 Bill a Customer", "description": "Combine several sales into ONE invoice/receipt"},
                     {"id": "biz_export", "title": "📁 Export Data", "description": "Excel, CSV download"},
                 ]
             }]

@@ -206,6 +206,14 @@ class ButtonDispatcher:
             if r.returns is not None:
                 return r.returns.handle_button(phone_number, bid, session)
 
+        # ── Bill a customer → one invoice/receipt (Option A, Telegram) ──
+        if bid == "menu_billdoc":
+            if r.billdoc is not None:
+                return r.billdoc.show_menu(phone_number)
+        if bid.startswith("billdoc_"):
+            if r.billdoc is not None:
+                return r.billdoc.handle_button(phone_number, bid, session)
+
         # ── Report buttons ──
         if bid.startswith("report_"):
             return r.reports.handle_button(phone_number, bid, session)
