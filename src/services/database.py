@@ -651,11 +651,36 @@ class Database:
         }
 
         if expected_version is None:
-            # Unconditional write — still stamp a version so future conditional
-            # writers have something to compare against.
-            item['version'] = 1
-            self.sessions.put_item(Item=self._sanitize_for_dynamo(item))
-            return True
+            # Unconditional write, but bump `version` ATOMICALLY (ADD) so it grows
+            # monotonically even under concurrency. Previously this hardcoded
+            # version=1, which reset the counter on every plain save() and
+            # defeated update_context's optimistic-lock conflict detection — the
+            # root of the "stale state / set-price didn't save / bogus tx" race.
+            # An update_item with ADD is atomic (no read needed) and still
+            # replaces state/context/last_activity/ttl wholesale (SET), preserving
+            # the wholesale-overwrite contract that save()/reset() rely on.
+            try:
+                self.sessions.update_item(
+                    Key={'phone_number': phone_number},
+                    UpdateExpression=("SET #s = :s, context = :c, "
+                                      "last_activity = :la, #ttl = :ttl "
+                                      "ADD version :one"),
+                    ExpressionAttributeNames={'#s': 'state', '#ttl': 'ttl'},
+                    ExpressionAttributeValues={
+                        ':s': state,
+                        ':c': self._sanitize_for_dynamo(context or {}),
+                        ':la': item['last_activity'],
+                        ':ttl': ttl,
+                        ':one': 1,
+                    },
+                )
+                return True
+            except Exception as e:
+                # Fall back to a plain put so a save is never silently lost.
+                logger.warning(f"save_session atomic bump failed ({e}); plain put")
+                item['version'] = 1
+                self.sessions.put_item(Item=self._sanitize_for_dynamo(item))
+                return True
 
         # Conditional write: only succeed if the stored version is unchanged
         # (or the item doesn't exist yet, for a brand-new session).

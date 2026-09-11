@@ -94,11 +94,21 @@ class TGFastEntry:
         return (self.session.get(phone_number).get("context", {}) or {}).get(FX, {}) or {}
 
     def _save_fx(self, phone_number: str, fx: dict):
-        """Persist fast-entry progress, keeping state TG_FASTENTRY."""
-        session = self.session.get(phone_number)
-        context = dict(session.get("context", {}) or {})
-        context[FX] = fx
-        self.session.save(phone_number, states.TG_FASTENTRY, context)
+        """Persist fast-entry progress, keeping state TG_FASTENTRY.
+
+        Uses update_context (optimistic-locked merge + retry) instead of a raw
+        save() so two rapid taps can't clobber each other's fx (the lost-update
+        race). Merging {FX: fx} replaces the FX blob wholesale (what we want)
+        while leaving any other context keys intact. Ensures state is
+        TG_FASTENTRY first (begin() sets it; this is a safety net)."""
+        # Guarantee the state is TG_FASTENTRY (first save after begin), then
+        # merge the fx blob race-safely.
+        st = self.session.get(phone_number).get("state")
+        if st != states.TG_FASTENTRY:
+            # State not yet in fast-entry — set it (wholesale) with this fx.
+            self.session.save(phone_number, states.TG_FASTENTRY, {FX: fx})
+        else:
+            self.session.update_context(phone_number, {FX: fx})
 
     def _render(self, phone_number: str, fx: dict, text: str, keyboard: list):
         """Send (first screen) or edit (subsequent) the single fast-entry message."""
