@@ -463,6 +463,33 @@ class TierManager:
         })
 
     # ==========================================
+    # SUBSCRIBE NUDGE (build #S4) — rate-limited
+    # ==========================================
+    def should_nudge_subscribe(self, phone_number, user=None):
+        """True at most ONCE per day per user, so the 'subscribe' CTA (shown at
+        the ~80% free-cap warning and the 100% block) isn't spammy. Stamps
+        last_subscribe_nudge = today on a True result. Best-effort; on any error
+        returns False so we never spam."""
+        try:
+            u = user if user is not None else (self.db.get_user(phone_number) or {})
+            today = datetime.now().strftime("%Y-%m-%d")
+            if u.get("last_subscribe_nudge") == today:
+                return False
+            self.db.update_user(phone_number, {"last_subscribe_nudge": today})
+            return True
+        except Exception as e:
+            logger.warning(f"should_nudge_subscribe failed: {e}")
+            return False
+
+    def subscribe_cta(self):
+        """The buttons for a Subscribe CTA — routes into the S3 period picker.
+        (set_upgrade_<plan> with no period → Monthly/Quarterly/Yearly picker.)"""
+        return [
+            {"id": "set_upgrade_basic", "title": "🚀 Go Basic"},
+            {"id": "set_upgrade_pro", "title": "⭐ Go Pro"},
+        ]
+
+    # ==========================================
     # PRIVATE HELPERS
     # ==========================================
 

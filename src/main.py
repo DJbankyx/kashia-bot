@@ -173,8 +173,16 @@ class KashiaBot:
                 
                 allowed, warning_msg = self.tier_manager.check_can_record(phone_number)
                 if not allowed:
-                    client.send_text(phone_number, warning_msg)
+                    # At the free cap — block, and (rate-limited) show a real
+                    # Subscribe CTA instead of a bare text wall (build #S4).
+                    self._send_subscribe_nudge(client, phone_number, warning_msg,
+                                               force_text=True)
                     return
+                elif warning_msg:
+                    # ≥80% of the free cap — DON'T block; nudge to subscribe
+                    # (rate-limited to once/day) then let the transaction through.
+                    self._send_subscribe_nudge(client, phone_number, warning_msg,
+                                               force_text=False)
 
             # Route through the main router
             responses = self.router.process(phone_number, text, message_type)
@@ -189,6 +197,34 @@ class KashiaBot:
                 phone_number,
                 f"Sorry, something went wrong. Please try again.\n\n_Debug: {type(e).__name__}: {str(e)[:150]}_"
             )
+
+    def _send_subscribe_nudge(self, client, phone_number: str, warning_msg: str,
+                              force_text: bool = False):
+        """Surface the free-tier warning as a Subscribe CTA (build #S4).
+
+        Rate-limited to once/day per user via should_nudge_subscribe so it's not
+        spammy. When it's the user's nudge for today, send buttons (Go Basic /
+        Go Pro → the period picker); otherwise, only when force_text (the hard
+        block) send the plain warning so a blocked user still sees WHY. On the
+        soft 80% warning past the daily cap, stay silent (avoid nagging)."""
+        try:
+            fresh = self.tier_manager.should_nudge_subscribe(phone_number)
+            if fresh and hasattr(client, "send_buttons"):
+                body = (str(warning_msg or "").strip() +
+                        "\n\n_Upgrade for unlimited transactions, exports & invoices._").strip()
+                client.send_buttons(phone_number, body, self.tier_manager.subscribe_cta())
+                return
+            # Not fresh (already nudged today): only re-show text on a hard block.
+            if force_text and warning_msg:
+                client.send_text(phone_number, warning_msg)
+        except Exception as e:
+            logger.warning(f"subscribe nudge failed: {e}")
+            # Never leave a blocked user with nothing.
+            if force_text and warning_msg:
+                try:
+                    client.send_text(phone_number, warning_msg)
+                except Exception:
+                    pass
 
     def _deliver_engine_responses(self, phone_number: str, responses, platform: str = "whatsapp"):
         """Run the standard output pipeline on a list of engine response dicts.
