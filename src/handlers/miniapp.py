@@ -119,6 +119,8 @@ def lambda_handler(event, context):
             return _inventory(event, user_id)
         if method == "GET" and path.endswith("/app/api/charts"):
             return _charts(event, user_id)
+        if method == "GET" and path.endswith("/app/api/tree"):
+            return _tree(event, user_id)
 
         return _json(404, {"error": "not found", "path": path})
 
@@ -235,6 +237,60 @@ def _inventory(event, user_id: str):
     rows.sort(key=lambda r: (not r["low_stock"], (r["name"] or "").lower()))
 
     return _json(200, {"count": len(rows), "products": rows})
+
+
+def _tree(event, user_id: str):
+    """Variant-tree drill for the record-form product picker. Given a product
+    key + a path (comma-separated ancestor values), returns the children at that
+    node: {axis, children:[{value, stock, cost, is_leaf}], product, path}."""
+    from services.database import Database
+    from features.catalog import CatalogHandler
+
+    qs = event.get("queryStringParameters") or {}
+    key = (qs.get("key") or "").strip()
+    path_str = (qs.get("path") or "").strip()
+    if not key:
+        return _json(400, {"error": "key required"})
+
+    db = Database()
+    cat = CatalogHandler(None, db)
+    products = cat._get_products(user_id) or {}
+    prod = products.get(key)
+    if not isinstance(prod, dict):
+        return _json(404, {"error": "product not found"})
+
+    tree = prod.get("variant_tree") or {}
+    if not tree.get("children"):
+        return _json(200, {"product": key, "is_leaf": True, "axis": "", "children": [], "path": []})
+
+    path = [p.strip() for p in path_str.split(",") if p.strip()] if path_str else []
+    node = cat._vt_get_node(tree, path) if path else tree
+    if node is None:
+        return _json(404, {"error": "path not found"})
+
+    children_dict = node.get("children") or {}
+    if not children_dict:
+        # Leaf
+        return _json(200, {
+            "product": key, "is_leaf": True, "path": path,
+            "axis": "", "children": [],
+            "stock": cat._as_int(node.get("stock"), 0),
+            "cost": cat._as_int(node.get("cost"), 0),
+        })
+
+    axis = node.get("child_axis") or "Variant"
+    kids = []
+    for val, child in children_dict.items():
+        is_child_leaf = not (child.get("children") or {})
+        kids.append({
+            "value": val,
+            "stock": cat._vt_node_total(child) if not is_child_leaf else cat._as_int(child.get("stock"), 0),
+            "cost": cat._as_int(child.get("cost"), 0) if is_child_leaf else 0,
+            "is_leaf": is_child_leaf,
+        })
+
+    return _json(200, {"product": key, "is_leaf": False, "axis": axis,
+                        "children": kids, "path": path})
 
 
 def _parse_body(event) -> dict:
@@ -622,9 +678,13 @@ _PAGE_HTML = """<!doctype html>
         <div class="chip" data-t="purchase" onclick="recType('purchase')">📦 Purchase</div>
         <div class="chip" data-t="expense" onclick="recType('expense')">💸 Expense</div>
       </div>
-      <div class="field">
+      <!-- Product picker (sale/purchase) — tap to choose from your catalog. -->
+      <div class="field" id="rec-prod-wrap">
         <label id="rec-desc-label">What did you sell?</label>
-        <input id="rec-desc" placeholder="e.g. Hilux">
+        <div class="step" id="rec-prod-btn" style="text-align:left;padding:11px 12px" onclick="openPicker()">
+          <span id="rec-prod-text" style="color:var(--hint)">Tap to choose a product</span>
+        </div>
+        <input id="rec-desc" class="hidden" placeholder="e.g. Hilux">
       </div>
       <div class="field">
         <label id="rec-amount-label">Amount received (NGN)</label>
@@ -654,6 +714,19 @@ _PAGE_HTML = """<!doctype html>
       <div class="actions">
         <button class="btn cancel" onclick="closeRecord()">Cancel</button>
         <button class="btn save" id="rec-save" onclick="saveRecord()">Record</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Product / variant picker sheet -->
+  <div id="pickOverlay" class="overlay hidden">
+    <div class="sheet">
+      <h2 id="pick-title">Choose a product</h2>
+      <div class="sub2" id="pick-crumb"></div>
+      <input class="search" id="pick-search" placeholder="Search..." oninput="pickFilter()">
+      <div id="pick-list" style="max-height:50vh;overflow-y:auto"></div>
+      <div class="actions">
+        <button class="btn cancel" onclick="closePicker()">Close</button>
       </div>
     </div>
   </div>
@@ -888,6 +961,111 @@ _PAGE_HTML = """<!doctype html>
 
   // ── Record a transaction (M6b) ──
   var recTypeVal = "sale", recPayVal = "cash", recSubmitId = null;
+  // Picked catalog product for the record form.
+  var pick = { key: null, name: null, variant: null };
+  var pickPath = [];   // current drill path while picking a variant
+  var pickMode = "products";  // "products" | "tree"
+
+  window.openPicker = function () {
+    // Expenses don't use the catalog picker.
+    if (recTypeVal === "expense") return;
+    pickMode = "products"; pickPath = [];
+    document.getElementById("pick-title").textContent = "Choose a product";
+    document.getElementById("pick-crumb").textContent = "";
+    document.getElementById("pick-search").value = "";
+    document.getElementById("pick-search").style.display = "";
+    document.getElementById("pickOverlay").classList.remove("hidden");
+    if (!invData) { loadInventory(); setTimeout(renderPickerProducts, 400); }
+    else renderPickerProducts();
+  };
+  window.closePicker = function () {
+    document.getElementById("pickOverlay").classList.add("hidden");
+  };
+  window.pickFilter = function () { if (pickMode === "products") renderPickerProducts(); };
+
+  function renderPickerProducts() {
+    var q = (document.getElementById("pick-search").value || "").toLowerCase().trim();
+    var list = document.getElementById("pick-list");
+    var rows = (invData || []).filter(function (p) {
+      return !q || (p.name || "").toLowerCase().indexOf(q) >= 0;
+    });
+    list.innerHTML = "";
+    if (!rows.length) { list.innerHTML = '<div class="muted">No products. Add one in chat first.</div>'; return; }
+    rows.forEach(function (p) {
+      var d = document.createElement("div");
+      d.className = "item tappable";
+      d.innerHTML = '<div><div class="name">' + escapeHtml(p.name) +
+        (p.has_variants ? ' <span class="badge var">variants</span>' : '') +
+        '</div><div class="meta">' + Number(p.stock||0).toLocaleString() + ' ' + escapeHtml(p.unit||'') + ' in stock</div></div>';
+      d.onclick = function () { pickProduct(p); };
+      list.appendChild(d);
+    });
+  }
+
+  function pickProduct(p) {
+    if (!p.has_variants) {
+      // Simple product — done.
+      pick = { key: p.key, name: p.name, variant: null };
+      applyPick();
+      closePicker();
+      return;
+    }
+    // Variant product — drill the tree.
+    pick = { key: p.key, name: p.name, variant: null };
+    pickMode = "tree"; pickPath = [];
+    document.getElementById("pick-search").style.display = "none";
+    drillTree();
+  }
+
+  function drillTree() {
+    document.getElementById("pick-title").textContent = pick.name;
+    document.getElementById("pick-crumb").textContent =
+      pickPath.length ? pickPath.join(" / ") : "Choose a variant";
+    var list = document.getElementById("pick-list");
+    list.innerHTML = '<div class="muted">Loading...</div>';
+    var url = "api/tree?key=" + encodeURIComponent(pick.key) +
+      (pickPath.length ? "&path=" + encodeURIComponent(pickPath.join(",")) : "");
+    api(url).then(function (d) {
+      list.innerHTML = "";
+      // Back-up-one row when drilled in.
+      if (pickPath.length) {
+        var up = document.createElement("div");
+        up.className = "item tappable";
+        up.innerHTML = '<div class="name">⬆️ Up one level</div>';
+        up.onclick = function () { pickPath.pop(); drillTree(); };
+        list.appendChild(up);
+      }
+      (d.children || []).forEach(function (c) {
+        var d2 = document.createElement("div");
+        d2.className = "item tappable";
+        var meta = c.is_leaf ? (Number(c.stock||0).toLocaleString() + " in stock"
+                                + (c.cost ? " · cost " + naira(c.cost) : ""))
+                             : (Number(c.stock||0).toLocaleString() + " total →");
+        d2.innerHTML = '<div><div class="name">' + escapeHtml(c.value) + '</div>' +
+          '<div class="meta">' + meta + '</div></div>';
+        d2.onclick = function () {
+          pickPath.push(c.value);
+          if (c.is_leaf) { pick.variant = pickPath.join(" / "); applyPick(); closePicker(); }
+          else drillTree();
+        };
+        list.appendChild(d2);
+      });
+      if (!(d.children || []).length) {
+        // Reached a leaf node directly — treat current path as the variant.
+        pick.variant = pickPath.join(" / "); applyPick(); closePicker();
+      }
+    }).catch(function (e) {
+      list.innerHTML = '<div class="err">' + (e.message || "Could not load") + '</div>';
+    });
+  }
+
+  function applyPick() {
+    var label = pick.name + (pick.variant ? " — " + pick.variant : "");
+    var el = document.getElementById("rec-prod-text");
+    el.textContent = label;
+    el.style.color = "var(--text)";
+  }
+
   function uuid() {
     return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
       var r = Math.random() * 16 | 0, v = c === "x" ? r : (r & 0x3 | 0x8);
@@ -900,15 +1078,24 @@ _PAGE_HTML = """<!doctype html>
       t === "sale" ? "What did you sell?" : (t === "purchase" ? "What did you buy?" : "What was it for?");
     document.getElementById("rec-amount-label").textContent =
       t === "sale" ? "Amount received (NGN)" : (t === "purchase" ? "Amount paid (NGN)" : "Amount (NGN)");
+    // Sale/purchase pick from the catalog; expense is free text.
+    var isExpense = (t === "expense");
+    document.getElementById("rec-prod-btn").classList.toggle("hidden", isExpense);
+    var descInput = document.getElementById("rec-desc");
+    descInput.classList.toggle("hidden", !isExpense);
+    if (isExpense) descInput.placeholder = "e.g. Fuel, Rent";
     // Cost + quantity + who only make sense for sale/purchase.
-    var showGoods = (t !== "expense");
-    document.getElementById("rec-qty-wrap").style.display = showGoods ? "" : "none";
+    document.getElementById("rec-qty-wrap").style.display = isExpense ? "none" : "";
     document.getElementById("rec-cost-wrap").style.display = (t === "sale") ? "" : "none";
     document.getElementById("rec-who-label").textContent =
       t === "purchase" ? "Supplier (optional)" : (t === "sale" ? "Customer (optional)" : "Paid to (optional)");
   }
   window.recType = function (t) {
     recTypeVal = t;
+    // Reset the picked product when switching type.
+    pick = { key: null, name: null, variant: null };
+    document.getElementById("rec-prod-text").textContent = "Tap to choose a product";
+    document.getElementById("rec-prod-text").style.color = "var(--hint)";
     var chips = document.querySelectorAll("#rec-type .chip");
     chips.forEach(function (c) { c.classList.toggle("active", c.getAttribute("data-t") === t); });
     recSyncLabels();
@@ -920,6 +1107,9 @@ _PAGE_HTML = """<!doctype html>
   };
   window.openRecord = function () {
     recTypeVal = "sale"; recPayVal = "cash"; recSubmitId = uuid();
+    pick = { key: null, name: null, variant: null };
+    document.getElementById("rec-prod-text").textContent = "Tap to choose a product";
+    document.getElementById("rec-prod-text").style.color = "var(--hint)";
     recType("sale"); recPay("cash");
     document.getElementById("rec-desc").value = "";
     document.getElementById("rec-amount").value = "";
@@ -934,14 +1124,19 @@ _PAGE_HTML = """<!doctype html>
     document.getElementById("recOverlay").classList.add("hidden");
   };
   window.saveRecord = function () {
-    var desc = (document.getElementById("rec-desc").value || "").trim();
+    var isExpense = (recTypeVal === "expense");
+    // Description: expense = free text; sale/purchase = picked product name.
+    var desc = isExpense
+      ? (document.getElementById("rec-desc").value || "").trim()
+      : (pick.name || "");
     var amount = parseInt(document.getElementById("rec-amount").value, 10) || 0;
     var qty = Math.max(1, parseInt(document.getElementById("rec-qty").value, 10) || 1);
     var cost = parseInt(document.getElementById("rec-cost").value, 10) || 0;
     var who = (document.getElementById("rec-who").value || "").trim();
     var err = document.getElementById("rec-err");
     err.textContent = "";
-    if (!desc) { err.textContent = "Please enter what it was."; return; }
+    if (!isExpense && !pick.key) { err.textContent = "Please choose a product."; return; }
+    if (isExpense && !desc) { err.textContent = "Please enter what it was for."; return; }
     if (amount <= 0) { err.textContent = "Please enter an amount."; return; }
     var isCredit = recPayVal === "credit";
     if (isCredit && !who) {
@@ -954,7 +1149,11 @@ _PAGE_HTML = """<!doctype html>
       description: desc, payment_method: recPayVal,
       vendor: who, has_credit: isCredit,
     };
-    if (recTypeVal !== "expense") body.quantity = String(qty);
+    if (!isExpense) {
+      body.quantity = String(qty);
+      if (pick.key) { body.catalog_product = pick.key; body.catalog_product_name = pick.name; }
+      if (pick.variant) body.variant = pick.variant;
+    }
     if (recTypeVal === "sale" && cost > 0) body.landing_cost = cost;
     var btn = document.getElementById("rec-save");
     btn.disabled = true;
