@@ -49,6 +49,25 @@ TIERS = {
     }
 }
 
+# ==========================================
+# SUBSCRIPTION PERIODS (build #S1/S3)
+# ==========================================
+# How many days each billing period adds to a subscription. Monthly is the
+# default and the only one the picker offers until S3 wires quarterly/yearly.
+PERIOD_DAYS = {
+    "monthly": 30,
+    "quarterly": 90,
+    "yearly": 365,
+}
+# Days AFTER subscription_ends before the hard auto-downgrade to Free (owner
+# decision: 3-day grace with a "payment overdue" nudge during the window).
+GRACE_DAYS = 3
+
+
+def _period_days(period: str) -> int:
+    """Days a billing period adds (default monthly)."""
+    return PERIOD_DAYS.get(str(period or "monthly").lower(), 30)
+
 
 class TierManager:
     """Enforces subscription limits and handles upgrade prompts"""
@@ -319,15 +338,98 @@ class TierManager:
                 f"Or contact support: support@kashia.app"
             )}]
 
-    def upgrade_user(self, phone_number, new_tier):
-        """Upgrade a user to a new tier (called after successful payment)"""
+    def upgrade_user(self, phone_number, new_tier, period="monthly"):
+        """Upgrade (or renew) a user to a paid tier after a successful payment.
+
+        Also stamps the subscription WINDOW (build #S1): subscription_ends,
+        subscription_period, subscription_started, subscription_source. A RENEWAL
+        while still active EXTENDS from the current subscription_ends so remaining
+        days aren't lost; a renewal after lapse extends from today. Zeroing the
+        monthly usage counters is preserved (fresh cycle on pay).
+        """
+        from datetime import timedelta
+        now = datetime.now()
+        days = _period_days(period)
+
+        # Extend from whichever is later: now, or the current end date (so a user
+        # who renews early keeps the days they already paid for).
+        base = now
+        try:
+            existing = self.db.get_user(phone_number) or {}
+            cur_end = existing.get("subscription_ends")
+            if cur_end:
+                cur_dt = datetime.fromisoformat(str(cur_end))
+                if cur_dt > now:
+                    base = cur_dt
+        except Exception:
+            base = now
+
+        new_end = base + timedelta(days=days)
         self.db.update_user(phone_number, {
             'tier': new_tier,
-            'tier_upgraded_at': datetime.now().isoformat(),
+            'tier_upgraded_at': now.isoformat(),      # kept for backward-compat
+            'subscription_started': now.isoformat(),
+            'subscription_period': str(period or "monthly").lower(),
+            'subscription_ends': new_end.isoformat(),
+            'subscription_source': 'paystack',
             'exports_this_month': 0,
             'invoices_this_month': 0,
         })
-        logger.info(f"User {phone_number} upgraded to {new_tier}")
+        logger.info(f"User {phone_number} upgraded to {new_tier} "
+                    f"({period}); ends {new_end.date().isoformat()}")
+
+    def downgrade_user(self, phone_number, reason="expired"):
+        """Downgrade a user back to Free (build #S1). Called by the expiry job
+        after the grace window. Sets tier='free' and records downgraded_at +
+        reason. NEVER deletes transactions/contacts/catalog — Free only caps NEW
+        activity via the existing check_can_* limits (which read tier live)."""
+        self.db.update_user(phone_number, {
+            'tier': 'free',
+            'downgraded_at': datetime.now().isoformat(),
+            'downgrade_reason': reason,
+        })
+        logger.info(f"User {phone_number} downgraded to free ({reason})")
+
+    def subscription_status(self, phone_number):
+        """Read a user's subscription state (build #S1). Returns a dict:
+          {tier, period, ends (iso|None), days_left (int|None), state}
+        state ∈:
+          'free'          — not a paid tier.
+          'grandfathered' — paid tier but NO subscription_ends on record (an
+                            existing paid user from before this feature; treated
+                            as active, never auto-downgraded until they renew).
+          'active'        — paid + ends in the future (days_left ≥ 0).
+          'grace'         — expired within the last GRACE_DAYS (still served, but
+                            nudged; not yet downgraded).
+          'expired'       — past ends + grace (should be downgraded).
+        """
+        user = self.db.get_user(phone_number) or {}
+        tier = user.get('tier', 'free')
+        period = user.get('subscription_period', 'monthly')
+        ends = user.get('subscription_ends')
+
+        if tier == 'free':
+            return {"tier": "free", "period": period, "ends": None,
+                    "days_left": None, "state": "free"}
+        if not ends:
+            return {"tier": tier, "period": period, "ends": None,
+                    "days_left": None, "state": "grandfathered"}
+        try:
+            end_dt = datetime.fromisoformat(str(ends))
+        except Exception:
+            # Unparseable date — treat as grandfathered (never wrongly expire).
+            return {"tier": tier, "period": period, "ends": ends,
+                    "days_left": None, "state": "grandfathered"}
+
+        days_left = (end_dt.date() - datetime.now().date()).days
+        if days_left >= 0:
+            state = "active"
+        elif days_left >= -GRACE_DAYS:
+            state = "grace"
+        else:
+            state = "expired"
+        return {"tier": tier, "period": period, "ends": ends,
+                "days_left": days_left, "state": state}
 
     def reset_monthly_counters(self, phone_number):
         """Reset monthly usage counters (call on 1st of each month)"""

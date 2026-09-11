@@ -163,5 +163,18 @@ re-applies every limit.
 6. **Free-user subscribe nudge:** only at the 80% cap warning, or also a periodic
    value nudge? How often at most?
 
-Nothing here is built yet — this is the plan. On approval, S1 (expiry data +
-downgrade) is the safe first build.
+---
+
+## ✅ OWNER DECISIONS (2026-09-11) — locked
+1. **Grandfathering:** existing paid users get **no expiry until their next
+   renewal** (never surprise-downgrade someone who already paid). A missing
+   `subscription_ends` = active/grandfathered.
+2. **Grace period:** **3 days** after `subscription_ends` before the hard
+   downgrade to Free (a "payment overdue" nudge during grace).
+3. **Multi-period:** BUILD Monthly / Quarterly / Yearly (S3).
+4. **Auto-renewal:** **v1 = manual renewal** via reminders + one-tap checkout.
+   Paystack recurring (card-on-file) is **phase 2 / later** (S5).
+5. **Alert cadence:** T-7 / T-3 / T-1 / expired.
+6. **Free-user subscribe nudge:** at the ~80% free-cap warning, rate-limited.
+
+Build order confirmed: **S1 → S2 → S3 → S4**, S5 later. Starting with S1.
