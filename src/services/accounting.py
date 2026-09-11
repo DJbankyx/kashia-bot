@@ -37,6 +37,7 @@ COGS_CATEGORIES = {
 }
 
 # Cost source labels returned by cogs_for_sale — so callers can explain/flag.
+COST_STAMPED = "stamped"                  # cost the sale recorded AT SALE TIME (authoritative)
 COST_SALE_LANDING = "sale_landing_cost"   # the sale recorded its own cost (specific)
 COST_WEIGHTED_AVG = "weighted_avg"        # product's running weighted-average cost
 COST_CATALOG = "catalog"                  # catalog landing_cost fallback
@@ -137,9 +138,21 @@ class Accounting:
           4. MISSING (0, flagged) — never faked.
         """
         qty = _qty_of(sale_tx)
+        extra = sale_tx.get("extra_details", {}) or {}
+
+        # 0) STAMPED cost — the exact COGS resolved AT SALE TIME and saved on the
+        #    transaction (cost_used_total). This is authoritative: it reflects the
+        #    cost when the sale happened and NEVER re-blends after a later restock
+        #    changes the weighted average. It also delivers specific-identification
+        #    costing (the stamp is per-sale). Read it first.
+        stamped = extra.get("cost_used_total")
+        if stamped in (None, ""):
+            stamped = sale_tx.get("cost_used_total")
+        if stamped not in (None, "") and _to_int(stamped) > 0:
+            src = extra.get("cost_source") or sale_tx.get("cost_source") or COST_STAMPED
+            return _to_int(stamped), src
 
         # 1) Specific cost recorded on the sale itself.
-        extra = sale_tx.get("extra_details", {}) or {}
         lc = extra.get("landing_cost")
         if lc in (None, ""):
             lc = sale_tx.get("landing_cost")
@@ -197,6 +210,86 @@ class Accounting:
 
         # 4) Nothing known.
         return 0, COST_MISSING
+
+    def resolve_sale_cost_now(self, phone_number, tx_data):
+        """Resolve the COGS to STAMP on a sale at save time. Returns
+        (total_cost, unit_cost, source) or (0, 0, COST_MISSING) if unknown.
+
+        Honors the business's `costing_mode` (default 'average'):
+          - 'specific': cost this sale at the EXACT unit cost on record for the
+            chosen unit/leaf right now (tree leaf → flat variant → catalog cost).
+          - 'average' (default): the product's weighted-average unit cost (which,
+            for a tree product, is the leaf's own weighted average).
+        In practice both read the same on-record cost at sale time; the mode
+        matters mainly for how future purchases blend (weighted-avg keeps
+        blending; specific pins each unit). Stamping the value here makes the
+        sale's COGS authoritative either way. Uses an explicit landing_cost on
+        the tx_data first if present (a cost the user typed for this sale).
+        """
+        try:
+            qty = _qty_of(tx_data) or 1
+            # Business costing mode (default weighted-average).
+            user = self.db.get_user(phone_number) or {}
+            mode = str(user.get("costing_mode", "average")).lower()
+            # A cost the user explicitly entered for THIS sale wins (specific).
+            lc = tx_data.get("landing_cost")
+            if lc not in (None, "") and _to_int(lc) > 0:
+                total = _to_int(lc)
+                # landing_cost from the sale flow is a TOTAL for the line.
+                return total, (total // qty if qty else total), COST_SALE_LANDING
+
+            products = self._products(phone_number)
+            product = self._match_product(products, tx_data) if products else None
+            unit = 0
+            source = COST_MISSING
+
+            # Tree-leaf cost (per-unit) if this sale hit a leaf.
+            leaf_path = tx_data.get("variant")
+            if isinstance(leaf_path, (list, tuple)):
+                leaf_path = " / ".join(str(x) for x in leaf_path)
+            has_tree = isinstance(product, dict) and \
+                (product.get("variant_tree") or {}).get("children")
+            if has_tree and leaf_path:
+                try:
+                    from features.catalog import CatalogHandler
+                    cat = CatalogHandler(self.session, self.db)
+                    pkey = tx_data.get("catalog_product") or (product.get("_key") if isinstance(product, dict) else "") or ""
+                    if not pkey:
+                        pkey = cat._find_product_key(products, product.get("name", "")) or ""
+                    lc_leaf = cat.leaf_cost(phone_number, pkey, leaf_path) if pkey else 0
+                    if lc_leaf and lc_leaf > 0:
+                        unit, source = int(lc_leaf), COST_WEIGHTED_AVG
+                except Exception as e:
+                    logger.debug(f"resolve_sale_cost leaf lookup failed: {e}")
+
+            # Product weighted-average, else catalog landing cost.
+            # In 'specific' mode the leaf cost above is the exact unit cost; the
+            # product-level average is only used as a fallback. In 'average'
+            # mode the product weighted-average is the intended source.
+            if unit <= 0 and isinstance(product, dict):
+                avg = product_avg_cost(product)
+                if avg > 0:
+                    unit = avg
+                    source = "specific" if mode == "specific" else COST_WEIGHTED_AVG
+            if unit <= 0:
+                try:
+                    from features.catalog import CatalogHandler
+                    cat = CatalogHandler(self.session, self.db)
+                    desc = tx_data.get("description", tx_data.get("item_name", "")) or ""
+                    brand = tx_data.get("brand", "") or ""
+                    search = f"{brand} {desc}".strip() if brand else desc
+                    cc = cat.get_landing_cost(phone_number, search) if search else 0
+                    if cc and cc > 0:
+                        unit, source = int(cc), COST_CATALOG
+                except Exception as e:
+                    logger.debug(f"resolve_sale_cost catalog lookup failed: {e}")
+
+            if unit > 0:
+                return unit * qty, unit, source
+            return 0, 0, COST_MISSING
+        except Exception as e:
+            logger.warning(f"resolve_sale_cost_now failed: {e}")
+            return 0, 0, COST_MISSING
 
     # ── Profit & Loss (accrual) ─────────────────────────────────────────
 

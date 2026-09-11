@@ -645,6 +645,9 @@ class TransactionHandler:
                 )
                 tx_id = result.get("transaction_id", "") if isinstance(result, dict) else ""
 
+                # Stamp COGS on this credit (no-vendor-yet) SALE too.
+                self._stamp_sale_cost(phone_number, tx_id, tx_data)
+
                 # Ask who bought on credit — use CRM_HINT state.
                 # For a deposit/part payment, only the UNPAID BALANCE is owed
                 # (not the full amount). Fall back to the full amount for a
@@ -761,6 +764,14 @@ class TransactionHandler:
 
                         # Deduct from stock
                         cat.update_stock(phone_number, desc, -qty)
+
+                        # Stamp the production cost used as this sale's COGS.
+                        if tx_id:
+                            self.db.update_transaction(phone_number, tx_id, {
+                                "cost_used_total": int(product_cost) * qty,
+                                "cost_unit": int(product_cost),
+                                "cost_source": "recipe",
+                            })
 
                         self.session.reset(phone_number)
                         return [
@@ -1039,6 +1050,27 @@ class TransactionHandler:
             logger.warning(f"_apply_stock_for_tx failed: {e}")
             return None
 
+    def _stamp_sale_cost(self, phone_number: str, tx_id: str, tx_data: dict):
+        """Stamp the COGS used on a SALE onto the saved transaction, so it's
+        authoritative (never re-blends after a later restock) and viewable per
+        transaction. Resolves via the shared accounting engine honoring the
+        business's costing_mode. No-op for non-sales, missing tx_id, or when no
+        cost is resolvable (leaves it 'uncosted', honestly)."""
+        if tx_data.get("type") != "sale" or not tx_id:
+            return
+        try:
+            from services.accounting import Accounting
+            acct = Accounting(self.db, self.session)
+            total, unit, source = acct.resolve_sale_cost_now(phone_number, tx_data)
+            if total and total > 0:
+                self.db.update_transaction(phone_number, tx_id, {
+                    "cost_used_total": int(total),
+                    "cost_unit": int(unit),
+                    "cost_source": source,
+                })
+        except Exception as e:
+            logger.warning(f"_stamp_sale_cost failed: {e}")
+
     def _maybe_cost_choice_prompt(self, phone_number: str, tx_data: dict,
                                   stock_result: dict):
         """Bug-9 feature: when a PURCHASE arrives at a NEW per-unit price that
@@ -1137,7 +1169,10 @@ class TransactionHandler:
             if tx_data.get("scan_extra"):
                 credit_extra.update(tx_data["scan_extra"])
 
-            # Save the transaction
+            # Save the transaction. Pass quantity/brand/unit_cost too (the normal
+            # save path does) — without them a credit/part-payment MULTI-UNIT sale
+            # stored no quantity, so an invoice built from it showed Qty 1 and the
+            # full amount as the unit price. Now the qty is persisted correctly.
             result = self.db.save_transaction(
                 phone_number,
                 int(amount),
@@ -1146,10 +1181,17 @@ class TransactionHandler:
                 tx_data["category"],
                 vendor=vendor,
                 item_name=description,
+                quantity=tx_data.get("quantity"),
+                brand=tx_data.get("brand"),
+                unit_cost=tx_data.get("unit_cost"),
                 payment_method="credit",
                 extra_details=credit_extra if credit_extra else None,
             )
             tx_id = result.get("transaction_id", "") if isinstance(result, dict) else ""
+
+            # Stamp the COGS used on a credit/part-payment SALE (this path never
+            # resolved cost before, so these sales re-blended after a restock).
+            self._stamp_sale_cost(phone_number, tx_id, tx_data)
 
             # Count this transaction against the contact (transaction_count,
             # totals, analytics) — the same bookkeeping the non-credit save path
@@ -1586,6 +1628,12 @@ class TransactionHandler:
             self.db.update_transaction(phone_number, tx_id, {
                 "landing_cost": total_cost,
                 "landing_cost_per_unit": landing_cost_per_unit,
+                # Also stamp the explicit cost-used fields so the sale record
+                # shows "cost used" and the accounting engine treats it as
+                # authoritative (never re-blends after a later restock).
+                "cost_used_total": total_cost,
+                "cost_unit": landing_cost_per_unit,
+                "cost_source": "sale_landing_cost",
             })
 
         # Also update catalog with per-unit cost for future auto-fill

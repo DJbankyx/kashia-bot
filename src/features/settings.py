@@ -91,6 +91,15 @@ class SettingsHandler:
         if button_id == "set_notify_off":
             return self._set_notifications(phone_number, False)
 
+        if button_id == "set_costing":
+            return self._show_costing(phone_number)
+
+        if button_id == "set_costing_average":
+            return self._set_costing_mode(phone_number, "average")
+
+        if button_id == "set_costing_specific":
+            return self._set_costing_mode(phone_number, "specific")
+
         if button_id.startswith("set_upgrade_"):
             plan = button_id.replace("set_upgrade_", "")
             return self._handle_upgrade_request(phone_number, plan)
@@ -339,6 +348,43 @@ class SettingsHandler:
         return [text_response(
             f"✅ Notifications turned *{status}*\n\n"
             f"_You can change this anytime from Help & Settings._"
+        )]
+
+    # ─────────────────────────────────────────────────────────
+    # COSTING METHOD (weighted-average vs specific-identification)
+    # ─────────────────────────────────────────────────────────
+
+    def _show_costing(self, phone_number: str) -> list:
+        """Show the costing-method choice. Default is weighted-average."""
+        user = self.db.get_user(phone_number) or {}
+        mode = str(user.get("costing_mode", "average")).lower()
+        avg_mark = "✅ " if mode != "specific" else ""
+        spec_mark = "✅ " if mode == "specific" else ""
+        return [button_response(
+            "🧮 *Costing method*\n\n"
+            "How should I value the cost of what you sell?\n\n"
+            f"{avg_mark}*Weighted average* — blends each restock into one running "
+            "cost. Best for everyday stock with changing prices.\n\n"
+            f"{spec_mark}*Specific* — costs each sale at the exact cost of that "
+            "unit. Best for unique high-value items (e.g. vehicles).\n\n"
+            "_Either way, each sale's cost is locked in when it's recorded — a "
+            "later restock never changes past profit._",
+            [
+                {"id": "set_costing_average", "title": "⚖️ Weighted average"},
+                {"id": "set_costing_specific", "title": "🎯 Specific"},
+            ]
+        )]
+
+    def _set_costing_mode(self, phone_number: str, mode: str) -> list:
+        """Persist the costing mode (average | specific)."""
+        mode = "specific" if mode == "specific" else "average"
+        self.db.update_user(phone_number, {"costing_mode": mode})
+        self.session.reset(phone_number)
+        label = "Specific (per-unit) 🎯" if mode == "specific" else "Weighted average ⚖️"
+        return [text_response(
+            f"✅ Costing method set to *{label}*.\n\n"
+            f"_Applies to sales recorded from now on. Change anytime in "
+            f"Help & Settings._"
         )]
 
     # ─────────────────────────────────────────────────────────

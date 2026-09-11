@@ -213,6 +213,8 @@ class HybridIndustry(BaseIndustry):
                      "description": "Switch business type"},
                     {"id": "set_notify", "title": "🔔 Notifications",
                      "description": "Daily reports on/off"},
+                    {"id": "set_costing", "title": "🧮 Costing Method",
+                     "description": "Weighted average or specific"},
                     {"id": "set_bug", "title": "🐛 Report a Problem",
                      "description": "Send feedback"},
                     {"id": "set_reset", "title": "🧹 Clear My Data",
