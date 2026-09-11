@@ -22,6 +22,15 @@ def lambda_handler(event, context):
         headers = event.get('headers', {}) or {}
         signature = headers.get('x-paystack-signature', '') or headers.get('X-Paystack-Signature', '')
         body = event.get('body', '') or ''
+        # API Gateway may deliver the body base64-encoded. Paystack's HMAC is
+        # computed over the RAW JSON it sent, so decode first or the signature
+        # check would fail on every genuine webhook (silent "no upgrade").
+        if event.get('isBase64Encoded') and body:
+            try:
+                import base64
+                body = base64.b64decode(body).decode('utf-8')
+            except Exception as e:
+                logger.error(f"Paystack webhook: body b64 decode failed: {e}")
 
         if not PaystackService.verify_webhook_signature(body, signature, secret):
             logger.warning("Invalid Paystack webhook signature")
