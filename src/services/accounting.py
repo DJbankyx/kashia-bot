@@ -216,15 +216,16 @@ class Accounting:
         (total_cost, unit_cost, source) or (0, 0, COST_MISSING) if unknown.
 
         Honors the business's `costing_mode` (default 'average'):
-          - 'specific': cost this sale at the EXACT unit cost on record for the
-            chosen unit/leaf right now (tree leaf → flat variant → catalog cost).
-          - 'average' (default): the product's weighted-average unit cost (which,
-            for a tree product, is the leaf's own weighted average).
-        In practice both read the same on-record cost at sale time; the mode
-        matters mainly for how future purchases blend (weighted-avg keeps
-        blending; specific pins each unit). Stamping the value here makes the
-        sale's COGS authoritative either way. Uses an explicit landing_cost on
-        the tx_data first if present (a cost the user typed for this sale).
+          - 'specific': pin this sale to the EXACT cost of THIS unit. Resolution:
+            a cost typed for this sale (landing_cost) → the per-unit tree leaf
+            cost → catalog specific cost. If none of those exist we fall back to
+            the product weighted-average, but we label it weighted_avg (NOT
+            specific) so it's honestly disclosed as an approximation — the caller
+            can then prompt for the exact unit cost (improvement #1).
+          - 'average' (default): the product's weighted-average unit cost (for a
+            tree product, the leaf's own weighted average).
+        Stamping the resolved value here makes the sale's COGS authoritative
+        (never re-blends after a later restock).
         """
         try:
             qty = _qty_of(tx_data) or 1
@@ -263,14 +264,19 @@ class Accounting:
                     logger.debug(f"resolve_sale_cost leaf lookup failed: {e}")
 
             # Product weighted-average, else catalog landing cost.
-            # In 'specific' mode the leaf cost above is the exact unit cost; the
-            # product-level average is only used as a fallback. In 'average'
-            # mode the product weighted-average is the intended source.
+            # The genuinely SPECIFIC (pinned) cost comes from a typed landing_cost
+            # (handled above, returns early) or a per-unit tree leaf (handled
+            # above). If we reach the product-level average, that is NOT a
+            # specific cost — it's the blended running average. Label it honestly
+            # as weighted_avg EVEN in specific mode, so reports/nudges can flag
+            # "this sale used the average; enter the exact unit cost for accuracy"
+            # (improvement #1). Relabelling an average as "specific" was
+            # misleading and is fixed here.
             if unit <= 0 and isinstance(product, dict):
                 avg = product_avg_cost(product)
                 if avg > 0:
                     unit = avg
-                    source = "specific" if mode == "specific" else COST_WEIGHTED_AVG
+                    source = COST_WEIGHTED_AVG
             if unit <= 0:
                 try:
                     from features.catalog import CatalogHandler

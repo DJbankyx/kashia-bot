@@ -1356,6 +1356,10 @@ class TransactionHandler:
                 extra["variant"] = variant
 
             # Reverse COGS by COPYING the original sale's STAMPED cost (pro-rated).
+            # orig_cost_unit is also reused below to REINSTATE the returned unit
+            # at its real cost (improvement #3) so a returned car doesn't fold
+            # into a drifted blended average.
+            orig_cost_unit = 0
             if orig_type == "sale":
                 orig_cost_total = int(orig_extra.get("cost_used_total")
                                       or original.get("cost_used_total") or 0)
@@ -1399,9 +1403,24 @@ class TransactionHandler:
                 search_name = f"{brand} {description}".strip() if brand else description
                 # sale_return puts goods back IN (+qty); purchase_return sends them OUT (-qty).
                 stock_delta = qty if orig_type == "sale" else -qty
-                stock_result = cat.update_stock(
-                    phone_number, search_name, stock_delta,
-                    quantity_str="", variant=variant, cost_mode="keep")
+                # IMPROVEMENT #3 — reinstate the returned unit at its REAL cost.
+                # A returned SALE re-enters inventory carrying the exact unit cost
+                # the sale was stamped with (orig_cost_unit), blended in like a
+                # mini-purchase so the stored cost reflects that unit's true cost
+                # instead of a drifted average. This is correct for BOTH modes:
+                # weighted-average blends it fairly; specific keeps the real cost.
+                # Falls back to cost_mode='keep' when no stamped cost is on record
+                # (legacy / uncosted sale) and always for purchase returns (goods
+                # leave — don't disturb the average).
+                if orig_type == "sale" and orig_cost_unit > 0:
+                    stock_result = cat.update_stock(
+                        phone_number, search_name, stock_delta,
+                        unit_cost=orig_cost_unit, quantity_str="", variant=variant,
+                        cost_mode="average")
+                else:
+                    stock_result = cat.update_stock(
+                        phone_number, search_name, stock_delta,
+                        quantity_str="", variant=variant, cost_mode="keep")
             except Exception as e:
                 logger.warning(f"record_return: stock reversal failed: {e}")
 
@@ -1875,6 +1894,17 @@ class TransactionHandler:
             "lc_stock_deducted": tx_data.get("_stock_already_deducted", False),
         })
 
+        # IMPROVEMENT #1 — in SPECIFIC costing mode the "cost on file" is usually
+        # a blended/approximate figure for a unique high-value item (a car). So
+        # lead with "enter THIS unit's exact cost" and explain why, instead of
+        # nudging the user to accept an average. Weighted-average mode keeps the
+        # familiar "Use this cost" default.
+        try:
+            _user = self.db.get_user(phone_number) or {}
+            _specific = str(_user.get("costing_mode", "average")).lower() == "specific"
+        except Exception:
+            _specific = False
+
         if saved_cost:
             # Catalog has a cost on file — ask whether to USE it or enter a
             # different cost for this sale. (Never silently re-ask when we
@@ -1882,6 +1912,21 @@ class TransactionHandler:
             total_saved = int(saved_cost) * qty
             breakdown = (f" ({qty} × {format_amount(saved_cost)} = {format_amount(total_saved)})"
                          if qty > 1 else "")
+            if _specific:
+                # Exact-cost-first for unique/high-value goods.
+                return [button_response(
+                    f"✅ *Sale saved!* {format_amount(amount)}\n\n"
+                    f"🏷️ *Cost on file for {display_name}:*\n"
+                    f"*{format_amount(saved_cost)}/unit*{breakdown}\n\n"
+                    f"_You're on *specific costing* — for the most accurate profit, "
+                    f"enter what THIS unit actually cost you. Or use the figure on "
+                    f"file if it's right._",
+                    [
+                        {"id": "lc_different", "title": "✏️ Enter this unit's cost"},
+                        {"id": "lc_use_saved", "title": f"✅ Use {format_amount(total_saved)}"},
+                        {"id": "lc_skip",      "title": "⏭️ Skip"},
+                    ]
+                )]
             return [button_response(
                 f"✅ *Sale saved!* {format_amount(amount)}\n\n"
                 f"🏷️ *Cost on file for {display_name}:*\n"
