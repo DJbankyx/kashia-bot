@@ -178,3 +178,34 @@ re-applies every limit.
 6. **Free-user subscribe nudge:** at the ~80% free-cap warning, rate-limited.
 
 Build order confirmed: **S1 → S2 → S3 → S4**, S5 later. Starting with S1.
+
+---
+
+## ✅ BUILD STATUS (2026-09-11)
+- **S1 DONE (44cc2be)** — expiry data + downgrade foundation. upgrade_user(period)
+  stamps subscription_ends/period/started/source (extends from current end on
+  early renewal); downgrade_user (tier→free, keeps data); subscription_status
+  (free/grandfathered/active/grace/expired, 3-day grace). Grandfather existing
+  paid users. 24 checks.
+- **S2 DONE (bbb36ac)** — handlers/subscription_reminder.py + template.yaml
+  SubscriptionReminderFunction (daily cron 08:00 UTC, shared DLQ). T-7/T-3/T-1
+  renewal nudges + grace overdue nudge + expired auto-downgrade, all with a Renew
+  button; send-once guard; free/grandfathered skipped; cross-platform send. 22
+  checks; sam validate OK. **NEEDS ./deploy.sh dev (creates the Lambda).**
+- **S3 DONE (c85708e)** — multi-period pricing + picker. Per-period PLANS (yearly
+  = 10× monthly = 2 months free; quarterly small discount); period threaded into
+  Paystack amount/reference/metadata; webhook parses period (metadata > reference
+  > monthly back-compat) → upgrade_user(plan,period); Monthly/Quarterly/Yearly
+  picker. 22 checks.
+- **S4 DONE (72d0cfe)** — rate-limited subscribe nudge. should_nudge_subscribe
+  (once/day) + subscribe_cta; main.py surfaces a buttoned Subscribe CTA at the
+  hard cap AND the (previously ignored) 80% warning, without ever blocking the
+  soft case. 11 checks.
+- **S5 PARKED** — Paystack recurring / card-on-file auto-renewal (phase 2).
+
+### ⚠️ Open item (owner decision, NOT auto-changed)
+`check_can_generate_pdf` still short-circuits (`return True, None`) with a
+"re-enable after beta" TODO. Re-enabling it turns PDF statements into a paid
+feature for Free users — a live paywall change mid-beta. Left AS-IS on purpose;
+flip it only on the owner's go-ahead. (Downgrade already re-applies the ENFORCED
+limits — transactions/exports/invoices — because they read `tier` live.)
