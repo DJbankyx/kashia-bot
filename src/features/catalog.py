@@ -3718,6 +3718,49 @@ class CatalogHandler:
             logger.warning(f"set_cost_direct failed: {e}")
             return False
 
+    def set_sale_price(self, phone_number: str, product_key: str, price: int) -> bool:
+        """Set a product's selling price (product-level). Mirrors the chat
+        _handle_set_sale_price persistence. Returns True on success."""
+        try:
+            products = self._get_products(phone_number)
+            prod = products.get(product_key)
+            if not isinstance(prod, dict):
+                return False
+            prod["sale_price"] = int(price)
+            products[product_key] = prod
+            self._save_products(phone_number, products)
+            return True
+        except Exception as e:
+            logger.warning(f"set_sale_price failed: {e}")
+            return False
+
+    def set_stock_exact(self, phone_number: str, product_name: str, target: int,
+                        variant: str = "") -> dict:
+        """Set stock to an EXACT count (product or tree leaf) by computing the
+        delta and routing through update_stock, so movement logging + tree
+        roll-up resync stay consistent with every other stock change. Returns
+        the update_stock result dict."""
+        target = max(0, int(target))
+        # Current count: leaf if a variant path is given, else product total.
+        products = self._get_products(phone_number)
+        key = self._find_product_key(products, product_name)
+        current = 0
+        if key:
+            prod = products[key]
+            if variant:
+                tree = prod.get("variant_tree") or {}
+                if tree.get("children"):
+                    parts = [x.strip() for x in variant.split(self._COMBO_SEP) if x.strip()]
+                    node = self._vt_get_node(tree, parts)
+                    current = self._as_int((node or {}).get("stock"), 0)
+                else:
+                    current = int(prod.get("variant_stock", {}).get(variant, 0) or 0)
+            else:
+                current = int(prod.get("stock", 0) or 0)
+        delta = target - current
+        return self.update_stock(phone_number, product_name, delta,
+                                 variant=variant, cost_mode="keep")
+
     def leaf_cost(self, phone_number: str, product_key: str, leaf_path: str) -> int:
         """Public: per-unit cost stored on a variant-tree LEAF. leaf_path is
         e.g. 'Sienna / 1992 / White'. Returns 0 if not a tree / not found. Lets

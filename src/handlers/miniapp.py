@@ -92,24 +92,29 @@ def lambda_handler(event, context):
                   or (event.get("requestContext", {}) or {}).get("http", {}).get("method")
                   or "GET").upper()
 
-        if method != "GET":
+        if method not in ("GET", "POST"):
             return _json(405, {"error": "method not allowed"})
 
         # The page shell is public HTML (no data in it — the JS fetches data with
         # initData afterward). Data routes below require a valid signature.
-        if path.endswith("/app"):
+        if method == "GET" and path.endswith("/app"):
             return _html(_PAGE_HTML)
 
-        # Every data route requires a valid Telegram signature.
+        # Every data + write route requires a valid Telegram signature.
         user_id, err = _authenticate(event)
         if err is not None:
             return err
 
-        if path.endswith("/app/api/summary"):
+        # ── Writes (M6a) ──
+        if method == "POST" and path.endswith("/app/api/product"):
+            return _product_write(event, user_id)
+
+        # ── Reads ──
+        if method == "GET" and path.endswith("/app/api/summary"):
             return _summary(event, user_id)
-        if path.endswith("/app/api/inventory"):
+        if method == "GET" and path.endswith("/app/api/inventory"):
             return _inventory(event, user_id)
-        if path.endswith("/app/api/charts"):
+        if method == "GET" and path.endswith("/app/api/charts"):
             return _charts(event, user_id)
 
         return _json(404, {"error": "not found", "path": path})
@@ -178,6 +183,26 @@ def _summary(event, user_id: str):
     })
 
 
+def _row_from_product(p: dict) -> dict:
+    """Map a normalized product into the grid-row shape the page expects.
+    Shared by the inventory list and the write echo, so the UI can patch a row
+    in place after a write with an identical shape."""
+    return {
+        "key": p.get("_key"),
+        "name": p.get("name"),
+        "category": p.get("category") or "",
+        "unit": p.get("primary_unit") or "",
+        "stock": int(p.get("stock") or 0),
+        "cost": int(p.get("landing_cost") or 0),
+        "sale_price": int(p.get("sale_price") or 0),
+        "reorder_level": int(p.get("reorder_level") or 0),
+        "low_stock": bool(p.get("_is_low_stock")),
+        "has_variants": bool(p.get("_has_tree") or p.get("_has_variants")),
+        "stock_value": int(p.get("_stock_value") or 0),
+        "item_type": p.get("item_type") or "",
+    }
+
+
 def _inventory(event, user_id: str):
     """The normalized product grid — the same data the catalog shelf shows."""
     from services.database import Database
@@ -186,28 +211,84 @@ def _inventory(event, user_id: str):
     db = Database()
     cat = CatalogHandler(None, db)
     products = cat._normalized_products(user_id) or []
-
-    rows = []
-    for p in products:
-        rows.append({
-            "key": p.get("_key"),
-            "name": p.get("name"),
-            "category": p.get("category") or "",
-            "unit": p.get("primary_unit") or "",
-            "stock": int(p.get("stock") or 0),
-            "cost": int(p.get("landing_cost") or 0),
-            "sale_price": int(p.get("sale_price") or 0),
-            "reorder_level": int(p.get("reorder_level") or 0),
-            "low_stock": bool(p.get("_is_low_stock")),
-            "has_variants": bool(p.get("_has_tree") or p.get("_has_variants")),
-            "stock_value": int(p.get("_stock_value") or 0),
-            "item_type": p.get("item_type") or "",
-        })
+    rows = [_row_from_product(p) for p in products]
 
     # Stable, useful ordering: low-stock first, then by name.
     rows.sort(key=lambda r: (not r["low_stock"], (r["name"] or "").lower()))
 
     return _json(200, {"count": len(rows), "products": rows})
+
+
+def _parse_body(event) -> dict:
+    """Parse a JSON request body (API Gateway may base64-encode it)."""
+    import base64
+    body = event.get("body") or ""
+    if event.get("isBase64Encoded"):
+        try:
+            body = base64.b64decode(body).decode("utf-8")
+        except Exception:
+            return {}
+    try:
+        return json.loads(body) if body else {}
+    except Exception:
+        return {}
+
+
+def _product_write(event, user_id: str):
+    """M6a — apply a catalog write for the AUTH'D user only. Body:
+        {action, key, variant?, value}
+    Actions: set_price, set_cost, set_stock (exact), set_stock_delta (+/-).
+    All reuse existing engine methods; money-safe (value-sets, per-user, tree
+    leaf aware). Echoes the recomputed product row so the UI reflects truth."""
+    from services.database import Database
+    from features.catalog import CatalogHandler
+
+    data = _parse_body(event)
+    action = str(data.get("action", "")).strip()
+    key = str(data.get("key", "")).strip()
+    variant = str(data.get("variant", "") or "").strip()
+    raw_value = data.get("value")
+
+    if not key or action not in ("set_price", "set_cost", "set_stock", "set_stock_delta"):
+        return _json(400, {"error": "bad request"})
+
+    db = Database()
+    cat = CatalogHandler(None, db)
+
+    # Resolve the product on the AUTH'D user's catalog only.
+    products = cat._get_products(user_id) or {}
+    prod = products.get(key)
+    if not isinstance(prod, dict):
+        return _json(404, {"error": "product not found"})
+    name = prod.get("name") or key
+
+    # Validate the value per action (server-side; never trust the client).
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        return _json(400, {"error": "value must be a number"})
+
+    if action in ("set_price", "set_cost", "set_stock") and value < 0:
+        return _json(400, {"error": "value must be 0 or more"})
+
+    ok = True
+    if action == "set_price":
+        ok = cat.set_sale_price(user_id, key, value)
+    elif action == "set_cost":
+        ok = cat.set_cost_direct(user_id, name, value, variant)
+    elif action == "set_stock":
+        res = cat.set_stock_exact(user_id, name, value, variant)
+        ok = bool(res.get("matched", True))
+    elif action == "set_stock_delta":
+        res = cat.update_stock(user_id, name, value, variant=variant, cost_mode="keep")
+        ok = bool(res.get("matched", True))
+
+    if not ok:
+        return _json(500, {"error": "write failed"})
+
+    # Echo the recomputed row (true stored state, not the client's optimistic value).
+    updated = cat.get_normalized_product(user_id, key)
+    return _json(200, {"ok": True, "product": _row_from_product(updated)})
 
 
 def _png_data_uri(path: str):
@@ -340,6 +421,29 @@ _PAGE_HTML = """<!doctype html>
   .badge.low { background: rgba(255,92,92,.18); color: var(--neg); }
   .badge.var { background: rgba(46,166,255,.16); color: var(--accent); }
   .chart { width: 100%; border-radius: 8px; margin-top: 8px; display: block; }
+  .item.tappable { cursor: pointer; }
+  .item.tappable:active { opacity: .6; }
+  /* Edit sheet (bottom sheet modal) */
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55);
+    display: flex; align-items: flex-end; z-index: 50; }
+  .sheet { width: 100%; background: var(--bg); border-radius: 16px 16px 0 0;
+    padding: 18px 16px 26px; box-shadow: 0 -4px 24px rgba(0,0,0,.4); }
+  .sheet h2 { font-size: 16px; margin: 0 0 2px; }
+  .sheet .sub2 { color: var(--hint); font-size: 12px; margin-bottom: 14px; }
+  .field { margin-bottom: 14px; }
+  .field label { display:block; color: var(--hint); font-size: 12px; margin-bottom: 5px; }
+  .field input { width: 100%; padding: 11px 12px; border-radius: 10px;
+    border: 1px solid var(--line); background: var(--card); color: var(--text); font-size: 16px; }
+  .steppers { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .step { flex: 1; min-width: 52px; text-align:center; padding: 9px 0; border-radius: 10px;
+    background: var(--card); border: 1px solid var(--line); color: var(--text); font-weight:600; cursor:pointer; }
+  .sheet .actions { display: flex; gap: 10px; margin-top: 6px; }
+  .btn { flex: 1; padding: 12px; border-radius: 10px; border: none; font-size: 15px;
+    font-weight: 700; cursor: pointer; }
+  .btn.save { background: var(--accent); color: var(--btntext); }
+  .btn.cancel { background: var(--card); color: var(--text); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .sheeterr { color: var(--neg); font-size: 13px; margin-top: 6px; min-height: 16px; }
   .hidden { display: none; }
 </style>
 </head>
@@ -385,6 +489,38 @@ _PAGE_HTML = """<!doctype html>
     <input class="search" id="search" placeholder="Search products..." oninput="renderInv()">
     <div class="card" id="invlist"><div class="muted">Loading...</div></div>
     <div id="invmsg" class="muted"></div>
+  </div>
+
+  <!-- Edit sheet (bottom modal) -->
+  <div id="overlay" class="overlay hidden">
+    <div class="sheet">
+      <h2 id="sh-name">Product</h2>
+      <div class="sub2" id="sh-sub"></div>
+      <div class="field">
+        <label>Stock</label>
+        <input id="sh-stock" type="number" inputmode="numeric" min="0">
+        <div class="steppers">
+          <div class="step" onclick="bump(-5)">-5</div>
+          <div class="step" onclick="bump(-1)">-1</div>
+          <div class="step" onclick="bump(1)">+1</div>
+          <div class="step" onclick="bump(5)">+5</div>
+          <div class="step" onclick="bump(10)">+10</div>
+        </div>
+      </div>
+      <div class="field">
+        <label>Selling price (NGN)</label>
+        <input id="sh-price" type="number" inputmode="numeric" min="0">
+      </div>
+      <div class="field">
+        <label>Cost per unit (NGN)</label>
+        <input id="sh-cost" type="number" inputmode="numeric" min="0">
+      </div>
+      <div class="sheeterr" id="sh-err"></div>
+      <div class="actions">
+        <button class="btn cancel" onclick="closeSheet()">Cancel</button>
+        <button class="btn save" id="sh-save" onclick="saveSheet()">Save changes</button>
+      </div>
+    </div>
   </div>
 
 <script>
@@ -502,7 +638,7 @@ _PAGE_HTML = """<!doctype html>
                 || (p.category || "").toLowerCase().indexOf(q) >= 0;
     });
     if (!rows.length) { list.innerHTML = '<div class="muted">No products.</div>'; return; }
-    var html = "";
+    list.innerHTML = "";
     rows.forEach(function (p) {
       var margin = (p.sale_price && p.cost) ? (p.sale_price - p.cost) : 0;
       var badges = "";
@@ -512,13 +648,19 @@ _PAGE_HTML = """<!doctype html>
       if (p.cost) sub.push("cost " + naira(p.cost));
       if (p.sale_price) sub.push("price " + naira(p.sale_price));
       if (margin) sub.push("margin " + naira(margin));
-      html += '<div class="item"><div><div class="name">' + escapeHtml(p.name || "?") + badges +
+      var div = document.createElement("div");
+      // Variant (tree) products are edited per-leaf in chat; the web edit sheet
+      // targets product-level fields, so only tap-to-edit non-variant products
+      // for now (avoids ambiguous which-leaf writes).
+      div.className = "item" + (p.has_variants ? "" : " tappable");
+      div.innerHTML = '<div><div class="name">' + escapeHtml(p.name || "?") + badges +
         '</div><div class="meta">' + (sub.join(" / ") || "no price/cost set") + '</div></div>' +
         '<div class="right"><div class="stock">' + Number(p.stock||0).toLocaleString() +
         ' ' + escapeHtml(p.unit || "") + '</div><div class="meta">' +
-        (p.stock_value ? naira(p.stock_value) : "") + '</div></div></div>';
+        (p.stock_value ? naira(p.stock_value) : "") + '</div></div>';
+      if (!p.has_variants) div.onclick = function () { openSheet(p); };
+      list.appendChild(div);
     });
-    list.innerHTML = html;
     document.getElementById("invmsg").textContent = rows.length + " product(s)";
   };
   function escapeHtml(s) {
@@ -526,6 +668,88 @@ _PAGE_HTML = """<!doctype html>
       return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
     });
   }
+
+  // ── Edit sheet (M6a write) ──
+  var editing = null;   // the product being edited
+  function apiPost(sub, body) {
+    return fetch(BASE + "/" + sub, {
+      method: "POST",
+      headers: { "X-Telegram-Init-Data": initData, "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }).then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok || !j.ok) throw new Error((j && j.error) || ("Error " + r.status));
+        return j;
+      });
+    });
+  }
+  window.openSheet = function (p) {
+    editing = p;
+    document.getElementById("sh-name").textContent = p.name || "Product";
+    document.getElementById("sh-sub").textContent =
+      "Stock in " + (p.unit || "units") + " · edits save to your catalog";
+    document.getElementById("sh-stock").value = Number(p.stock || 0);
+    document.getElementById("sh-price").value = p.sale_price ? Number(p.sale_price) : "";
+    document.getElementById("sh-cost").value = p.cost ? Number(p.cost) : "";
+    document.getElementById("sh-err").textContent = "";
+    document.getElementById("sh-save").disabled = false;
+    document.getElementById("overlay").classList.remove("hidden");
+  };
+  window.closeSheet = function () {
+    document.getElementById("overlay").classList.add("hidden");
+    editing = null;
+  };
+  window.bump = function (n) {
+    var el = document.getElementById("sh-stock");
+    el.value = Math.max(0, (parseInt(el.value, 10) || 0) + n);
+  };
+  window.saveSheet = function () {
+    if (!editing) return;
+    var key = editing.key;
+    var newStock = Math.max(0, parseInt(document.getElementById("sh-stock").value, 10) || 0);
+    var priceRaw = document.getElementById("sh-price").value;
+    var costRaw = document.getElementById("sh-cost").value;
+    var newPrice = priceRaw === "" ? null : Math.max(0, parseInt(priceRaw, 10) || 0);
+    var newCost = costRaw === "" ? null : Math.max(0, parseInt(costRaw, 10) || 0);
+
+    // Only send the fields that actually changed.
+    var ops = [];
+    if (newStock !== Number(editing.stock || 0))
+      ops.push({ action: "set_stock", key: key, value: newStock });
+    if (newPrice !== null && newPrice !== Number(editing.sale_price || 0))
+      ops.push({ action: "set_price", key: key, value: newPrice });
+    if (newCost !== null && newCost !== Number(editing.cost || 0))
+      ops.push({ action: "set_cost", key: key, value: newCost });
+
+    if (!ops.length) { closeSheet(); return; }
+
+    var saveBtn = document.getElementById("sh-save");
+    saveBtn.disabled = true;                    // double-tap guard
+    document.getElementById("sh-err").textContent = "";
+
+    // Apply sequentially; the last response carries the fully-updated row.
+    var latest = null;
+    ops.reduce(function (chain, op) {
+      return chain.then(function () {
+        return apiPost("api/product", op).then(function (j) { latest = j.product; });
+      });
+    }, Promise.resolve())
+    .then(function () {
+      // Patch the row in place from the server's truth, re-render, close.
+      if (latest) {
+        for (var i = 0; i < invData.length; i++) {
+          if (invData[i].key === latest.key) { invData[i] = latest; break; }
+        }
+        renderInv();
+      }
+      closeSheet();
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    })
+    .catch(function (e) {
+      saveBtn.disabled = false;
+      document.getElementById("sh-err").textContent = e.message || "Save failed";
+    });
+  };
 
   if (!initData) {
     document.getElementById("period").textContent = "";
