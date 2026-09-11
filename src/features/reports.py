@@ -509,6 +509,15 @@ class ReportsHandler:
             {"id": f"report_export_{period}", "title": "📎 Excel"},
             {"id": "menu_home", "title": "☰ Menu"},
         ]
+        # Mini App entry (N6): a web_app button that opens the full in-chat app.
+        # Only shown when the deployed URL is configured (MINIAPP_URL env), so it
+        # never renders a dead button pre-deploy. The Telegram client renders a
+        # `web_app` button; WhatsApp never reaches this Telegram-only card.
+        import os as _os
+        _miniapp_url = _os.environ.get("MINIAPP_URL", "").strip()
+        if _miniapp_url:
+            rows.insert(0, {"id": "open_miniapp", "title": "📲 Open full app",
+                            "web_app": {"url": _miniapp_url}})
         return [list_response(
             header=f"📊 Dashboard — {d['label']}",
             body="\n".join(lines),

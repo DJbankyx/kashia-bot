@@ -72,8 +72,20 @@ def _authenticate(event):
     return result["user_id"], None
 
 
+def _html(body_html: str):
+    return {
+        "statusCode": 200,
+        "headers": {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "no-store",
+        },
+        "body": body_html,
+        "isBase64Encoded": False,
+    }
+
+
 def lambda_handler(event, context):
-    """Route the Mini App API request."""
+    """Route the Mini App request (page + API)."""
     try:
         path = (event.get("path") or event.get("rawPath") or "").rstrip("/")
         method = (event.get("httpMethod")
@@ -82,6 +94,11 @@ def lambda_handler(event, context):
 
         if method != "GET":
             return _json(405, {"error": "method not allowed"})
+
+        # The page shell is public HTML (no data in it — the JS fetches data with
+        # initData afterward). Data routes below require a valid signature.
+        if path.endswith("/app"):
+            return _html(_PAGE_HTML)
 
         # Every data route requires a valid Telegram signature.
         user_id, err = _authenticate(event)
@@ -189,3 +206,113 @@ def _inventory(event, user_id: str):
     rows.sort(key=lambda r: (not r["low_stock"], (r["name"] or "").lower()))
 
     return _json(200, {"count": len(rows), "products": rows})
+
+
+# ── The Mini App page (M3 shell) ─────────────────────────────────────────────
+# A minimal, Telegram-theme-aware page that reads initData, calls /app/api/
+# summary, and shows one real number to prove the end-to-end round-trip. M4/M5
+# expand this into the inventory grid + full dashboard. Kept as one self-
+# contained string (no external assets) so a single Lambda serves everything.
+_PAGE_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kashia</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #0f1115);
+    --card: var(--tg-theme-secondary-bg-color, #1a1d24);
+    --text: var(--tg-theme-text-color, #f2f4f8);
+    --hint: var(--tg-theme-hint-color, #8a93a3);
+    --accent: var(--tg-theme-button-color, #2ea6ff);
+    --pos: #35c26a; --neg: #ff5c5c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+    padding: 16px; -webkit-font-smoothing: antialiased; }
+  h1 { font-size: 18px; margin: 4px 0 2px; }
+  .sub { color: var(--hint); font-size: 13px; margin-bottom: 16px; }
+  .card { background: var(--card); border-radius: 14px; padding: 16px;
+    margin-bottom: 12px; }
+  .k { color: var(--hint); font-size: 12px; text-transform: uppercase;
+    letter-spacing: .04em; }
+  .v { font-size: 26px; font-weight: 700; margin-top: 4px; }
+  .row { display: flex; gap: 12px; }
+  .row .card { flex: 1; }
+  .pos { color: var(--pos); } .neg { color: var(--neg); }
+  .err { color: var(--neg); font-size: 14px; }
+  .muted { color: var(--hint); font-size: 12px; margin-top: 20px; text-align:center; }
+</style>
+</head>
+<body>
+  <h1 id="biz">Kashia</h1>
+  <div class="sub" id="period">Loading…</div>
+
+  <div class="card">
+    <div class="k">Net profit</div>
+    <div class="v" id="net">—</div>
+  </div>
+  <div class="row">
+    <div class="card"><div class="k">Revenue</div><div class="v" id="rev">—</div></div>
+    <div class="card"><div class="k">Cash in hand</div><div class="v" id="cash">—</div></div>
+  </div>
+  <div class="card">
+    <div class="k">Owed to you / You owe</div>
+    <div class="v"><span id="owed">—</span> <span class="k">/</span> <span id="iowe">—</span></div>
+  </div>
+
+  <div id="msg" class="muted"></div>
+
+<script>
+(function () {
+  var tg = window.Telegram && window.Telegram.WebApp;
+  if (tg) { tg.ready(); tg.expand(); }
+  var initData = (tg && tg.initData) || "";
+  var msg = document.getElementById("msg");
+
+  function naira(n) {
+    n = Number(n || 0);
+    return "NGN " + n.toLocaleString("en-NG");
+  }
+  function setSigned(id, n) {
+    var el = document.getElementById(id);
+    el.textContent = naira(n);
+    el.className = "v " + (Number(n) < 0 ? "neg" : (Number(n) > 0 ? "pos" : ""));
+  }
+
+  if (!initData) {
+    document.getElementById("period").textContent = "";
+    msg.innerHTML = '<span class="err">Open this from inside Telegram.</span>';
+    return;
+  }
+
+  fetch("api/summary?period=month", {
+    headers: { "X-Telegram-Init-Data": initData }
+  })
+  .then(function (r) {
+    if (!r.ok) throw new Error(r.status === 401 ? "Not authorized" : ("Error " + r.status));
+    return r.json();
+  })
+  .then(function (d) {
+    document.getElementById("biz").textContent = d.business || "Kashia";
+    document.getElementById("period").textContent = "P&L — " + (d.period_label || "This month");
+    setSigned("net", d.pnl.net_profit);
+    document.getElementById("rev").textContent = naira(d.pnl.revenue);
+    setSigned("cash", d.cash.net);
+    document.getElementById("owed").textContent = naira(d.debt.owed_to_me);
+    document.getElementById("iowe").textContent = naira(d.debt.i_owe);
+    if (d.uncosted_sales > 0) {
+      msg.textContent = d.uncosted_sales + " sale(s) have no cost set — profit may be overstated.";
+    }
+  })
+  .catch(function (e) {
+    document.getElementById("period").textContent = "";
+    msg.innerHTML = '<span class="err">' + (e.message || "Could not load") + '</span>';
+  });
+})();
+</script>
+</body>
+</html>"""

@@ -137,13 +137,17 @@ class TelegramClient(MessagingClient):
                 if desc and not is_menu and not tap_first:
                     any_description = True
                     lines.append(f"• *{self._strip_markup(title)}* — {self._strip_markup(desc)}")
-                flat_buttons.append({"id": rid, "title": title})
+                # Preserve a web_app URL (Mini App button) through the flatten.
+                fb = {"id": rid, "title": title}
+                if row.get("web_app"):
+                    fb["web_app"] = row["web_app"]
+                flat_buttons.append(fb)
 
         # Menus, pure pickers, and tap_first cards grid-pack (compact, app-like).
         # A single-section rich list that shows descriptions stays one-button-
         # per-row under its text.
         if any_description and not tap_first:
-            keyboard = [[self._make_button(b["title"], b["id"])] for b in flat_buttons]
+            keyboard = [[self._make_button_from(b)] for b in flat_buttons]
         else:
             keyboard = self._buttons_to_keyboard(flat_buttons)
 
@@ -324,8 +328,7 @@ class TelegramClient(MessagingClient):
 
         for btn in (buttons or []):
             title = btn.get("title", "")
-            bid = btn.get("id", "")
-            button = self._make_button(title, bid)
+            button = self._make_button_from(btn)
             cols = _cols_for(len(self._strip_markup(title)))
 
             # Starting a fresh row: this item sets the row's column budget.
@@ -371,6 +374,19 @@ class TelegramClient(MessagingClient):
             # whole message; the tap won't route correctly but the menu shows.
             data = data.encode("utf-8")[:CALLBACK_DATA_MAX_BYTES].decode("utf-8", "ignore")
         return {"text": self._strip_markup(title) or "•", "callback_data": data}
+
+    def _make_button_from(self, btn: dict) -> dict:
+        """Build an inline button from a row dict. Supports a `web_app` URL
+        (opens the Telegram Mini App) in addition to normal callback buttons.
+        A row with a `web_app` key → {text, web_app:{url}}; else callback_data."""
+        title = btn.get("title", "")
+        web_app = btn.get("web_app")
+        if web_app:
+            url = web_app.get("url") if isinstance(web_app, dict) else str(web_app)
+            if url:
+                return {"text": self._strip_markup(title) or "•",
+                        "web_app": {"url": url}}
+        return self._make_button(title, btn.get("id", ""))
 
     def _prepare_text(self, text: str) -> str:
         """Normalize engine text for Telegram and clamp to the length limit."""

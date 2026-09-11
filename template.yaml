@@ -231,6 +231,10 @@ Resources:
         Variables:
           # Lets the webhook's secret-token check fail closed in prod.
           STAGE: !Ref Stage
+          # Mini App (N6): the deployed /app URL, so the Telegram dashboard card
+          # can show a "📲 Open full app" web_app button. Same API as everything
+          # else. If unset, the button simply doesn't render.
+          MINIAPP_URL: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/app"
       Events:
         # Telegram only POSTs updates (no GET verification handshake; the
         # webhook is registered out-of-band via the Bot API setWebhook method).
@@ -276,6 +280,12 @@ Resources:
         Variables:
           STAGE: !Ref Stage
       Events:
+        AppPageGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /app
+            Method: get
         SummaryGet:
           Type: Api
           Properties:
@@ -550,6 +560,9 @@ Outputs:
   WebhookUrl:
     Description: Kashia WhatsApp Bot - Build 20260910232845
     Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/webhook"
+  MiniAppUrl:
+    Description: Telegram Mini App page URL (set as the bot Menu Button web_app url)
+    Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/app"
   TelegramWebhookUrl:
     Description: Point Telegram setWebhook at this URL
     Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/telegram"
