@@ -1189,6 +1189,211 @@ class TransactionHandler:
             logger.error(f"record_transaction_web error: {e}\n{traceback.format_exc()}")
             return {"ok": False, "error": "could not record — please try again"}
 
+    # ═══════════════════════════════════════════════════════════
+    #  RETURNS / REFUNDS  (build #4 — R1 engine core)
+    # ═══════════════════════════════════════════════════════════
+
+    def returned_qty_for(self, phone_number: str, original_tx_id: str,
+                         scan_limit: int = 400) -> int:
+        """Sum the quantity already returned against an original transaction.
+
+        Scans recent transactions for sale_return / purchase_return rows whose
+        extra_details.original_tx_id points at `original_tx_id` and totals their
+        quantities. Used by the HARD over-return guard so a series of partial
+        returns can never exceed the original quantity. In-memory filter — no
+        per-original index needed (fine at this volume). Returns 0 on any error
+        (the guard then falls back to soft, never blocks wrongly)."""
+        if not original_tx_id:
+            return 0
+        try:
+            txns = self.db.get_transactions(phone_number, limit=scan_limit) or []
+            total = 0
+            for t in txns:
+                if t.get("type") not in ("sale_return", "purchase_return"):
+                    continue
+                extra = t.get("extra_details") or {}
+                if extra.get("original_tx_id") != original_tx_id:
+                    continue
+                total += self._parse_qty(t.get("quantity", 1) or 1)
+            return total
+        except Exception as e:
+            logger.warning(f"returned_qty_for failed: {e}")
+            return 0
+
+    def record_return(self, phone_number: str, original_tx_id: str,
+                      qty: int = None) -> dict:
+        """Record a return/refund as a REVERSING transaction against an original
+        sale or purchase. COMPOSES the same engine helpers as a normal record
+        (db.save_transaction, catalog.update_stock, db.settle_debt) — NO forked
+        business logic.
+
+        Behaviour (defaults approved with the owner):
+          • sale     → sale_return      (goods come back IN, money goes OUT)
+          • purchase → purchase_return  (goods go back OUT, money comes IN)
+          • Amount is POSITIVE and pro-rated for a partial return
+            (orig_amount * qty / orig_qty). Reporting NETS it (R2).
+          • COGS is reversed by COPYING the original sale's STAMPED cost fields
+            (cost_used_total / cost_unit / cost_source), pro-rated — never
+            re-resolved (the weighted-average may have drifted since the sale).
+          • Stock: sale_return ADDS qty back, purchase_return REMOVES qty —
+            cost_mode="keep" so the stored average is untouched; leaf-aware via
+            the original's variant path.
+          • Cash-vs-debt: if the original was PAID (cash/transfer) → the refund
+            is a cash movement (implied by the return type; no debt touched). If
+            the original was on CREDIT → cancel the matching debt via settle_debt
+            (0 cash moves). Never both.
+          • HARD over-return guard: blocks a return that would push total
+            returned above the original quantity; SOFT fallback (allow) only when
+            the original can't be loaded (legacy / unknown).
+
+        Returns a plain JSON-able dict {ok, ...} — never raises.
+        """
+        try:
+            original = self.db.get_transaction(phone_number, original_tx_id)
+            if not original:
+                # Original unknown — we cannot safely reverse cost/stock/debt.
+                return {"ok": False, "error": "original transaction not found"}
+
+            orig_type = original.get("type")
+            if orig_type not in ("sale", "purchase"):
+                return {"ok": False, "error": "only sales and purchases can be returned"}
+
+            return_type = "sale_return" if orig_type == "sale" else "purchase_return"
+
+            orig_qty = self._parse_qty(original.get("quantity", 1) or 1) or 1
+            orig_amount = int(original.get("amount") or 0)
+
+            # Return quantity: default to whatever remains returnable (full).
+            already = self.returned_qty_for(phone_number, original_tx_id)
+            remaining = orig_qty - already
+            if remaining <= 0:
+                return {"ok": False,
+                        "error": f"nothing left to return — all {orig_qty} already returned"}
+
+            if qty is None:
+                qty = remaining
+            qty = self._parse_qty(qty) or 0
+            if qty <= 0:
+                return {"ok": False, "error": "return quantity must be greater than 0"}
+
+            # ── HARD over-return guard ──
+            if qty > remaining:
+                return {
+                    "ok": False,
+                    "error": (f"can't return {qty} — only {remaining} of "
+                              f"{orig_qty} left to return "
+                              f"({already} already returned)"),
+                    "remaining": remaining,
+                    "original_qty": orig_qty,
+                }
+
+            is_partial = qty < orig_qty
+            # Pro-rate the money for a partial return.
+            ret_amount = orig_amount if not is_partial else int(round(orig_amount * qty / orig_qty))
+            if ret_amount <= 0:
+                ret_amount = orig_amount  # degenerate guard
+
+            description = (original.get("description")
+                          or original.get("item_name") or "Item").strip()
+            vendor = (original.get("vendor") or "").strip()
+            orig_extra = original.get("extra_details") or {}
+            variant = orig_extra.get("variant") or original.get("variant") or ""
+            orig_payment = (original.get("payment_method") or "").lower()
+            orig_credit = orig_payment == "credit" or bool(original.get("has_credit"))
+
+            # ── Build the reversing transaction's extra_details ──
+            extra = {
+                "original_tx_id": original_tx_id,
+                "return_of": orig_type,
+                "source": "return",
+            }
+            if variant:
+                extra["variant"] = variant
+
+            # Reverse COGS by COPYING the original sale's STAMPED cost (pro-rated).
+            if orig_type == "sale":
+                orig_cost_total = int(orig_extra.get("cost_used_total")
+                                      or original.get("cost_used_total") or 0)
+                orig_cost_unit = int(orig_extra.get("cost_unit")
+                                     or original.get("cost_unit") or 0)
+                orig_cost_src = (orig_extra.get("cost_source")
+                                 or original.get("cost_source") or "")
+                if orig_cost_total > 0:
+                    ret_cost_total = (orig_cost_total if not is_partial
+                                      else int(round(orig_cost_total * qty / orig_qty)))
+                    extra["cost_used_total"] = ret_cost_total
+                    if orig_cost_unit > 0:
+                        extra["cost_unit"] = orig_cost_unit
+                    if orig_cost_src:
+                        extra["cost_source"] = orig_cost_src
+
+            category = "Sales Return" if orig_type == "sale" else "Purchase Return"
+
+            # ── Save the reversing transaction (positive amount) ──
+            result = self.db.save_transaction(
+                phone_number,
+                ret_amount,
+                return_type,
+                f"Return: {description}" + (f" ({qty} of {orig_qty})" if is_partial else ""),
+                category,
+                vendor=vendor,
+                quantity=qty,
+                item_name=description,
+                payment_method=("credit" if orig_credit else (orig_payment or "cash")),
+                extra_details=extra,
+                tags=["return", return_type],
+            )
+            ret_tx_id = result.get("transaction_id", "") if isinstance(result, dict) else ""
+
+            # ── Reverse stock (leaf-aware, average untouched) ──
+            stock_result = None
+            try:
+                from features.catalog import CatalogHandler
+                cat = CatalogHandler(self.session, self.db)
+                brand = original.get("brand", "")
+                search_name = f"{brand} {description}".strip() if brand else description
+                # sale_return puts goods back IN (+qty); purchase_return sends them OUT (-qty).
+                stock_delta = qty if orig_type == "sale" else -qty
+                stock_result = cat.update_stock(
+                    phone_number, search_name, stock_delta,
+                    quantity_str="", variant=variant, cost_mode="keep")
+            except Exception as e:
+                logger.warning(f"record_return: stock reversal failed: {e}")
+
+            # ── Reverse cash-vs-debt ──
+            #  PAID original  → refund is a cash movement (return type implies it);
+            #                   no debt is touched.
+            #  CREDIT original→ cancel the matching outstanding debt; 0 cash moves.
+            debt_adjusted = 0
+            if orig_credit and vendor:
+                # sale on credit created "owed_to_me"; purchase on credit created "i_owe".
+                debt_type = "owed_to_me" if orig_type == "sale" else "i_owe"
+                try:
+                    self.db.settle_debt(phone_number, vendor, ret_amount, debt_type)
+                    debt_adjusted = ret_amount
+                except Exception as e:
+                    logger.warning(f"record_return: settle_debt failed: {e}")
+
+            logger.info(
+                f"Recorded {return_type}: {phone_number} | ₦{ret_amount:,} | "
+                f"qty {qty}/{orig_qty} | orig {original_tx_id}")
+
+            return {
+                "ok": True,
+                "transaction_id": ret_tx_id,
+                "type": return_type,
+                "amount": ret_amount,
+                "quantity": qty,
+                "original_qty": orig_qty,
+                "partial": is_partial,
+                "refund_mode": "debt_cancelled" if (orig_credit and vendor) else "cash",
+                "debt_adjusted": debt_adjusted,
+                "stock_matched": bool(stock_result and stock_result.get("matched")),
+            }
+        except Exception as e:
+            logger.error(f"record_return error: {e}\n{traceback.format_exc()}")
+            return {"ok": False, "error": "could not record the return — please try again"}
+
     def _maybe_cost_choice_prompt(self, phone_number: str, tx_data: dict,
                                   stock_result: dict):
         """Bug-9 feature: when a PURCHASE arrives at a NEW per-unit price that

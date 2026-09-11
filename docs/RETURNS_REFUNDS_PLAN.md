@@ -103,8 +103,15 @@ pro-rate `cost_used_total`.
    "Store credit/keep as balance"? Or assume cash refund by default? (Recommended:
    default cash-refund; offer "cancel debt" automatically when the original was
    on credit. Keep it simple for v1.)
-3. **Guard against over-returning:** track returned qty against the original, or
-   trust the user for v1? (Recommended: soft check — warn if return qty > original
-   remaining, but allow.)
+3. **Guard against over-returning — DECIDED: HARD guard (do it properly once).**
+   Track returned qty against the original: before saving, sum the quantities of
+   prior sale_return/purchase_return rows referencing the SAME original_tx_id;
+   block a return that would push the total returned above the original quantity.
+   (In-memory sum over recent txns filtered by original_tx_id — no new index
+   needed.) It's purely additive validation, breaks nothing, and for a car
+   business it rightly prevents returning "4 of 3." FALLBACK: when the original
+   genuinely can't be determined (legacy sale / no original picked), enforce
+   softly (warn) rather than block — robust, not brittle. Helper:
+   returned_qty_for(original_tx_id).
 4. **Telegram-first, WhatsApp later?** (Recommended yes, matches every other
    recent build.)
