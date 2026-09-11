@@ -150,6 +150,31 @@ class Accounting:
             total = _to_int(lc) if has_per_unit else _to_int(lc) * qty
             return total, COST_SALE_LANDING
 
+        # 1b) Variant-TREE leaf cost. For a tree product, cost lives on the LEAF
+        #     node, not the product level (product landing_cost/avg_cost are 0 by
+        #     design). If the sale recorded which leaf it hit, look up that leaf's
+        #     weighted-average cost. Without this, tree-product sales fall through
+        #     to MISSING and profit is massively overstated.
+        leaf_path = extra.get("variant") or extra.get("catalog_path") or sale_tx.get("variant")
+        if isinstance(leaf_path, (list, tuple)):
+            leaf_path = " / ".join(str(x) for x in leaf_path)
+        has_tree = isinstance(product, dict) and isinstance(product.get("variant_tree"), dict) \
+            and (product.get("variant_tree") or {}).get("children")
+        if has_tree and leaf_path:
+            try:
+                from features.catalog import CatalogHandler
+                cat = CatalogHandler(self.session, self.db)
+                pkey = extra.get("catalog_product") or product.get("_key") or ""
+                if not pkey:
+                    # Resolve the product key from the catalog if not stored.
+                    products = self._products(sale_tx.get("phone_number", ""))
+                    pkey = cat._find_product_key(products, product.get("name", "")) or ""
+                leaf_c = cat.leaf_cost(sale_tx.get("phone_number", ""), pkey, leaf_path) if pkey else 0
+                if leaf_c and leaf_c > 0:
+                    return leaf_c * qty, COST_WEIGHTED_AVG
+            except Exception as e:
+                logger.debug(f"tree leaf cost lookup failed: {e}")
+
         # 2) Product weighted-average cost.
         if product is not None:
             avg = product_avg_cost(product)
@@ -472,6 +497,15 @@ class Accounting:
             from features.catalog import CatalogHandler
             cat = CatalogHandler(self.session, self.db)
             key = cat._find_product_key(products, search)
-            return products.get(key) if key else None
+            if not key:
+                return None
+            prod = products.get(key)
+            # Stamp the key so callers (e.g. tree-leaf cost lookup) can address
+            # the product without re-resolving. Don't mutate the shared dict in
+            # a way that persists — a shallow copy is enough for read use.
+            if isinstance(prod, dict) and "_key" not in prod:
+                prod = dict(prod)
+                prod["_key"] = key
+            return prod
         except Exception:
             return None

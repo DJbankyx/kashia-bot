@@ -336,7 +336,9 @@ class TGFastEntry:
         if action == "custtype":
             fx["step"] = "await_customer_name"
             self._save_fx(phone_number, fx)
-            who = "buyer" if fx.get("tx_type") == "purchase" else "customer"
+            # On a PURCHASE the counterparty is the SUPPLIER (you're the buyer);
+            # on a sale it's the customer.
+            who = "supplier" if fx.get("tx_type") == "purchase" else "customer"
             self._edit_plain(phone_number, fx, f"✍️ Type the {who}'s name:")
             return []
 

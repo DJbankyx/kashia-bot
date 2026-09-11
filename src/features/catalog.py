@@ -3800,6 +3800,34 @@ class CatalogHandler:
             return self._as_int(node.get("stock"), 0)
         return sum(self._vt_node_total(c) for c in children.values())
 
+    def _vt_value(self, node: dict) -> tuple:
+        """Return (total_stock, total_value_at_cost) for a tree node — leaves
+        contribute stock x cost. Used to derive a roll-up cost/value for a tree
+        product (so the app can show a cost instead of 'no cost set')."""
+        children = node.get("children") or {}
+        if not children:
+            s = self._as_int(node.get("stock"), 0)
+            c = self._as_int(node.get("cost"), 0)
+            return s, s * c
+        ts = tv = 0
+        for ch in children.values():
+            cs, cv = self._vt_value(ch)
+            ts += cs
+            tv += cv
+        return ts, tv
+
+    def tree_rollup(self, product: dict) -> dict:
+        """Roll-up {stock, value, avg_cost} for a variant-tree product. avg_cost
+        is the stock-weighted average leaf cost (0 if no priced stock). Lets the
+        app/inventory show a meaningful cost for tree products whose product-level
+        landing_cost is 0 by design."""
+        tree = product.get("variant_tree") or {}
+        if not tree.get("children"):
+            return {"stock": 0, "value": 0, "avg_cost": 0}
+        stock, value = self._vt_value(tree)
+        avg = int(value / stock) if stock > 0 else 0
+        return {"stock": stock, "value": value, "avg_cost": avg}
+
     def _vt_is_leaf(self, node: dict) -> bool:
         return not (node.get("children") or {})
 

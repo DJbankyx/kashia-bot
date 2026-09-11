@@ -183,22 +183,37 @@ def _summary(event, user_id: str):
     })
 
 
-def _row_from_product(p: dict) -> dict:
+def _row_from_product(p: dict, cat=None) -> dict:
     """Map a normalized product into the grid-row shape the page expects.
     Shared by the inventory list and the write echo, so the UI can patch a row
-    in place after a write with an identical shape."""
+    in place after a write with an identical shape.
+
+    For a variant-TREE product, cost + stock value live on the leaves (product
+    landing_cost is 0), so we roll them up via cat.tree_rollup — otherwise the
+    app would show 'no price/cost set' even when leaves are costed."""
+    cost = int(p.get("landing_cost") or 0)
+    stock_value = int(p.get("_stock_value") or 0)
+    if p.get("_has_tree") and cat is not None:
+        try:
+            roll = cat.tree_rollup(p)
+            if roll.get("avg_cost"):
+                cost = int(roll["avg_cost"])
+            if roll.get("value"):
+                stock_value = int(roll["value"])
+        except Exception:
+            pass
     return {
         "key": p.get("_key"),
         "name": p.get("name"),
         "category": p.get("category") or "",
         "unit": p.get("primary_unit") or "",
         "stock": int(p.get("stock") or 0),
-        "cost": int(p.get("landing_cost") or 0),
+        "cost": cost,
         "sale_price": int(p.get("sale_price") or 0),
         "reorder_level": int(p.get("reorder_level") or 0),
         "low_stock": bool(p.get("_is_low_stock")),
         "has_variants": bool(p.get("_has_tree") or p.get("_has_variants")),
-        "stock_value": int(p.get("_stock_value") or 0),
+        "stock_value": stock_value,
         "item_type": p.get("item_type") or "",
     }
 
@@ -211,7 +226,7 @@ def _inventory(event, user_id: str):
     db = Database()
     cat = CatalogHandler(None, db)
     products = cat._normalized_products(user_id) or []
-    rows = [_row_from_product(p) for p in products]
+    rows = [_row_from_product(p, cat) for p in products]
 
     # Stable, useful ordering: low-stock first, then by name.
     rows.sort(key=lambda r: (not r["low_stock"], (r["name"] or "").lower()))
@@ -288,7 +303,7 @@ def _product_write(event, user_id: str):
 
     # Echo the recomputed row (true stored state, not the client's optimistic value).
     updated = cat.get_normalized_product(user_id, key)
-    return _json(200, {"ok": True, "product": _row_from_product(updated)})
+    return _json(200, {"ok": True, "product": _row_from_product(updated, cat)})
 
 
 def _png_data_uri(path: str):

@@ -624,6 +624,8 @@ class TransactionHandler:
                     extra["catalog_product"] = tx_data["catalog_product"]
                 if tx_data.get("catalog_product_name"):
                     extra["catalog_product_name"] = tx_data["catalog_product_name"]
+                if tx_data.get("variant"):
+                    extra["variant"] = tx_data["variant"]
                 if tx_data.get("scan_extra"):
                     extra.update(tx_data["scan_extra"])
 
@@ -687,6 +689,12 @@ class TransactionHandler:
                 extra["catalog_selections"] = tx_data["catalog_selections"]
             if tx_data.get("catalog_product_name"):
                 extra["catalog_product_name"] = tx_data["catalog_product_name"]
+            # Persist the chosen variant-tree LEAF path (e.g. "Suv / Highlander /
+            # 2022") so the accounting engine can resolve the leaf's cost as COGS.
+            # Without this, tree-product sales show COGS 0 / "uncosted" and profit
+            # is overstated. The tidy-box sets tx_data["variant"].
+            if tx_data.get("variant"):
+                extra["variant"] = tx_data["variant"]
             if tx_data.get("landing_cost"):
                 extra["landing_cost"] = int(tx_data["landing_cost"])
             # Persist whether a sale was a service job vs a product sale, so the
@@ -1118,6 +1126,14 @@ class TransactionHandler:
             credit_extra = {}
             if tx_type == "sale":
                 credit_extra["sale_kind"] = "service" if tx_data.get("is_service_job") else "product"
+            # Persist the variant-tree LEAF path + catalog product so a credit/
+            # part-payment tree sale is still costable (COGS from the leaf).
+            if tx_data.get("variant"):
+                credit_extra["variant"] = tx_data["variant"]
+            if tx_data.get("catalog_product"):
+                credit_extra["catalog_product"] = tx_data["catalog_product"]
+            if tx_data.get("catalog_product_name"):
+                credit_extra["catalog_product_name"] = tx_data["catalog_product_name"]
             if tx_data.get("scan_extra"):
                 credit_extra.update(tx_data["scan_extra"])
 
