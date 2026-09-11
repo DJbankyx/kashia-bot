@@ -283,39 +283,63 @@ class TierManager:
             "Reply *BASIC* or *PRO* to upgrade."
         )
 
-    def handle_upgrade_request(self, phone_number, plan):
+    def handle_upgrade_request(self, phone_number, plan, period=None):
         """
-        Handle upgrade request. Generate real Paystack payment link.
-        Args: plan: "basic" or "pro"
+        Handle an upgrade request.
+        Args:
+            plan: "basic" or "pro"
+            period: None → show the period picker (Monthly/Quarterly/Yearly);
+                    "monthly"|"quarterly"|"yearly" → generate the Paystack link.
         Returns: list of response dicts
         """
-        plan_lower = plan.lower().strip()
-
+        plan_lower = str(plan).lower().strip()
         if plan_lower in ['basic', '1', 'basic plan']:
-            plan_key = "basic"
-            price = 3000
-            plan_name = "Basic"
+            plan_key, plan_name = "basic", "Basic"
         elif plan_lower in ['pro', '2', 'pro plan']:
-            plan_key = "pro"
-            price = 6000
-            plan_name = "Pro"
+            plan_key, plan_name = "pro", "Pro"
         else:
             return [{"type": "text", "content": "Please reply *BASIC* or *PRO* to choose a plan."}]
+
+        # ── No period yet → offer Monthly / Quarterly / Yearly (S3) ──
+        if not period:
+            from services.paystack import PLANS, PERIODS
+            periods = PLANS[plan_key]["periods"]
+            lines = [f"💳 *{plan_name}* — choose how long:", ""]
+            buttons = []
+            label = {"monthly": "Monthly", "quarterly": "Quarterly (save)",
+                     "yearly": "Yearly (2 months free)"}
+            for per in PERIODS:
+                disp = periods[per]["price_display"]
+                lines.append(f"• *{label[per]}* — {disp}")
+                buttons.append({"id": f"set_upgrade_{plan_key}_{per}",
+                                "title": f"{label[per].split(' ')[0]} · {disp.split('/')[0].replace('₦','₦')}"[:24]})
+            return [{
+                "type": "buttons",
+                "content": {"body": "\n".join(lines), "buttons": buttons[:3]},
+            }]
+
+        period = str(period).lower()
+        if period not in ("monthly", "quarterly", "yearly"):
+            period = "monthly"
+
+        from services.paystack import plan_period_amount
+        amount_kobo, price_display = plan_period_amount(plan_key, period)
+        price_naira = int((amount_kobo or 0) / 100)
 
         # Get user email if available
         user = self.db.get_user(phone_number)
         email = user.get("email", "") if user else ""
 
-        # Initialize Paystack transaction
+        # Initialize Paystack transaction (period-aware)
         try:
             from services.paystack import PaystackService
             paystack = PaystackService()
-            result = paystack.initialize_transaction(phone_number, plan_key, email)
+            result = paystack.initialize_transaction(phone_number, plan_key, email, period=period)
 
             if result.get("success"):
                 payment_url = result["payment_url"]
                 return [{"type": "text", "content": (
-                    f"💳 *Upgrade to {plan_name} — ₦{price:,}/month*\n\n"
+                    f"💳 *Upgrade to {plan_name} — {price_display}*\n\n"
                     f"Tap to pay:\n{payment_url}\n\n"
                     f"✅ Your account upgrades instantly after payment.\n"
                     f"📱 Supports: Card, Bank Transfer, USSD\n\n"
@@ -325,7 +349,7 @@ class TierManager:
                 # Paystack failed — show fallback link
                 logger.warning(f"Paystack init failed: {result.get('error')}")
                 return [{"type": "text", "content": (
-                    f"💳 *Upgrade to {plan_name} — ₦{price:,}/month*\n\n"
+                    f"💳 *Upgrade to {plan_name} — {price_display}*\n\n"
                     f"Payment link generation failed. Please try again later.\n\n"
                     f"Or contact support: support@kashia.app"
                 )}]
@@ -333,7 +357,7 @@ class TierManager:
         except Exception as e:
             logger.error(f"Upgrade request error: {e}")
             return [{"type": "text", "content": (
-                f"💳 *Upgrade to {plan_name} — ₦{price:,}/month*\n\n"
+                f"💳 *Upgrade to {plan_name} — {price_display}*\n\n"
                 f"Something went wrong. Please try again later.\n\n"
                 f"Or contact support: support@kashia.app"
             )}]

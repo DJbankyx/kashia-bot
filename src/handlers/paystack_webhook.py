@@ -57,7 +57,21 @@ def lambda_handler(event, context):
             logger.error(f"Missing phone/plan in webhook: {metadata}")
             return response(200, {"status": "missing_data"})
 
-        logger.info(f"Payment received: {phone_number} → {plan} (₦{amount/100:,.0f}) ref={reference}")
+        # Billing PERIOD (S3): prefer metadata; else parse the reference
+        # (kashia_{plan}_{period}_{id}_{ts}); else default monthly (back-compat
+        # with old monthly-only references kashia_{plan}_{id}_{ts}).
+        period = str(metadata.get("period", "") or "").lower()
+        if period not in ("monthly", "quarterly", "yearly"):
+            period = "monthly"
+            try:
+                parts = str(reference).split("_")
+                if len(parts) >= 3 and parts[2] in ("monthly", "quarterly", "yearly"):
+                    period = parts[2]
+            except Exception:
+                period = "monthly"
+
+        logger.info(f"Payment received: {phone_number} → {plan}/{period} "
+                    f"(₦{amount/100:,.0f}) ref={reference}")
 
         # Upgrade the user
         from services.database import Database
@@ -69,8 +83,8 @@ def lambda_handler(event, context):
         tier_mgr = TierManager(database=db)
         whatsapp = WhatsAppClient()
 
-        # Perform upgrade
-        tier_mgr.upgrade_user(phone_number, plan)
+        # Perform upgrade (period sets how far subscription_ends is extended).
+        tier_mgr.upgrade_user(phone_number, plan, period=period)
 
         # Notify the user on their own platform. `phone_number` here is the
         # namespaced user id carried in the payment metadata (bare phone for
@@ -80,18 +94,28 @@ def lambda_handler(event, context):
             client, recipient = whatsapp, phone_number
 
         plan_name = "Basic" if plan == "basic" else "Pro"
+        period_word = {"monthly": "month", "quarterly": "quarter",
+                       "yearly": "year"}.get(period, "month")
+        # Show the renewal date so the user knows their cycle.
+        try:
+            renew_on = (db.get_user(phone_number) or {}).get("subscription_ends", "")
+            renew_line = (f"📅 Renews on *{str(renew_on)[:10]}* "
+                          f"(billed per {period_word}).\n\n") if renew_on else ""
+        except Exception:
+            renew_line = ""
         client.send_text(recipient, (
             f"🎉 *Upgrade Successful!*\n\n"
-            f"You're now on the *{plan_name}* plan.\n\n"
+            f"You're now on the *{plan_name}* plan ({period_word}ly).\n\n"
             f"✅ Unlimited transactions\n"
             f"✅ Unlimited exports\n"
             f"{'✅ Unlimited invoices' if plan == 'pro' else '✅ 10 invoices/month'}\n"
             f"✅ PDF financial statements\n\n"
+            f"{renew_line}"
             f"Thank you for supporting Kashia! 🙏\n\n"
             f"_Ref: {reference}_"
         ))
 
-        logger.info(f"User upgraded: {phone_number} → {plan_name}")
+        logger.info(f"User upgraded: {phone_number} → {plan_name}/{period}")
         return response(200, {"status": "success", "phone": phone_number, "plan": plan})
 
     except Exception as e:

@@ -25,11 +25,42 @@ def _paystack_safe(user_id: str) -> str:
     import re
     return re.sub(r"[^A-Za-z0-9]", "_", str(user_id or ""))
 
-# Plan amounts in kobo (Paystack uses kobo = naira × 100)
+# Plan amounts in kobo (Paystack uses kobo = naira × 100), per billing PERIOD.
+# Yearly = pay for 10 months (owner decision: 2 months free); quarterly carries a
+# small discount. Monthly is the default and back-compat baseline.
+#   Basic: 3,000/mo · 8,500/qtr · 30,000/yr    Pro: 6,000/mo · 17,000/qtr · 60,000/yr
 PLANS = {
-    "basic": {"amount": 300000, "name": "Kashia Basic", "price_display": "₦3,000/month"},
-    "pro":   {"amount": 600000, "name": "Kashia Pro",   "price_display": "₦6,000/month"},
+    "basic": {
+        "name": "Kashia Basic",
+        "periods": {
+            "monthly":   {"amount": 300000,  "price_display": "₦3,000/month"},
+            "quarterly": {"amount": 850000,  "price_display": "₦8,500/quarter"},
+            "yearly":    {"amount": 3000000, "price_display": "₦30,000/year"},
+        },
+    },
+    "pro": {
+        "name": "Kashia Pro",
+        "periods": {
+            "monthly":   {"amount": 600000,   "price_display": "₦6,000/month"},
+            "quarterly": {"amount": 1700000,  "price_display": "₦17,000/quarter"},
+            "yearly":    {"amount": 6000000,  "price_display": "₦60,000/year"},
+        },
+    },
 }
+
+# Order the picker offers periods in.
+PERIODS = ("monthly", "quarterly", "yearly")
+
+
+def plan_period_amount(plan: str, period: str):
+    """(amount_kobo, price_display) for a plan+period, defaulting to monthly.
+    Returns (None, None) for an unknown plan."""
+    p = PLANS.get(plan)
+    if not p:
+        return None, None
+    period = str(period or "monthly").lower()
+    pd = p["periods"].get(period) or p["periods"]["monthly"]
+    return pd["amount"], pd["price_display"]
 
 
 class PaystackService:
@@ -46,15 +77,17 @@ class PaystackService:
             "Content-Type": "application/json",
         }
 
-    def initialize_transaction(self, phone_number: str, plan: str, email: str = None) -> dict:
+    def initialize_transaction(self, phone_number: str, plan: str, email: str = None,
+                               period: str = "monthly") -> dict:
         """
         Create a Paystack payment link for a user.
-        
+
         Args:
-            phone_number: user's phone (used as reference)
+            phone_number: user's id (namespaced for Telegram)
             plan: "basic" or "pro"
             email: user's email (optional — Paystack requires one)
-            
+            period: "monthly" | "quarterly" | "yearly" (default monthly)
+
         Returns:
             {"success": True, "payment_url": "https://...", "reference": "..."}
             or {"success": False, "error": "..."}
@@ -62,7 +95,10 @@ class PaystackService:
         if plan not in PLANS:
             return {"success": False, "error": f"Invalid plan: {plan}"}
 
-        plan_data = PLANS[plan]
+        period = str(period or "monthly").lower()
+        amount, price_display = plan_period_amount(plan, period)
+        if amount is None:
+            return {"success": False, "error": f"Invalid plan: {plan}"}
 
         # The user id may be namespaced (e.g. "tg:12345678" for Telegram users).
         # Paystack references and email local-parts must not contain characters
@@ -75,21 +111,25 @@ class PaystackService:
         if not email:
             email = f"{safe_id}@kashia.app"
 
-        # Generate unique reference (alphanumerics + separators only)
+        # Reference carries plan + PERIOD so the webhook knows how long to extend
+        # (metadata carries them too — the webhook prefers metadata, ref is a
+        # fallback / audit trail). alphanumerics + separators only.
         import time
-        reference = f"kashia_{plan}_{safe_id}_{int(time.time())}"
+        reference = f"kashia_{plan}_{period}_{safe_id}_{int(time.time())}"
 
         payload = {
             "email": email,
-            "amount": plan_data["amount"],
+            "amount": amount,
             "reference": reference,
             "callback_url": "https://kashia.app/payment/success",
             "metadata": {
                 "phone_number": phone_number,
                 "plan": plan,
+                "period": period,
                 "custom_fields": [
                     {"display_name": "Phone", "variable_name": "phone", "value": phone_number},
                     {"display_name": "Plan", "variable_name": "plan", "value": plan},
+                    {"display_name": "Period", "variable_name": "period", "value": period},
                 ]
             }
         }

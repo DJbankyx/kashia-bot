@@ -101,8 +101,13 @@ class SettingsHandler:
             return self._set_costing_mode(phone_number, "specific")
 
         if button_id.startswith("set_upgrade_"):
-            plan = button_id.replace("set_upgrade_", "")
-            return self._handle_upgrade_request(phone_number, plan)
+            # set_upgrade_<plan>            → show the period picker
+            # set_upgrade_<plan>_<period>   → generate the payment link
+            rest = button_id.replace("set_upgrade_", "")
+            parts = rest.split("_")
+            plan = parts[0]
+            period = parts[1] if len(parts) > 1 else None
+            return self._handle_upgrade_request(phone_number, plan, period)
 
         return [text_response("👆 Pick an option from the Settings menu.")]
 
@@ -242,9 +247,9 @@ class SettingsHandler:
 
         return responses
 
-    def _handle_upgrade_request(self, phone_number: str, plan: str) -> list:
-        """Generate payment link for upgrade."""
-        result = self.tier_manager.handle_upgrade_request(phone_number, plan)
+    def _handle_upgrade_request(self, phone_number: str, plan: str, period=None) -> list:
+        """Show the period picker (period=None) or generate the payment link."""
+        result = self.tier_manager.handle_upgrade_request(phone_number, plan, period)
         return result
 
     # ─────────────────────────────────────────────────────────
