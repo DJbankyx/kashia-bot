@@ -309,6 +309,66 @@ class Database:
         logger.info(f"Saved transaction: {phone_number} | ₦{amount:,} | {category}")
         return item
 
+    def claim_web_submit(self, phone_number, submit_id):
+        """Idempotency guard for the Mini App's stateless transaction POST.
+
+        Atomically CLAIM a client-supplied submit_id so a retried/double POST
+        never records twice. Stores a marker row in the transactions table
+        (transaction_id = "idem#<submit_id>") via a conditional put that fails if
+        the marker already exists. Survives Lambda cold starts + concurrent
+        containers (unlike an in-memory cache).
+
+        Returns:
+          (True, None)        — first time: caller should proceed to record.
+          (False, prior_tx)   — already claimed: caller should NOT re-record;
+                                prior_tx is the previously recorded transaction_id
+                                (or "" if the first attempt hadn't stored it yet).
+        """
+        from botocore.exceptions import ClientError
+        marker_key = f"idem#{submit_id}"
+        # TTL ~24h so markers self-expire (transactions table has a TTL attr).
+        ttl = int(time.time()) + 24 * 3600
+        try:
+            self.transactions.put_item(
+                Item={
+                    "phone_number": phone_number,
+                    "transaction_id": marker_key,
+                    "idem": True,
+                    "created_at": datetime.now().isoformat(),
+                    "ttl": ttl,
+                },
+                ConditionExpression="attribute_not_exists(transaction_id)",
+            )
+            return True, None
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                # Already claimed — fetch the recorded tx_id if present.
+                try:
+                    existing = self.transactions.get_item(
+                        Key={"phone_number": phone_number, "transaction_id": marker_key}
+                    ).get("Item") or {}
+                    return False, existing.get("recorded_tx_id", "")
+                except Exception:
+                    return False, ""
+            logger.error(f"claim_web_submit error: {e}")
+            # On an unexpected error, fail OPEN would risk a double-record; fail
+            # CLOSED (treat as already-claimed) is safer for money — but then a
+            # genuine first attempt could be lost. Choose fail-open only for the
+            # non-conditional error and let the caller's own try/except handle it.
+            return True, None
+
+    def mark_web_submit_recorded(self, phone_number, submit_id, tx_id):
+        """Record which transaction_id a claimed submit_id produced, so a later
+        retry can return it. Best-effort; never raises."""
+        try:
+            self.transactions.update_item(
+                Key={"phone_number": phone_number, "transaction_id": f"idem#{submit_id}"},
+                UpdateExpression="SET recorded_tx_id = :t",
+                ExpressionAttributeValues={":t": tx_id or ""},
+            )
+        except Exception as e:
+            logger.warning(f"mark_web_submit_recorded failed: {e}")
+
     def get_transactions(self, phone_number, limit=20):
         """Get recent transactions for a user (newest first)"""
         try:

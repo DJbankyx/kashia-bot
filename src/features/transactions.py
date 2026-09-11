@@ -1071,6 +1071,124 @@ class TransactionHandler:
         except Exception as e:
             logger.warning(f"_stamp_sale_cost failed: {e}")
 
+    def record_transaction_web(self, phone_number: str, tx_data: dict) -> dict:
+        """M6b — STATELESS terminal save for the Mini App web view.
+
+        Records a full sale/purchase/expense in ONE call, COMPOSING the same
+        engine helpers the chat flow uses (db.save_transaction, _apply_stock_for_tx,
+        _stamp_sale_cost, update_contact_totals, record_debt) — NO forked logic,
+        NO session writes, NO chat follow-up prompts. The web form supplies a
+        fully-specified tx_data up front (including landing_cost for a sale so
+        COGS is stamped without the landing-cost prompt).
+
+        Returns a plain JSON-able dict {ok, transaction_id, ...} — never raises.
+        """
+        try:
+            tx_type = tx_data.get("type")
+            if tx_type not in ("sale", "purchase", "expense"):
+                return {"ok": False, "error": "invalid type"}
+            amount = int(tx_data.get("amount") or 0)
+            if amount <= 0:
+                return {"ok": False, "error": "amount must be greater than 0"}
+            description = (tx_data.get("description") or "Item").strip()
+            category = tx_data.get("category") or "Uncategorized"
+            vendor = (tx_data.get("vendor") or "").strip()
+            has_credit = bool(tx_data.get("has_credit"))
+            deposit_amount = int(tx_data.get("deposit_amount") or 0)
+            balance_owed = int(tx_data.get("balance_owed") or 0)
+
+            # A debt needs an owner.
+            if has_credit and not vendor:
+                return {"ok": False, "error": "a credit/part sale needs a customer name"}
+
+            # Build extra_details (mirror the chat normal-save assembly).
+            extra = {}
+            if tx_data.get("details"):
+                extra["details"] = tx_data["details"]
+            if tx_data.get("catalog_product"):
+                extra["catalog_product"] = tx_data["catalog_product"]
+            if tx_data.get("catalog_product_name"):
+                extra["catalog_product_name"] = tx_data["catalog_product_name"]
+            if tx_data.get("variant"):
+                extra["variant"] = tx_data["variant"]
+            if tx_data.get("landing_cost"):
+                extra["landing_cost"] = int(tx_data["landing_cost"])
+            if tx_type == "sale":
+                extra["sale_kind"] = "service" if tx_data.get("is_service_job") else "product"
+            extra["source"] = "miniapp"  # provenance
+
+            payment_method = "credit" if has_credit else (tx_data.get("payment_method") or "cash")
+
+            result = self.db.save_transaction(
+                phone_number,
+                amount,
+                tx_type,
+                description,
+                category,
+                vendor=vendor,
+                quantity=tx_data.get("quantity"),
+                brand=tx_data.get("brand"),
+                item_name=description,
+                unit_cost=tx_data.get("unit_cost"),
+                payment_method=payment_method,
+                extra_details=extra if extra else None,
+            )
+            tx_id = result.get("transaction_id", "") if isinstance(result, dict) else ""
+
+            # ── Stock (sale deducts, purchase adds + weighted-avg cost) ──
+            if tx_type in ("sale", "purchase"):
+                self._apply_stock_for_tx(phone_number, tx_data)
+
+            # ── Cost stamp (sales only) ──
+            if tx_type == "sale":
+                self._stamp_sale_cost(phone_number, tx_id, tx_data)
+
+            # ── Expense classification default (mfg/hybrid/services) ──
+            if tx_type == "expense" and tx_id:
+                try:
+                    user = self.db.get_user(phone_number) or {}
+                    industry = user.get("industry_class", user.get("business_type", "trading"))
+                    if industry in ("manufacturing", "hybrid", "services"):
+                        self.db.update_transaction(phone_number, tx_id, {
+                            "expense_class": self._default_expense_class(phone_number, category),
+                        })
+                except Exception as e:
+                    logger.warning(f"web expense class default failed: {e}")
+
+            # ── CRM contact totals ──
+            if vendor:
+                try:
+                    self.db.update_contact_totals(phone_number, vendor, amount, tx_type)
+                except Exception as e:
+                    logger.warning(f"web save: update_contact_totals failed: {e}")
+
+            # ── Debt (credit / part payment only) ──
+            debt_recorded = 0
+            if has_credit and vendor:
+                direction = "i_owe" if tx_type in ("purchase", "expense") else "owed_to_me"
+                if deposit_amount and balance_owed:
+                    owed = balance_owed
+                    desc = f"Balance after deposit: {description}"
+                else:
+                    owed = amount
+                    desc = f"Credit {tx_type}: {description}"
+                try:
+                    self.db.record_debt(phone_number, vendor, owed, direction, desc)
+                    debt_recorded = owed
+                except Exception as e:
+                    logger.warning(f"web save: record_debt failed: {e}")
+
+            return {
+                "ok": True,
+                "transaction_id": tx_id,
+                "type": tx_type,
+                "amount": amount,
+                "debt_recorded": debt_recorded,
+            }
+        except Exception as e:
+            logger.error(f"record_transaction_web error: {e}\n{traceback.format_exc()}")
+            return {"ok": False, "error": "could not record — please try again"}
+
     def _maybe_cost_choice_prompt(self, phone_number: str, tx_data: dict,
                                   stock_result: dict):
         """Bug-9 feature: when a PURCHASE arrives at a NEW per-unit price that

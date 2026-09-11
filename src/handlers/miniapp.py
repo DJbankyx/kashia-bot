@@ -105,9 +105,12 @@ def lambda_handler(event, context):
         if err is not None:
             return err
 
-        # ── Writes (M6a) ──
+        # ── Writes (M6a: catalog) ──
         if method == "POST" and path.endswith("/app/api/product"):
             return _product_write(event, user_id)
+        # ── Writes (M6b: record a transaction) ──
+        if method == "POST" and path.endswith("/app/api/transaction"):
+            return _transaction_write(event, user_id)
 
         # ── Reads ──
         if method == "GET" and path.endswith("/app/api/summary"):
@@ -304,6 +307,76 @@ def _product_write(event, user_id: str):
     # Echo the recomputed row (true stored state, not the client's optimistic value).
     updated = cat.get_normalized_product(user_id, key)
     return _json(200, {"ok": True, "product": _row_from_product(updated, cat)})
+
+
+def _transaction_write(event, user_id: str):
+    """M6b — record a full sale/purchase/expense from the web (stateless).
+
+    Body: {submit_id, type, amount, description, category?, quantity?, brand?,
+           unit_cost?, landing_cost?, payment_method?, vendor?, variant?,
+           catalog_product?, catalog_product_name?, is_service_job?, has_credit?,
+           deposit_amount?, balance_owed?}
+    Idempotent via submit_id (a retried POST returns the original tx, no double
+    record). Reuses the shared engine (TransactionHandler.record_transaction_web).
+    """
+    from services.database import Database
+    from features.transactions import TransactionHandler
+
+    data = _parse_body(event)
+    submit_id = str(data.get("submit_id") or "").strip()
+    if not submit_id:
+        return _json(400, {"error": "submit_id required"})
+    tx_type = str(data.get("type") or "").strip()
+    if tx_type not in ("sale", "purchase", "expense"):
+        return _json(400, {"error": "invalid type"})
+    try:
+        amount = int(data.get("amount"))
+    except (TypeError, ValueError):
+        return _json(400, {"error": "amount must be a number"})
+    if amount <= 0:
+        return _json(400, {"error": "amount must be greater than 0"})
+
+    db = Database()
+
+    # Idempotency: claim the submit_id BEFORE any side effect. A retry/double
+    # POST short-circuits here and returns the original result.
+    claimed, prior_tx = db.claim_web_submit(user_id, submit_id)
+    if not claimed:
+        return _json(200, {"ok": True, "transaction_id": prior_tx or "",
+                           "duplicate": True})
+
+    # Build tx_data for the shared engine (only pass through known fields).
+    tx_data = {
+        "type": tx_type,
+        "amount": amount,
+        "description": (data.get("description") or "Item").strip(),
+        "category": data.get("category") or "Uncategorized",
+        "quantity": data.get("quantity"),
+        "brand": data.get("brand"),
+        "unit_cost": data.get("unit_cost"),
+        "landing_cost": data.get("landing_cost"),
+        "payment_method": data.get("payment_method") or "cash",
+        "vendor": (data.get("vendor") or "").strip(),
+        "variant": data.get("variant"),
+        "catalog_product": data.get("catalog_product"),
+        "catalog_product_name": data.get("catalog_product_name"),
+        "is_service_job": bool(data.get("is_service_job")),
+        "has_credit": bool(data.get("has_credit")),
+        "deposit_amount": data.get("deposit_amount"),
+        "balance_owed": data.get("balance_owed"),
+        "_name_handled": True,
+    }
+
+    # Stateless save: no session/categorizer/industry-fn needed by
+    # record_transaction_web or the helpers it composes.
+    tx = TransactionHandler(None, db, None, None)
+    result = tx.record_transaction_web(user_id, tx_data)
+
+    if result.get("ok"):
+        db.mark_web_submit_recorded(user_id, submit_id, result.get("transaction_id", ""))
+        return _json(200, result)
+    # Save failed — status 400 so the client can show the error.
+    return _json(400, result)
 
 
 def _png_data_uri(path: str):
