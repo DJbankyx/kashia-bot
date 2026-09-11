@@ -327,8 +327,13 @@ _PAGE_HTML = """<!doctype html>
     var base = el.className.replace(/\\b(pos|neg)\\b/g, "").trim();
     el.className = base + (Number(n) < 0 ? " neg" : (Number(n) > 0 ? " pos" : ""));
   }
-  function api(path) {
-    return fetch(path, { headers: { "X-Telegram-Init-Data": initData } })
+  // The page is served at .../<stage>/app (no trailing slash). A RELATIVE
+  // fetch of "api/summary" would resolve against ".../<stage>/" (dropping
+  // "app") and 403. So build an ABSOLUTE path from the page's own path:
+  // "<...>/app" + "/api/<x>".
+  var BASE = window.location.pathname.replace(/\\/+$/, "");
+  function api(sub) {
+    return fetch(BASE + "/" + sub, { headers: { "X-Telegram-Init-Data": initData } })
       .then(function (r) {
         if (!r.ok) throw new Error(r.status === 401 ? "Not authorized" : ("Error " + r.status));
         return r.json();
