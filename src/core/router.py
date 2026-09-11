@@ -16,8 +16,10 @@ GREETING_WORDS = {'hi', 'hello', 'hey', 'good morning', 'good evening', 'good af
 CANCEL_WORDS = {'cancel', 'exit', 'stop', 'quit', 'back', 'nevermind', 'never mind', 'nvm'}
 ACK_WORDS = {'okay', 'ok', 'alright', 'sure', 'cool', 'noted', 'fine', 'got it', 'understood', 'right', 'yep', 'yea', 'yeah', 'yes'}
 HELP_WORDS = {'help', 'menu', 'what can you do', 'commands'}
-DEBT_WORDS = {'who owes me', 'who owe me', 'debtors', 'my debtors'}
-I_OWE_WORDS = {'who do i owe', 'what do i owe', 'my debt', 'i owe', 'creditors'}
+DEBT_WORDS = {'who owes me', 'who owe me', 'who owes', 'debtors', 'my debtors',
+              'who is owing me', 'owed to me', 'debts', 'my debts'}
+I_OWE_WORDS = {'who do i owe', 'what do i owe', 'who i owe', 'what i owe',
+               'my debt', 'i owe', 'creditors', 'who am i owing'}
 REPORT_WORDS = {'report', 'today', 'this week', 'this month', 'my sales', 'my purchases'}
 
 
@@ -73,6 +75,10 @@ class Router:
         context = session.get("context", {})
         text_stripped = text.strip()
         text_lower = text_stripped.lower()
+        # Punctuation-insensitive form for the natural-language shortcut matches
+        # below (so "Who owes me??", "catalog!", "report." all still match). We
+        # only strip surrounding punctuation/whitespace — inner content is kept.
+        text_norm = text_lower.strip(" \t\n?!.,;:*_'\"")
 
         logger.info(f"Router: phone={phone_number}, state={state}, type={message_type}, text={text_stripped[:50]}")
 
@@ -215,21 +221,21 @@ class Router:
         if text_lower.startswith("save number") or text_lower.startswith("save contact"):
             return self.contacts.save_contact_from_text(phone_number, text_stripped)
 
-        # Debt shortcuts — very common to type naturally
-        if text_lower in DEBT_WORDS:
+        # Debt shortcuts — very common to type naturally (punctuation-tolerant)
+        if text_norm in DEBT_WORDS:
             return self.debt.show_summary(phone_number)
 
-        if text_lower in I_OWE_WORDS:
+        if text_norm in I_OWE_WORDS:
             return self.debt.show_summary(phone_number)
 
         # Report shortcuts — users still type these
-        if text_lower in REPORT_WORDS:
+        if text_norm in REPORT_WORDS:
             return self.reports.show(phone_number)
 
         # Catalog shortcuts
         CATALOG_WORDS = {'my catalog', 'catalog', 'show catalog', 'my products',
                          'products', 'inventory', 'stock'}
-        if text_lower in CATALOG_WORDS:
+        if text_norm in CATALOG_WORDS:
             return self.catalog.show_menu(phone_number)
 
         # Production/batch shortcuts (manufacturing)
@@ -242,21 +248,21 @@ class Router:
                 return self._lookup_batch(phone_number, batch_query)
 
         # Export shortcuts
-        if text_lower in {'export', 'excel', 'csv', 'download'}:
+        if text_norm in {'export', 'excel', 'csv', 'download'}:
             return self.export.show_options(phone_number)
 
         # CRM shortcuts
-        if text_lower in {'contacts', 'customers', 'suppliers', 'crm',
+        if text_norm in {'contacts', 'customers', 'suppliers', 'crm',
                           'all contacts', 'my contacts', 'contact list'}:
             return self.contacts.show(phone_number)
 
 
         # Greetings → show home menu
-        if text_lower in GREETING_WORDS or text_lower in HELP_WORDS:
+        if text_norm in GREETING_WORDS or text_norm in HELP_WORDS:
             return self._show_home_menu(phone_number)
 
         # Acknowledgements → friendly nudge
-        if text_lower in ACK_WORDS:
+        if text_norm in ACK_WORDS:
             return [text_response("👍 Ready when you are! Type what you bought or sold, or tap the menu.")]
 
         # Conversion pattern (e.g. "1 carton = 12 pieces") → redirect
