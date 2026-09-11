@@ -1050,6 +1050,51 @@ class TransactionHandler:
             logger.warning(f"_apply_stock_for_tx failed: {e}")
             return None
 
+    def _post_sale_next(self, phone_number: str, tx_id: str,
+                        body: str = "What's next?", include_receipt: bool = True):
+        """Build the terminal 'What's next?' card after a SALE.
+
+        Single source for the post-sale quick actions so every sale exit point
+        stays consistent. On TELEGRAM it renders a grid-packed tap_first list —
+        Invoice / Receipt / ↩️ Record Return / ☰ Menu — so the just-made sale can
+        be reversed in one tap (return_from_<tx_id> pre-picks this sale). On
+        WhatsApp it keeps the EXACT existing 3-button response (Invoice / Receipt
+        / Menu) so nothing there changes and the 3-button cap isn't tripped.
+
+        A return button is only offered when we actually have a tx_id (a saved
+        sale to reverse)."""
+        rows_wa = []
+        if tx_id:
+            rows_wa.append({"id": f"gen_invoice_{tx_id}", "title": "🧾 Invoice"})
+            if include_receipt:
+                rows_wa.append({"id": f"gen_receipt_{tx_id}", "title": "🧾 Receipt"})
+        rows_wa.append({"id": "menu_home", "title": "☰ Menu"})
+
+        is_tg = False
+        try:
+            from services.messaging_client import platform_for_user
+            is_tg = platform_for_user(phone_number) == "telegram"
+        except Exception:
+            is_tg = False
+
+        if not is_tg or not tx_id:
+            # WhatsApp (or no tx_id): unchanged 3-button card.
+            return button_response(body, rows_wa[:3])
+
+        # Telegram: a tap_first list with the extra Record-Return action.
+        rows = [{"id": f"gen_invoice_{tx_id}", "title": "🧾 Invoice"}]
+        if include_receipt:
+            rows.append({"id": f"gen_receipt_{tx_id}", "title": "🧾 Receipt"})
+        rows.append({"id": f"return_from_{tx_id}"[:60], "title": "↩️ Record Return"})
+        rows.append({"id": "menu_home", "title": "☰ Menu"})
+        return list_response(
+            header="✅ Saved",
+            body=body,
+            button_text="Next",
+            sections=[{"title": "", "rows": rows}],
+            tap_first=True,
+        )
+
     def _stamp_sale_cost(self, phone_number: str, tx_id: str, tx_data: dict):
         """Stamp the COGS used on a SALE onto the saved transaction, so it's
         authoritative (never re-blends after a later restock) and viewable per
@@ -1604,14 +1649,10 @@ class TransactionHandler:
                             f"_Balance tracked in Debts. Settle when they pay the rest._"
                         ),
                         # A deposit means money WAS received, so offer a Receipt
-                        # (for the amount paid) alongside the Invoice. Kept to 3
-                        # buttons because button_response caps at 3; the balance
-                        # is already stated above and Menu reaches Debts.
-                        button_response("What's next?", [
-                            {"id": f"gen_invoice_{tx_id}", "title": "🧾 Invoice"},
-                            {"id": f"gen_receipt_{tx_id}", "title": "🧾 Receipt"},
-                            {"id": "menu_home", "title": "☰ Menu"},
-                        ])
+                        # (for the amount paid) alongside the Invoice. WhatsApp
+                        # keeps the 3-button card; Telegram also gets Record
+                        # Return (see _post_sale_next).
+                        self._post_sale_next(phone_number, tx_id)
                     ]
                 else:
                     # Full credit — no payment received
@@ -1622,11 +1663,7 @@ class TransactionHandler:
                             f"✅ Saved! {format_amount(amount)} sale on credit.\n"
                             f"📝 *{vendor}* owes you {format_amount(amount)}."
                         ),
-                        button_response("Generate a document?", [
-                            {"id": f"gen_invoice_{tx_id}", "title": "🧾 Invoice"},
-                            {"id": f"gen_receipt_{tx_id}", "title": "🧾 Receipt"},
-                            {"id": "menu_home", "title": "☰ Menu"},
-                        ])
+                        self._post_sale_next(phone_number, tx_id, body="Generate a document?")
                     ]
 
         except Exception as e:
@@ -1912,14 +1949,7 @@ class TransactionHandler:
                     f"👍 No cost recorded.\n\n"
                     f"_Send your next transaction or tap ☰ Menu._"
                 ),
-                button_response(
-                    "What's next?",
-                    [
-                        {"id": f"gen_invoice_{tx_id}", "title": "🧾 Invoice"},
-                        {"id": f"gen_receipt_{tx_id}", "title": "🧾 Receipt"},
-                        {"id": "menu_home", "title": "☰ Menu"},
-                    ]
-                )
+                self._post_sale_next(phone_number, tx_id)
             ]
 
         # ── "Different cost" tapped → prompt for a new total (stay in this state) ──
@@ -1988,14 +2018,7 @@ class TransactionHandler:
                 f"{cost_line}\n"
                 f"📈 Margin: {format_amount(margin)} ({margin_pct}%)"
             ),
-            button_response(
-                "What's next?",
-                [
-                    {"id": f"gen_invoice_{tx_id}", "title": "🧾 Invoice"},
-                    {"id": f"gen_receipt_{tx_id}", "title": "🧾 Receipt"},
-                    {"id": "menu_home", "title": "☰ Menu"},
-                ]
-            )
+            self._post_sale_next(phone_number, tx_id)
         ]
 
     def _decrement_stock_on_sale(self, phone_number: str, description: str, qty: int, context: dict):

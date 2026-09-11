@@ -137,6 +137,13 @@ class ReturnsHandler:
             self.session.reset(phone_number)
             return self.show_menu(phone_number)
 
+        # One-tap from a just-made sale's receipt card → jump straight to that
+        # sale's quantity picker (skips the recent-list).
+        if bid.startswith("return_from_"):
+            if not self._is_telegram(phone_number):
+                return self.show_menu(phone_number)
+            return self._pick_original(phone_number, bid[len("return_from_"):])
+
         # Picked an original → show it + quantity choices.
         if bid.startswith(_PICK):
             return self._pick_original(phone_number, bid[len(_PICK):])
