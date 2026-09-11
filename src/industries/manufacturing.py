@@ -183,6 +183,8 @@ class ManufacturingIndustry(BaseIndustry):
                      "description": "P&L, margins, costs, periods"},
                     {"id": "biz_debts", "title": "💳 Debts & Credits",
                      "description": "Who owes, supplier credits"},
+                    {"id": "menu_returns", "title": "↩️ Record a Return",
+                     "description": "Reverse a sale or purchase"},
                     {"id": "biz_docs", "title": "🧾 Documents",
                      "description": "Invoice, receipt, statement"},
                     {"id": "biz_export", "title": "📁 Export Data",

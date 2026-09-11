@@ -152,6 +152,8 @@ class ServicesIndustry(BaseIndustry):
                      "description": "Consumables & equipment bought"},
                     {"id": "biz_debts", "title": "💳 Debts & Credits",
                      "description": "Who owes, payments"},
+                    {"id": "menu_returns", "title": "↩️ Record a Return",
+                     "description": "Reverse a sale or purchase"},
                     {"id": "biz_recurring", "title": "🔁 Recurring Services",
                      "description": "Regular clients & reminders"},
                     {"id": "biz_quotes", "title": "📝 Quotes & Estimates",

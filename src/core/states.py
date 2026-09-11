@@ -65,6 +65,10 @@ TG_FASTENTRY = "TG_FASTENTRY"
 #     document awaiting the user's one-tap confirm-to-record. ───
 SCAN_CONFIRM = "SCAN_CONFIRM"
 
+# ─── Returns / Refunds (build #4). Telegram tap-first: pick an original sale/
+#     purchase, then confirm the return quantity (full or partial). ───
+RETURN_RECORDING = "RETURN_RECORDING"
+
 # ─── Personal Info ───
 PERSONAL_INFO = "PERSONAL_INFO"
 
@@ -91,4 +95,5 @@ EXEMPT_STATES = {
     PERSONAL_INFO, SETTINGS_FLOW, CRM_ADDING, CATALOG_RECORDING, PIN_VERIFYING,
     LANDING_COST, PAYMENT_METHOD, PRODUCTION_RECORDING, RECURRING_SERVICES,
     VARIANT_SELECTION, TG_FASTENTRY, INVOICE_BUILDER,
+    SCAN_CONFIRM, RETURN_RECORDING,
 }

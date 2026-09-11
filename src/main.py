@@ -30,6 +30,7 @@ from features.settings import SettingsHandler
 from features.production import ProductionHandler
 from features.recurring import RecurringHandler
 from features.quotes import QuotesHandler
+from features.returns import ReturnsHandler
 
 from core.states import EXEMPT_STATES
 
@@ -114,6 +115,10 @@ class KashiaBot:
         self.router.production = ProductionHandler(self.router.session, self.db)
         self.router.recurring = RecurringHandler(self.router.session, self.db)
         self.router.quotes = QuotesHandler(self.router.session, self.db)
+        # Returns / Refunds (build #4). Telegram tap-first; needs a router ref
+        # to reach the shared TransactionHandler.record_return (no forked logic).
+        self.router.returns = ReturnsHandler(self.router.session, self.db)
+        self.router.returns.router = self.router
 
         # Telegram fast-entry (app-like tappable sale/purchase). Telegram-only;
         # holds a router ref for engine access (catalog builders, confirm/save).

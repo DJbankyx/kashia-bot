@@ -198,6 +198,14 @@ class ButtonDispatcher:
         if bid.startswith("debt_"):
             return r.debt.handle_button(phone_number, bid, session)
 
+        # ── Returns/Refunds (build #4, Telegram tap-first) ──
+        if bid == "menu_returns":
+            if r.returns is not None:
+                return r.returns.show_menu(phone_number)
+        if bid.startswith("return_"):
+            if r.returns is not None:
+                return r.returns.handle_button(phone_number, bid, session)
+
         # ── Report buttons ──
         if bid.startswith("report_"):
             return r.reports.handle_button(phone_number, bid, session)

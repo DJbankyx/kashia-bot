@@ -269,6 +269,8 @@ _COMMAND_MAP = {
     "stock":    ("menu_catalog", "interactive"),       # alias
     "products": ("menu_catalog", "interactive"),       # alias
     "debts":    ("menu_debts", "interactive"),
+    "return":   ("menu_returns", "interactive"),
+    "returns":  ("menu_returns", "interactive"),       # alias
     "contacts": ("menu_contacts", "interactive"),
     "customers":("menu_contacts", "interactive"),      # alias
     "help":     ("help", "text"),
@@ -301,6 +303,7 @@ COMMAND_MENU = [
     {"command": "report",   "description": "📊 Reports & dashboard"},
     {"command": "catalog",  "description": "🗂️ Products & stock"},
     {"command": "debts",    "description": "💳 Who owes you / who you owe"},
+    {"command": "return",   "description": "↩️ Record a return / refund"},
     {"command": "contacts", "description": "👥 Customers & suppliers"},
     {"command": "help",     "description": "❓ How to use Kashia"},
     {"command": "reset",    "description": "🗑️ Delete all data & start over"},

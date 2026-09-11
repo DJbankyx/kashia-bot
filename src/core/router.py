@@ -51,6 +51,7 @@ class Router:
         self.production = None
         self.recurring = None
         self.quotes = None
+        self.returns = None       # Returns/Refunds (build #4) — Telegram tap-first
         self.tg_fastentry = None  # Telegram-only app-like sale/purchase flow
         self.tg_invoice = None    # Telegram-only tap-first invoice builder (4C)
 
@@ -202,6 +203,10 @@ class Router:
         # ── Telegram invoice builder: typed value (customer name / item line) ──
         if state == states.INVOICE_BUILDER and getattr(self, "tg_invoice", None) is not None:
             return self.tg_invoice.handle_text(phone_number, text_stripped)
+
+        # ── Returns/Refunds: typed custom return quantity ──
+        if state == states.RETURN_RECORDING and getattr(self, "returns", None) is not None:
+            return self.returns.handle(phone_number, text_stripped, session)
 
         # ═══════════════════════════════════════════════════════
         # 5. IDLE STATE — the default
