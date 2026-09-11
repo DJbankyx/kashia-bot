@@ -137,3 +137,25 @@ current stock × average cost.
 2. If yes to B, approve the small specific-ID improvements (prompt exact cost on
    high-value sales; make "specific" mode truly pin per-unit cost; fix returns).
 3. Park FIFO unless/until fungible bulk stock makes it worthwhile.
+
+---
+
+## ✅ DECISION + BUILD STATUS (2026-09-11)
+Owner chose: **weighted-average default + specific-ID for cars + FIFO parked.**
+Tier B built + pushed (commit 66da238):
+- **#2 done** — `accounting.resolve_sale_cost_now` no longer mislabels a blended
+  product-average as "specific". Genuine pinning comes only from a typed
+  landing_cost (→ `sale_landing_cost`) or a per-unit tree leaf; the product-avg
+  fallback is honestly reported as `weighted_avg` even in specific mode, so a
+  sale costed by the average is disclosed (not dressed up as specific).
+- **#3 done** — `transactions.record_return` reinstates a returned SALE unit at
+  its REAL stamped unit cost (blended back like a mini-purchase via
+  `update_stock(unit_cost=stamped_cost_unit, cost_mode="average")`), so a
+  returned car keeps its true cost instead of folding into a drifted average.
+  Uncosted sales and purchase returns still use `cost_mode="keep"`.
+- **#1 done** — in specific mode the post-sale prompt leads with "✏️ Enter this
+  unit's cost" (+ a short why), instead of nudging the user to accept an average.
+  Weighted-average mode keeps the familiar "✅ Use {cost} / Different / Skip".
+- 13 dry-run checks pass; weighted-average default + WhatsApp untouched.
+- **FIFO** remains parked (opt-in mode + lot ledger; only if fungible bulk stock
+  ever needs it). Scope sketch above stands.
