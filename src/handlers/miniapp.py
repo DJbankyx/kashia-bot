@@ -543,6 +543,7 @@ _PAGE_HTML = """<!doctype html>
     <div class="tab active" id="tab-dash" onclick="showTab('dash')">📊 Dashboard</div>
     <div class="tab" id="tab-inv" onclick="showTab('inv')">📦 Inventory</div>
   </div>
+  <button class="btn save" id="recordBtn" style="width:100%;margin-bottom:12px" onclick="openRecord()">➕ Record a transaction</button>
 
   <div id="view-dash">
     <div class="chips" id="chips"></div>
@@ -607,6 +608,52 @@ _PAGE_HTML = """<!doctype html>
       <div class="actions">
         <button class="btn cancel" onclick="closeSheet()">Cancel</button>
         <button class="btn save" id="sh-save" onclick="saveSheet()">Save changes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Record-transaction sheet (M6b) -->
+  <div id="recOverlay" class="overlay hidden">
+    <div class="sheet">
+      <h2>Record a transaction</h2>
+      <div class="sub2">Saved straight to your books.</div>
+      <div class="chips" id="rec-type">
+        <div class="chip active" data-t="sale" onclick="recType('sale')">💰 Sale</div>
+        <div class="chip" data-t="purchase" onclick="recType('purchase')">📦 Purchase</div>
+        <div class="chip" data-t="expense" onclick="recType('expense')">💸 Expense</div>
+      </div>
+      <div class="field">
+        <label id="rec-desc-label">What did you sell?</label>
+        <input id="rec-desc" placeholder="e.g. Hilux">
+      </div>
+      <div class="field">
+        <label id="rec-amount-label">Amount received (NGN)</label>
+        <input id="rec-amount" type="number" inputmode="numeric" min="0">
+      </div>
+      <div class="field" id="rec-qty-wrap">
+        <label>Quantity</label>
+        <input id="rec-qty" type="number" inputmode="numeric" min="1" value="1">
+      </div>
+      <div class="field" id="rec-cost-wrap">
+        <label id="rec-cost-label">Cost of goods (total, NGN) — optional</label>
+        <input id="rec-cost" type="number" inputmode="numeric" min="0" placeholder="for accurate profit">
+      </div>
+      <div class="field">
+        <label id="rec-who-label">Customer (optional)</label>
+        <input id="rec-who" placeholder="name">
+      </div>
+      <div class="field">
+        <label>Payment</label>
+        <div class="chips" id="rec-pay">
+          <div class="chip active" data-p="cash" onclick="recPay('cash')">💵 Cash</div>
+          <div class="chip" data-p="transfer" onclick="recPay('transfer')">🏦 Transfer</div>
+          <div class="chip" data-p="credit" onclick="recPay('credit')">📝 Credit</div>
+        </div>
+      </div>
+      <div class="sheeterr" id="rec-err"></div>
+      <div class="actions">
+        <button class="btn cancel" onclick="closeRecord()">Cancel</button>
+        <button class="btn save" id="rec-save" onclick="saveRecord()">Record</button>
       </div>
     </div>
   </div>
@@ -837,6 +884,93 @@ _PAGE_HTML = """<!doctype html>
       saveBtn.disabled = false;
       document.getElementById("sh-err").textContent = e.message || "Save failed";
     });
+  };
+
+  // ── Record a transaction (M6b) ──
+  var recTypeVal = "sale", recPayVal = "cash", recSubmitId = null;
+  function uuid() {
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
+      var r = Math.random() * 16 | 0, v = c === "x" ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  }
+  function recSyncLabels() {
+    var t = recTypeVal;
+    document.getElementById("rec-desc-label").textContent =
+      t === "sale" ? "What did you sell?" : (t === "purchase" ? "What did you buy?" : "What was it for?");
+    document.getElementById("rec-amount-label").textContent =
+      t === "sale" ? "Amount received (NGN)" : (t === "purchase" ? "Amount paid (NGN)" : "Amount (NGN)");
+    // Cost + quantity + who only make sense for sale/purchase.
+    var showGoods = (t !== "expense");
+    document.getElementById("rec-qty-wrap").style.display = showGoods ? "" : "none";
+    document.getElementById("rec-cost-wrap").style.display = (t === "sale") ? "" : "none";
+    document.getElementById("rec-who-label").textContent =
+      t === "purchase" ? "Supplier (optional)" : (t === "sale" ? "Customer (optional)" : "Paid to (optional)");
+  }
+  window.recType = function (t) {
+    recTypeVal = t;
+    var chips = document.querySelectorAll("#rec-type .chip");
+    chips.forEach(function (c) { c.classList.toggle("active", c.getAttribute("data-t") === t); });
+    recSyncLabels();
+  };
+  window.recPay = function (p) {
+    recPayVal = p;
+    var chips = document.querySelectorAll("#rec-pay .chip");
+    chips.forEach(function (c) { c.classList.toggle("active", c.getAttribute("data-p") === p); });
+  };
+  window.openRecord = function () {
+    recTypeVal = "sale"; recPayVal = "cash"; recSubmitId = uuid();
+    recType("sale"); recPay("cash");
+    document.getElementById("rec-desc").value = "";
+    document.getElementById("rec-amount").value = "";
+    document.getElementById("rec-qty").value = "1";
+    document.getElementById("rec-cost").value = "";
+    document.getElementById("rec-who").value = "";
+    document.getElementById("rec-err").textContent = "";
+    document.getElementById("rec-save").disabled = false;
+    document.getElementById("recOverlay").classList.remove("hidden");
+  };
+  window.closeRecord = function () {
+    document.getElementById("recOverlay").classList.add("hidden");
+  };
+  window.saveRecord = function () {
+    var desc = (document.getElementById("rec-desc").value || "").trim();
+    var amount = parseInt(document.getElementById("rec-amount").value, 10) || 0;
+    var qty = Math.max(1, parseInt(document.getElementById("rec-qty").value, 10) || 1);
+    var cost = parseInt(document.getElementById("rec-cost").value, 10) || 0;
+    var who = (document.getElementById("rec-who").value || "").trim();
+    var err = document.getElementById("rec-err");
+    err.textContent = "";
+    if (!desc) { err.textContent = "Please enter what it was."; return; }
+    if (amount <= 0) { err.textContent = "Please enter an amount."; return; }
+    var isCredit = recPayVal === "credit";
+    if (isCredit && !who) {
+      err.textContent = recTypeVal === "purchase"
+        ? "A credit purchase needs a supplier name." : "A credit sale needs a customer name.";
+      return;
+    }
+    var body = {
+      submit_id: recSubmitId, type: recTypeVal, amount: amount,
+      description: desc, payment_method: recPayVal,
+      vendor: who, has_credit: isCredit,
+    };
+    if (recTypeVal !== "expense") body.quantity = String(qty);
+    if (recTypeVal === "sale" && cost > 0) body.landing_cost = cost;
+    var btn = document.getElementById("rec-save");
+    btn.disabled = true;
+    apiPost("api/transaction", body)
+      .then(function () {
+        closeRecord();
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+        // Refresh dashboard + inventory so the new numbers show.
+        loadSummary();
+        invLoaded = false;
+        if (!document.getElementById("view-inv").classList.contains("hidden")) loadInventory();
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        err.textContent = e.message || "Could not record";
+      });
   };
 
   if (!initData) {
