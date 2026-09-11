@@ -1101,6 +1101,19 @@ class PDFGenerator:
         model = tx.get('model', '')
         quantity = tx.get('quantity', '')
 
+        # Variant-tree LEAF path the sale drilled to (e.g. "Suv / Highlander /
+        # 2022"). Stored on extra_details.variant (or catalog_path) by the tidy-
+        # box; sometimes a plain field. Without this the document printed just
+        # the base name ("Honda") and lost the specific model/year the customer
+        # actually bought — see BUG 3. We append it so the line reads
+        # "Honda — Suv / Highlander / 2022".
+        extra = tx.get('extra_details', {}) or {}
+        variant_path = (extra.get('variant') or extra.get('catalog_path')
+                        or tx.get('variant') or '')
+        if isinstance(variant_path, (list, tuple)):
+            variant_path = " / ".join(str(x) for x in variant_path if x)
+        variant_path = str(variant_path).strip()
+
         # Build from structured fields
         parts = []
         if brand and item_name:
@@ -1123,15 +1136,21 @@ class PDFGenerator:
                 raw = raw.strip()
             parts.append(raw.title() if raw else 'Goods/Services')
 
-        # Add attributes
+        # Append the variant path (unless it's already contained in the name).
+        base_so_far = ' '.join(parts).lower()
+        if variant_path and variant_path.lower() not in base_so_far:
+            parts.append(f"— {variant_path}")
+
+        # Add attributes (colour/pattern/size/model) not already present.
         attrs = []
-        if pattern:
+        current = ' '.join(parts).lower()
+        if pattern and pattern.lower() not in current:
             attrs.append(pattern.title())
-        if color:
+        if color and color.lower() not in current:
             attrs.append(color.title())
-        if size:
+        if size and str(size).lower() not in current:
             attrs.append(f"Size {size}")
-        if model and model.lower() not in ' '.join(parts).lower():
+        if model and model.lower() not in current:
             attrs.append(model.title())
         if attrs:
             parts.append(f"({', '.join(attrs)})")
