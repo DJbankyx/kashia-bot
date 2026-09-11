@@ -208,11 +208,13 @@ def _inventory(event, user_id: str):
     return _json(200, {"count": len(rows), "products": rows})
 
 
-# ── The Mini App page (M3 shell) ─────────────────────────────────────────────
-# A minimal, Telegram-theme-aware page that reads initData, calls /app/api/
-# summary, and shows one real number to prove the end-to-end round-trip. M4/M5
-# expand this into the inventory grid + full dashboard. Kept as one self-
-# contained string (no external assets) so a single Lambda serves everything.
+# ── The Mini App page (M3 shell + M4 inventory + M5 dashboard) ───────────────
+# One self-contained page (no external assets besides Telegram's WebApp SDK) so
+# a single Lambda serves everything. Two tabs: Dashboard (period toggles, P&L /
+# cash / debt / position) and Inventory (searchable product grid, low-stock
+# highlight, margin, stock value). All data comes from the auth'd /app/api/*
+# endpoints, which reuse the shared accounting engine — so the web numbers match
+# the chat dashboard exactly. Read-only (v1).
 _PAGE_HTML = """<!doctype html>
 <html lang="en">
 <head>
@@ -227,91 +229,209 @@ _PAGE_HTML = """<!doctype html>
     --text: var(--tg-theme-text-color, #f2f4f8);
     --hint: var(--tg-theme-hint-color, #8a93a3);
     --accent: var(--tg-theme-button-color, #2ea6ff);
+    --btntext: var(--tg-theme-button-text-color, #ffffff);
     --pos: #35c26a; --neg: #ff5c5c;
+    --line: rgba(255,255,255,.08);
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
     font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
-    padding: 16px; -webkit-font-smoothing: antialiased; }
-  h1 { font-size: 18px; margin: 4px 0 2px; }
-  .sub { color: var(--hint); font-size: 13px; margin-bottom: 16px; }
-  .card { background: var(--card); border-radius: 14px; padding: 16px;
-    margin-bottom: 12px; }
-  .k { color: var(--hint); font-size: 12px; text-transform: uppercase;
-    letter-spacing: .04em; }
-  .v { font-size: 26px; font-weight: 700; margin-top: 4px; }
-  .row { display: flex; gap: 12px; }
+    padding: 14px 14px 40px; -webkit-font-smoothing: antialiased; }
+  h1 { font-size: 18px; margin: 2px 0; }
+  .sub { color: var(--hint); font-size: 13px; margin-bottom: 12px; }
+  .card { background: var(--card); border-radius: 14px; padding: 14px; margin-bottom: 10px; }
+  .k { color: var(--hint); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .v { font-size: 24px; font-weight: 700; margin-top: 3px; }
+  .row { display: flex; gap: 10px; }
   .row .card { flex: 1; }
   .pos { color: var(--pos); } .neg { color: var(--neg); }
   .err { color: var(--neg); font-size: 14px; }
-  .muted { color: var(--hint); font-size: 12px; margin-top: 20px; text-align:center; }
+  .muted { color: var(--hint); font-size: 12px; margin: 14px 0; text-align:center; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+  .tab { flex: 1; text-align: center; padding: 9px; border-radius: 10px;
+    background: var(--card); color: var(--hint); font-weight: 600; font-size: 14px; cursor: pointer; }
+  .tab.active { background: var(--accent); color: var(--btntext); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .chip { padding: 6px 12px; border-radius: 20px; background: var(--card);
+    color: var(--text); font-size: 13px; cursor: pointer; border: 1px solid var(--line); }
+  .chip.active { background: var(--accent); color: var(--btntext); border-color: var(--accent); }
+  .search { width: 100%; padding: 11px 12px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--card); color: var(--text); font-size: 15px; margin-bottom: 10px; }
+  .item { display: flex; justify-content: space-between; align-items: center;
+    padding: 11px 0; border-bottom: 1px solid var(--line); }
+  .item:last-child { border-bottom: none; }
+  .item .name { font-weight: 600; font-size: 15px; }
+  .item .meta { color: var(--hint); font-size: 12px; margin-top: 2px; }
+  .item .right { text-align: right; white-space: nowrap; }
+  .item .stock { font-weight: 700; font-size: 15px; }
+  .badge { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 6px;
+    margin-left: 6px; vertical-align: middle; }
+  .badge.low { background: rgba(255,92,92,.18); color: var(--neg); }
+  .badge.var { background: rgba(46,166,255,.16); color: var(--accent); }
+  .hidden { display: none; }
 </style>
 </head>
 <body>
   <h1 id="biz">Kashia</h1>
   <div class="sub" id="period">Loading…</div>
 
-  <div class="card">
-    <div class="k">Net profit</div>
-    <div class="v" id="net">—</div>
-  </div>
-  <div class="row">
-    <div class="card"><div class="k">Revenue</div><div class="v" id="rev">—</div></div>
-    <div class="card"><div class="k">Cash in hand</div><div class="v" id="cash">—</div></div>
-  </div>
-  <div class="card">
-    <div class="k">Owed to you / You owe</div>
-    <div class="v"><span id="owed">—</span> <span class="k">/</span> <span id="iowe">—</span></div>
+  <div class="tabs">
+    <div class="tab active" id="tab-dash" onclick="showTab('dash')">📊 Dashboard</div>
+    <div class="tab" id="tab-inv" onclick="showTab('inv')">📦 Inventory</div>
   </div>
 
-  <div id="msg" class="muted"></div>
+  <div id="view-dash">
+    <div class="chips" id="chips"></div>
+    <div class="card"><div class="k">Net profit</div><div class="v" id="net">—</div></div>
+    <div class="row">
+      <div class="card"><div class="k">Revenue</div><div class="v" id="rev">—</div></div>
+      <div class="card"><div class="k">Cost of sales</div><div class="v" id="cogs">—</div></div>
+    </div>
+    <div class="row">
+      <div class="card"><div class="k">Gross margin</div><div class="v" id="gm">—</div></div>
+      <div class="card"><div class="k">Expenses</div><div class="v" id="opex">—</div></div>
+    </div>
+    <div class="card"><div class="k">Cash in - out</div><div class="v" id="cash">—</div></div>
+    <div class="row">
+      <div class="card"><div class="k">Owed to you</div><div class="v pos" id="owed">—</div></div>
+      <div class="card"><div class="k">You owe</div><div class="v neg" id="iowe">—</div></div>
+    </div>
+    <div class="card">
+      <div class="k">Inventory value / Net position</div>
+      <div class="v"><span id="invval">—</span> <span class="k">/</span> <span id="netpos">—</span></div>
+    </div>
+    <div id="dashmsg" class="muted"></div>
+  </div>
+
+  <div id="view-inv" class="hidden">
+    <input class="search" id="search" placeholder="Search products..." oninput="renderInv()">
+    <div class="card" id="invlist"><div class="muted">Loading...</div></div>
+    <div id="invmsg" class="muted"></div>
+  </div>
 
 <script>
 (function () {
   var tg = window.Telegram && window.Telegram.WebApp;
   if (tg) { tg.ready(); tg.expand(); }
   var initData = (tg && tg.initData) || "";
-  var msg = document.getElementById("msg");
+  var PERIODS = [["today","Today"],["week","Week"],["month","Month"],["last_month","Last month"]];
+  var curPeriod = "month";
+  var invData = null;
+  var invLoaded = false;
 
-  function naira(n) {
-    n = Number(n || 0);
-    return "NGN " + n.toLocaleString("en-NG");
-  }
+  function naira(n) { return "NGN " + Number(n||0).toLocaleString("en-NG"); }
   function setSigned(id, n) {
     var el = document.getElementById(id);
+    if (!el) return;
     el.textContent = naira(n);
-    el.className = "v " + (Number(n) < 0 ? "neg" : (Number(n) > 0 ? "pos" : ""));
+    var base = el.className.replace(/\\b(pos|neg)\\b/g, "").trim();
+    el.className = base + (Number(n) < 0 ? " neg" : (Number(n) > 0 ? " pos" : ""));
+  }
+  function api(path) {
+    return fetch(path, { headers: { "X-Telegram-Init-Data": initData } })
+      .then(function (r) {
+        if (!r.ok) throw new Error(r.status === 401 ? "Not authorized" : ("Error " + r.status));
+        return r.json();
+      });
+  }
+
+  window.showTab = function (which) {
+    document.getElementById("tab-dash").classList.toggle("active", which === "dash");
+    document.getElementById("tab-inv").classList.toggle("active", which === "inv");
+    document.getElementById("view-dash").classList.toggle("hidden", which !== "dash");
+    document.getElementById("view-inv").classList.toggle("hidden", which !== "inv");
+    if (which === "inv" && !invLoaded) loadInventory();
+  };
+
+  function renderChips() {
+    var c = document.getElementById("chips");
+    c.innerHTML = "";
+    PERIODS.forEach(function (p) {
+      var el = document.createElement("div");
+      el.className = "chip" + (p[0] === curPeriod ? " active" : "");
+      el.textContent = p[1];
+      el.onclick = function () { curPeriod = p[0]; renderChips(); loadSummary(); };
+      c.appendChild(el);
+    });
+  }
+  function loadSummary() {
+    var msg = document.getElementById("dashmsg");
+    msg.textContent = "";
+    api("api/summary?period=" + curPeriod)
+      .then(function (d) {
+        document.getElementById("biz").textContent = d.business || "Kashia";
+        document.getElementById("period").textContent = "P&L - " + (d.period_label || "");
+        setSigned("net", d.pnl.net_profit);
+        document.getElementById("rev").textContent = naira(d.pnl.revenue);
+        document.getElementById("cogs").textContent = naira(d.pnl.cogs);
+        document.getElementById("gm").textContent = (d.pnl.gross_margin_pct || 0) + "%";
+        document.getElementById("opex").textContent = naira(d.pnl.opex);
+        setSigned("cash", d.cash.net);
+        document.getElementById("owed").textContent = naira(d.debt.owed_to_me);
+        document.getElementById("iowe").textContent = naira(d.debt.i_owe);
+        document.getElementById("invval").textContent = naira(d.position.inventory_value);
+        setSigned("netpos", d.position.net_position);
+        if (d.uncosted_sales > 0) {
+          msg.textContent = d.uncosted_sales + " sale(s) have no cost set - profit may be overstated.";
+        }
+      })
+      .catch(function (e) {
+        document.getElementById("period").textContent = "";
+        msg.innerHTML = '<span class="err">' + (e.message || "Could not load") + '</span>';
+      });
+  }
+
+  function loadInventory() {
+    invLoaded = true;
+    api("api/inventory")
+      .then(function (d) { invData = d.products || []; renderInv(); })
+      .catch(function (e) {
+        document.getElementById("invmsg").innerHTML =
+          '<span class="err">' + (e.message || "Could not load") + '</span>';
+      });
+  }
+  window.renderInv = function () {
+    if (!invData) return;
+    var q = (document.getElementById("search").value || "").toLowerCase().trim();
+    var list = document.getElementById("invlist");
+    var rows = invData.filter(function (p) {
+      return !q || (p.name || "").toLowerCase().indexOf(q) >= 0
+                || (p.category || "").toLowerCase().indexOf(q) >= 0;
+    });
+    if (!rows.length) { list.innerHTML = '<div class="muted">No products.</div>'; return; }
+    var html = "";
+    rows.forEach(function (p) {
+      var margin = (p.sale_price && p.cost) ? (p.sale_price - p.cost) : 0;
+      var badges = "";
+      if (p.low_stock) badges += '<span class="badge low">low</span>';
+      if (p.has_variants) badges += '<span class="badge var">variants</span>';
+      var sub = [];
+      if (p.cost) sub.push("cost " + naira(p.cost));
+      if (p.sale_price) sub.push("price " + naira(p.sale_price));
+      if (margin) sub.push("margin " + naira(margin));
+      html += '<div class="item"><div><div class="name">' + escapeHtml(p.name || "?") + badges +
+        '</div><div class="meta">' + (sub.join(" / ") || "no price/cost set") + '</div></div>' +
+        '<div class="right"><div class="stock">' + Number(p.stock||0).toLocaleString() +
+        ' ' + escapeHtml(p.unit || "") + '</div><div class="meta">' +
+        (p.stock_value ? naira(p.stock_value) : "") + '</div></div></div>';
+    });
+    list.innerHTML = html;
+    document.getElementById("invmsg").textContent = rows.length + " product(s)";
+  };
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
+    });
   }
 
   if (!initData) {
     document.getElementById("period").textContent = "";
-    msg.innerHTML = '<span class="err">Open this from inside Telegram.</span>';
+    document.getElementById("dashmsg").innerHTML =
+      '<span class="err">Open this from inside Telegram.</span>';
     return;
   }
-
-  fetch("api/summary?period=month", {
-    headers: { "X-Telegram-Init-Data": initData }
-  })
-  .then(function (r) {
-    if (!r.ok) throw new Error(r.status === 401 ? "Not authorized" : ("Error " + r.status));
-    return r.json();
-  })
-  .then(function (d) {
-    document.getElementById("biz").textContent = d.business || "Kashia";
-    document.getElementById("period").textContent = "P&L — " + (d.period_label || "This month");
-    setSigned("net", d.pnl.net_profit);
-    document.getElementById("rev").textContent = naira(d.pnl.revenue);
-    setSigned("cash", d.cash.net);
-    document.getElementById("owed").textContent = naira(d.debt.owed_to_me);
-    document.getElementById("iowe").textContent = naira(d.debt.i_owe);
-    if (d.uncosted_sales > 0) {
-      msg.textContent = d.uncosted_sales + " sale(s) have no cost set — profit may be overstated.";
-    }
-  })
-  .catch(function (e) {
-    document.getElementById("period").textContent = "";
-    msg.innerHTML = '<span class="err">' + (e.message || "Could not load") + '</span>';
-  });
+  renderChips();
+  loadSummary();
 })();
 </script>
 </body>

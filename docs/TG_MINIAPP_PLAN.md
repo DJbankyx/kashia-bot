@@ -132,12 +132,17 @@ chat dashboard shows, so the web numbers and chat numbers always agree.
   HTML page; add the Telegram Menu Button / a `web_app` button on the dashboard
   card. Prove the page opens in-chat, reads initData, and round-trips one number.
   Ship.
-- **M4 — Inventory grid (read-only).** Render the full product grid (search,
-  low-stock highlight, tree roll-ups, stock value). The thing WhatsApp/chat can't
-  do well. Ship.
-- **M5 — Dashboard + charts.** Period toggles (Today/Week/Month/Last), P&L / cash
-  / debt / position cards, and charts (JS charts from the series endpoints, or
-  reuse N2 chart images). Ship.
+- **M4 — Inventory grid (read-only). ✅ DONE.** Searchable product grid in the
+  page: name, stock, unit, cost, sale_price, margin, low-stock + variants badges,
+  stock value. Tabbed with the dashboard.
+- **M5 — Dashboard + period toggles. ✅ DONE (charts split to M5.1).** Period
+  chips (Today/Week/Month/Last month) re-fetch /app/api/summary; cards for net
+  profit, revenue, cost of sales, gross margin, expenses, cash net, owed/you-owe,
+  inventory value + net position; uncosted-sales flag.
+- **M5.1 — Chart images (follow-on).** Expose the N2 Pillow charts (profit trend,
+  top products) as an auth'd PNG endpoint and embed them in the dashboard tab.
+  Deferred: needs a new binary-image route; the dashboard already delivers the
+  core visual value without it.
 - **M6 — (LATER, separate go-ahead) Interactivity.** Editing stock / recording a
   sale/purchase from the web view — routed through the SAME engine save path with
   the SAME confirmations. Money-mutating, so it comes last and gets its own
