@@ -109,6 +109,8 @@ def lambda_handler(event, context):
             return _summary(event, user_id)
         if path.endswith("/app/api/inventory"):
             return _inventory(event, user_id)
+        if path.endswith("/app/api/charts"):
+            return _charts(event, user_id)
 
         return _json(404, {"error": "not found", "path": path})
 
@@ -208,6 +210,75 @@ def _inventory(event, user_id: str):
     return _json(200, {"count": len(rows), "products": rows})
 
 
+def _png_data_uri(path: str):
+    """Read a PNG file and return a base64 data URI, or None. Returned inside a
+    JSON body (data URI) so we avoid API Gateway binary-media-type config — the
+    page just sets it as an <img> src."""
+    import base64
+    try:
+        if not path:
+            return None
+        with open(path, "rb") as f:
+            b = f.read()
+        return "data:image/png;base64," + base64.b64encode(b).decode("ascii")
+    except Exception as e:
+        logger.warning(f"miniapp chart read failed: {e}")
+        return None
+
+
+def _charts(event, user_id: str):
+    """Chart images for the dashboard tab (M5.1). Reuses the SAME aggregation as
+    the chat visual dashboard (top products from period sales + profit_trend) and
+    the shared chart_renderer. Returns base64 PNG data URIs in JSON."""
+    from services.database import Database
+    from services.accounting import Accounting
+    from features.reports import _date_range
+
+    qs = event.get("queryStringParameters") or {}
+    period = (qs.get("period") or "month").lower()
+    if period not in ("today", "week", "month", "last_month"):
+        period = "month"
+
+    out = {"top_products": None, "profit_trend": None}
+    try:
+        from services.chart_renderer import bar_chart, trend_chart
+    except Exception:
+        # Charts optional — return nulls; the page hides the section.
+        return _json(200, out)
+
+    db = Database()
+    acct = Accounting(db)
+    start, end, label = _date_range(period)
+
+    # Top products for the period (revenue by product name).
+    try:
+        pnl = acct.period_pnl(user_id, start, end, label)
+        agg = {}
+        for t in pnl.get("sales", []):
+            name = (t.get("item_name") or t.get("description") or "Item").strip()
+            agg[name] = agg.get(name, 0) + int(t.get("amount", 0) or 0)
+        top = sorted(agg.items(), key=lambda x: x[1], reverse=True)[:6]
+        if top:
+            p = bar_chart(f"Top products - {label}",
+                          [n for n, _ in top], [v for _, v in top],
+                          filename=f"ma_top_{user_id[-6:]}.png")
+            out["top_products"] = _png_data_uri(p)
+    except Exception as e:
+        logger.warning(f"miniapp top-products chart failed: {e}")
+
+    # Net-profit trend, last 6 months.
+    try:
+        series = acct.profit_trend(user_id, months=6)
+        if any(v for _, v in series):
+            p = trend_chart("Net profit - last 6 months", series,
+                            filename=f"ma_trend_{user_id[-6:]}.png")
+            out["profit_trend"] = _png_data_uri(p)
+    except Exception as e:
+        logger.warning(f"miniapp trend chart failed: {e}")
+
+    return _json(200, out)
+
+
 # ── The Mini App page (M3 shell + M4 inventory + M5 dashboard) ───────────────
 # One self-contained page (no external assets besides Telegram's WebApp SDK) so
 # a single Lambda serves everything. Two tabs: Dashboard (period toggles, P&L /
@@ -268,6 +339,7 @@ _PAGE_HTML = """<!doctype html>
     margin-left: 6px; vertical-align: middle; }
   .badge.low { background: rgba(255,92,92,.18); color: var(--neg); }
   .badge.var { background: rgba(46,166,255,.16); color: var(--accent); }
+  .chart { width: 100%; border-radius: 8px; margin-top: 8px; display: block; }
   .hidden { display: none; }
 </style>
 </head>
@@ -299,6 +371,12 @@ _PAGE_HTML = """<!doctype html>
     <div class="card">
       <div class="k">Inventory value / Net position</div>
       <div class="v"><span id="invval">—</span> <span class="k">/</span> <span id="netpos">—</span></div>
+    </div>
+    <div class="card hidden" id="chartTop">
+      <div class="k">Top products</div><img class="chart" id="imgTop" alt="">
+    </div>
+    <div class="card hidden" id="chartTrend">
+      <div class="k">Net profit - last 6 months</div><img class="chart" id="imgTrend" alt="">
     </div>
     <div id="dashmsg" class="muted"></div>
   </div>
@@ -384,6 +462,26 @@ _PAGE_HTML = """<!doctype html>
         document.getElementById("period").textContent = "";
         msg.innerHTML = '<span class="err">' + (e.message || "Could not load") + '</span>';
       });
+    loadCharts();
+  }
+
+  function loadCharts() {
+    // Charts are best-effort: hide the cards, then show each only if the
+    // endpoint returns an image. A chart failure never breaks the dashboard.
+    var cTop = document.getElementById("chartTop"), cTrend = document.getElementById("chartTrend");
+    cTop.classList.add("hidden"); cTrend.classList.add("hidden");
+    api("api/charts?period=" + curPeriod)
+      .then(function (d) {
+        if (d.top_products) {
+          document.getElementById("imgTop").src = d.top_products;
+          cTop.classList.remove("hidden");
+        }
+        if (d.profit_trend) {
+          document.getElementById("imgTrend").src = d.profit_trend;
+          cTrend.classList.remove("hidden");
+        }
+      })
+      .catch(function () { /* charts optional — ignore */ });
   }
 
   function loadInventory() {
