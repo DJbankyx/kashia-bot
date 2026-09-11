@@ -688,11 +688,12 @@ _PAGE_HTML = """<!doctype html>
       </div>
       <div class="field">
         <label id="rec-amount-label">Amount received (NGN)</label>
-        <input id="rec-amount" type="number" inputmode="numeric" min="0">
+        <input id="rec-amount" type="number" inputmode="numeric" min="0" oninput="recBalanceHint()">
       </div>
       <div class="field" id="rec-qty-wrap">
-        <label>Quantity</label>
+        <label id="rec-qty-label">Quantity</label>
         <input id="rec-qty" type="number" inputmode="numeric" min="1" value="1">
+        <div class="sub2">In the product's unit (set the unit in Catalog).</div>
       </div>
       <div class="field" id="rec-cost-wrap">
         <label id="rec-cost-label">Cost of goods (total, NGN) — optional</label>
@@ -708,7 +709,13 @@ _PAGE_HTML = """<!doctype html>
           <div class="chip active" data-p="cash" onclick="recPay('cash')">💵 Cash</div>
           <div class="chip" data-p="transfer" onclick="recPay('transfer')">🏦 Transfer</div>
           <div class="chip" data-p="credit" onclick="recPay('credit')">📝 Credit</div>
+          <div class="chip" data-p="part" onclick="recPay('part')">💳 Part</div>
         </div>
+      </div>
+      <div class="field hidden" id="rec-deposit-wrap">
+        <label id="rec-deposit-label">Deposit paid now (NGN)</label>
+        <input id="rec-deposit" type="number" inputmode="numeric" min="0" placeholder="amount paid so far" oninput="recBalanceHint()">
+        <div class="sub2" id="rec-balance-hint"></div>
       </div>
       <div class="sheeterr" id="rec-err"></div>
       <div class="actions">
@@ -727,6 +734,19 @@ _PAGE_HTML = """<!doctype html>
       <div id="pick-list" style="max-height:50vh;overflow-y:auto"></div>
       <div class="actions">
         <button class="btn cancel" onclick="closePicker()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Read-only variant detail viewer (tap a variant product in Inventory) -->
+  <div id="varOverlay" class="overlay hidden">
+    <div class="sheet">
+      <h2 id="var-title">Product</h2>
+      <div class="sub2" id="var-crumb"></div>
+      <div id="var-list" style="max-height:55vh;overflow-y:auto"></div>
+      <div class="sheeterr" id="var-err"></div>
+      <div class="actions">
+        <button class="btn cancel" onclick="closeVarView()">Close</button>
       </div>
     </div>
   </div>
@@ -857,16 +877,20 @@ _PAGE_HTML = """<!doctype html>
       if (p.sale_price) sub.push("price " + naira(p.sale_price));
       if (margin) sub.push("margin " + naira(margin));
       var div = document.createElement("div");
-      // Variant (tree) products are edited per-leaf in chat; the web edit sheet
-      // targets product-level fields, so only tap-to-edit non-variant products
-      // for now (avoids ambiguous which-leaf writes).
-      div.className = "item" + (p.has_variants ? "" : " tappable");
+      // Every product is now tappable. Non-variant products open the edit sheet
+      // (stock/price/cost). Variant (tree) products open a READ-ONLY variant
+      // viewer that drills the tree (per-leaf stock/cost) — leaf editing still
+      // lives in chat, so the web view avoids ambiguous which-leaf writes.
+      div.className = "item tappable";
       div.innerHTML = '<div><div class="name">' + escapeHtml(p.name || "?") + badges +
         '</div><div class="meta">' + (sub.join(" / ") || "no price/cost set") + '</div></div>' +
         '<div class="right"><div class="stock">' + Number(p.stock||0).toLocaleString() +
-        ' ' + escapeHtml(p.unit || "") + '</div><div class="meta">' +
+        ' ' + escapeHtml(p.unit || "") +
+        (p.has_variants ? ' ›' : '') + '</div><div class="meta">' +
         (p.stock_value ? naira(p.stock_value) : "") + '</div></div>';
-      if (!p.has_variants) div.onclick = function () { openSheet(p); };
+      div.onclick = p.has_variants
+        ? (function (prod) { return function () { openVarView(prod); }; })(p)
+        : (function (prod) { return function () { openSheet(prod); }; })(p);
       list.appendChild(div);
     });
     document.getElementById("invmsg").textContent = rows.length + " product(s)";
@@ -911,6 +935,78 @@ _PAGE_HTML = """<!doctype html>
     var el = document.getElementById("sh-stock");
     el.value = Math.max(0, (parseInt(el.value, 10) || 0) + n);
   };
+
+  // ── Read-only variant viewer (tap a variant product in Inventory) ──
+  var varProd = null;      // the product being viewed
+  var varPath = [];        // current drill path (ancestor values)
+  window.openVarView = function (p) {
+    varProd = p; varPath = [];
+    document.getElementById("var-title").textContent = p.name || "Product";
+    document.getElementById("var-err").textContent = "";
+    document.getElementById("varOverlay").classList.remove("hidden");
+    drillVarView();
+  };
+  window.closeVarView = function () {
+    document.getElementById("varOverlay").classList.add("hidden");
+    varProd = null; varPath = [];
+  };
+  function drillVarView() {
+    var list = document.getElementById("var-list");
+    var crumb = document.getElementById("var-crumb");
+    var err = document.getElementById("var-err");
+    err.textContent = "";
+    crumb.textContent = (varProd.name || "") + (varPath.length ? " › " + varPath.join(" › ") : "");
+    list.innerHTML = '<div class="muted">Loading…</div>';
+    api("api/tree?key=" + encodeURIComponent(varProd.key) +
+        "&path=" + encodeURIComponent(varPath.join(",")))
+      .then(function (d) {
+        list.innerHTML = "";
+        // Up-one-level row when drilled in.
+        if (varPath.length) {
+          var up = document.createElement("div");
+          up.className = "item tappable";
+          up.innerHTML = '<div class="name">⬆️ Up one level</div>';
+          up.onclick = function () { varPath.pop(); drillVarView(); };
+          list.appendChild(up);
+        }
+        var kids = d.children || [];
+        if (!kids.length) {
+          // A leaf reached directly — show its stock/cost.
+          var leaf = document.createElement("div");
+          leaf.className = "item";
+          leaf.innerHTML = '<div class="name">Leaf</div><div class="meta">' +
+            Number(d.stock||0).toLocaleString() + ' in stock' +
+            (d.cost ? ' · cost ' + naira(d.cost) : '') + '</div>';
+          list.appendChild(leaf);
+        }
+        if (d.axis) {
+          var ax = document.createElement("div");
+          ax.className = "sub2"; ax.style.margin = "4px 0";
+          ax.textContent = d.axis;
+          list.appendChild(ax);
+        }
+        kids.forEach(function (c) {
+          var row = document.createElement("div");
+          row.className = "item" + (c.is_leaf ? "" : " tappable");
+          var meta = c.is_leaf
+            ? (Number(c.stock||0).toLocaleString() + " in stock"
+               + (c.cost ? " · cost " + naira(c.cost) : ""))
+            : (Number(c.stock||0).toLocaleString() + " total →");
+          row.innerHTML = '<div><div class="name">' + escapeHtml(c.value) +
+            '</div><div class="meta">' + meta + '</div></div>';
+          if (!c.is_leaf) {
+            row.onclick = (function (val) {
+              return function () { varPath.push(val); drillVarView(); };
+            })(c.value);
+          }
+          list.appendChild(row);
+        });
+      })
+      .catch(function (e) {
+        list.innerHTML = "";
+        err.textContent = e.message || "Could not load variants";
+      });
+  }
   window.saveSheet = function () {
     if (!editing) return;
     var key = editing.key;
@@ -1089,6 +1185,11 @@ _PAGE_HTML = """<!doctype html>
     document.getElementById("rec-cost-wrap").style.display = (t === "sale") ? "" : "none";
     document.getElementById("rec-who-label").textContent =
       t === "purchase" ? "Supplier (optional)" : (t === "sale" ? "Customer (optional)" : "Paid to (optional)");
+    // Part payment (deposit + balance) doesn't apply to expenses — hide that chip
+    // and fall back to cash if it was selected.
+    var partChip = document.querySelector('#rec-pay .chip[data-p="part"]');
+    if (partChip) partChip.classList.toggle("hidden", isExpense);
+    if (isExpense && recPayVal === "part") recPay("cash");
   }
   window.recType = function (t) {
     recTypeVal = t;
@@ -1104,6 +1205,21 @@ _PAGE_HTML = """<!doctype html>
     recPayVal = p;
     var chips = document.querySelectorAll("#rec-pay .chip");
     chips.forEach(function (c) { c.classList.toggle("active", c.getAttribute("data-p") === p); });
+    // Show the deposit field only for a Part payment (deposit now + balance owed).
+    var isPart = (p === "part");
+    document.getElementById("rec-deposit-wrap").classList.toggle("hidden", !isPart);
+    if (isPart) recBalanceHint();
+  };
+  // Live "balance owed" preview under the deposit field.
+  window.recBalanceHint = function () {
+    var amount = parseInt(document.getElementById("rec-amount").value, 10) || 0;
+    var dep = parseInt(document.getElementById("rec-deposit").value, 10) || 0;
+    var hint = document.getElementById("rec-balance-hint");
+    if (!amount) { hint.textContent = ""; return; }
+    var bal = Math.max(0, amount - dep);
+    hint.textContent = dep >= amount
+      ? "Fully paid — this will record as paid, not part."
+      : ("Balance owed: NGN " + bal.toLocaleString("en-NG"));
   };
   window.openRecord = function () {
     recTypeVal = "sale"; recPayVal = "cash"; recSubmitId = uuid();
@@ -1116,6 +1232,9 @@ _PAGE_HTML = """<!doctype html>
     document.getElementById("rec-qty").value = "1";
     document.getElementById("rec-cost").value = "";
     document.getElementById("rec-who").value = "";
+    document.getElementById("rec-deposit").value = "";
+    document.getElementById("rec-deposit-wrap").classList.add("hidden");
+    document.getElementById("rec-balance-hint").textContent = "";
     document.getElementById("rec-err").textContent = "";
     document.getElementById("rec-save").disabled = false;
     document.getElementById("recOverlay").classList.remove("hidden");
@@ -1138,17 +1257,35 @@ _PAGE_HTML = """<!doctype html>
     if (!isExpense && !pick.key) { err.textContent = "Please choose a product."; return; }
     if (isExpense && !desc) { err.textContent = "Please enter what it was for."; return; }
     if (amount <= 0) { err.textContent = "Please enter an amount."; return; }
-    var isCredit = recPayVal === "credit";
+
+    // Part payment = deposit now + balance owed. If the deposit covers the full
+    // amount, treat it as a normal (paid) transfer — mirrors the chat flow.
+    var isPart = recPayVal === "part";
+    var deposit = isPart ? (parseInt(document.getElementById("rec-deposit").value, 10) || 0) : 0;
+    if (isPart && deposit >= amount) { isPart = false; recPayVal = "transfer"; }
+    var isCredit = (recPayVal === "credit") || isPart;  // both create a debt
+
     if (isCredit && !who) {
       err.textContent = recTypeVal === "purchase"
-        ? "A credit purchase needs a supplier name." : "A credit sale needs a customer name.";
+        ? "A credit/part purchase needs a supplier name."
+        : "A credit/part sale needs a customer name.";
       return;
     }
+    if (isPart && deposit <= 0) {
+      err.textContent = "Enter the deposit paid now (or choose Credit for nothing paid).";
+      return;
+    }
+
     var body = {
       submit_id: recSubmitId, type: recTypeVal, amount: amount,
-      description: desc, payment_method: recPayVal,
+      description: desc,
+      payment_method: isPart ? "deposit" : recPayVal,
       vendor: who, has_credit: isCredit,
     };
+    if (isPart) {
+      body.deposit_amount = deposit;
+      body.balance_owed = amount - deposit;
+    }
     if (!isExpense) {
       body.quantity = String(qty);
       if (pick.key) { body.catalog_product = pick.key; body.catalog_product_name = pick.name; }
