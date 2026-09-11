@@ -35,13 +35,18 @@ class ProfileHandler:
         today_txs = self.db.get_transactions_by_period(phone_number, today, today) or []
         month_txs = self.db.get_transactions_by_period(phone_number, month_start, today) or []
 
-        # Calculate today
-        today_sales = sum(float(t.get("amount", 0)) for t in today_txs if t.get("type") == "sale")
-        today_expenses = sum(float(t.get("amount", 0)) for t in today_txs if t.get("type") in ("expense", "purchase"))
+        # Calculate today (net of returns — a sale_return reduces sales, a
+        # purchase_return reduces purchases/expenses, so the greeting stays honest)
+        today_sales = (sum(float(t.get("amount", 0)) for t in today_txs if t.get("type") == "sale")
+                       - sum(float(t.get("amount", 0)) for t in today_txs if t.get("type") == "sale_return"))
+        today_expenses = (sum(float(t.get("amount", 0)) for t in today_txs if t.get("type") in ("expense", "purchase"))
+                          - sum(float(t.get("amount", 0)) for t in today_txs if t.get("type") == "purchase_return"))
 
-        # Calculate month
-        month_sales = sum(float(t.get("amount", 0)) for t in month_txs if t.get("type") == "sale")
-        month_expenses = sum(float(t.get("amount", 0)) for t in month_txs if t.get("type") in ("expense", "purchase"))
+        # Calculate month (net of returns)
+        month_sales = (sum(float(t.get("amount", 0)) for t in month_txs if t.get("type") == "sale")
+                       - sum(float(t.get("amount", 0)) for t in month_txs if t.get("type") == "sale_return"))
+        month_expenses = (sum(float(t.get("amount", 0)) for t in month_txs if t.get("type") in ("expense", "purchase"))
+                          - sum(float(t.get("amount", 0)) for t in month_txs if t.get("type") == "purchase_return"))
         month_profit = month_sales - month_expenses
 
         # Get debt info

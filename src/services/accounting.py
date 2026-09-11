@@ -309,6 +309,13 @@ class Accounting:
         # handled in period_cashflow, and a receivables reduction, not revenue).
         sales = [t for t in txns if t.get("type") == "sale"
                  and not _is_debt_settlement(t)]
+        # Returns (build #4) — reversing events that NET the P&L:
+        #   * sale_return reduces revenue (goods came back, money refunded) AND
+        #     reduces COGS by the copied stamped cost (cogs_for_sale reads the
+        #     stamp the return row carries).
+        #   * purchase_return has NO P&L effect (purchases aren't COGS here; COGS
+        #     is per-sale). It only affects inventory + cash, handled elsewhere.
+        sale_returns = [t for t in txns if t.get("type") == "sale_return"]
         # Operating expenses = expenses that are NOT cost-of-goods inputs AND not
         # debt repayments (a repayment settles a payable, it's not a P&L expense).
         opex_txns = [t for t in txns if t.get("type") == "expense"
@@ -318,7 +325,9 @@ class Accounting:
         # Catalog products for weighted-average cost resolution.
         products = self._products(phone_number)
 
-        revenue = sum(_to_int(t.get("amount", 0)) for t in sales)
+        gross_sales = sum(_to_int(t.get("amount", 0)) for t in sales)
+        returns_amount = sum(_to_int(t.get("amount", 0)) for t in sale_returns)
+        revenue = gross_sales - returns_amount   # NET revenue after returns
         opex = sum(_to_int(t.get("amount", 0)) for t in opex_txns)
 
         cogs = 0
@@ -335,6 +344,19 @@ class Accounting:
             costed_revenue += _to_int(s.get("amount", 0))
             cost_sources[source] = cost_sources.get(source, 0) + 1
 
+        # Reverse the COGS of returned goods, using the cost the return row copied
+        # from the original sale (authoritative — never re-blended). Also back out
+        # the returned revenue from costed_revenue so gross margin stays honest.
+        returns_cogs = 0
+        for r in sale_returns:
+            product = self._match_product(products, r)
+            cost, source = self.cogs_for_sale(r, product)
+            if source == COST_MISSING:
+                continue
+            returns_cogs += cost
+            costed_revenue -= _to_int(r.get("amount", 0))
+        cogs -= returns_cogs
+
         gross_profit = costed_revenue - cogs   # margin on the SOLD-and-costed goods
         net_profit = revenue - cogs - opex     # note: uncosted sales inflate this;
                                                # the uncosted flag discloses that.
@@ -347,6 +369,10 @@ class Accounting:
             "start": start_date,
             "end": end_date,
             "revenue": revenue,
+            "gross_sales": gross_sales,
+            "returns_amount": returns_amount,
+            "returns_cogs": returns_cogs,
+            "returns_count": len(sale_returns),
             "cogs": cogs,
             "gross_profit": gross_profit,
             "gross_margin_pct": pct(gross_profit, costed_revenue),
@@ -414,6 +440,8 @@ class Accounting:
         cash_out = 0
         collected = 0   # debt collected (subset of cash_in)
         repaid = 0      # debt repaid (subset of cash_out)
+        refunds_out = 0  # cash refunded to customers on sale returns
+        refunds_in = 0   # cash refunded BY suppliers on purchase returns
         for t in txns:
             ttype = t.get("type")
             if ttype in ("sale", "income"):
@@ -426,6 +454,19 @@ class Accounting:
                 cash_out += amt
                 if _is_debt_settlement(t):
                     repaid += amt
+            elif ttype == "sale_return":
+                # Refund to the customer — cash OUT — but ONLY when the original
+                # was paid. A credit-cancelled return carries payment_method
+                # 'credit', so _cash_paid returns 0 (no cash moved, debt reduced).
+                amt = _cash_paid(t)
+                cash_out += amt
+                refunds_out += amt
+            elif ttype == "purchase_return":
+                # Money back from the supplier — cash IN — only when the original
+                # was paid; credit-cancelled returns move 0 cash.
+                amt = _cash_received(t)
+                cash_in += amt
+                refunds_in += amt
 
         return {
             "label": label,
@@ -436,6 +477,8 @@ class Accounting:
             "net_cash": cash_in - cash_out,
             "debt_collected": collected,
             "debt_repaid": repaid,
+            "refunds_out": refunds_out,
+            "refunds_in": refunds_in,
             "tx_count": len(txns),
         }
 
