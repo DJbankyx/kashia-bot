@@ -30,6 +30,24 @@ PAYMENT_SIGNALS = ['paid', 'pay', 'received', 'settled', 'cleared', 'payment']
 # Buyer direction signals
 BUYER_SIGNALS = ['i bought', 'i purchased', 'bought from', 'i owe']
 
+# Transaction INTENT verbs — used to detect "this is clearly a sale/purchase/
+# expense that's just missing its amount" (e.g. a voice note: "I bought two
+# Highlanders from Polanco Autos"). When one of these is present but no amount
+# parses, we START the guided flow (ask "How much?") instead of dropping the
+# message with a generic help reply.
+SALE_INTENT_WORDS = [
+    'sold', 'sell', 'i sell', 'i sold', 'sale to', 'sold to',
+    'received from', 'customer paid', 'got paid',
+]
+BUY_INTENT_WORDS = [
+    'bought', 'buy', 'i buy', 'i bought', 'purchased', 'purchase',
+    'restocked', 'restock',
+]
+EXPENSE_INTENT_WORDS = [
+    'spent', 'i spent', 'paid for', 'paid the', 'expense', 'bill',
+    'fuel', 'rent', 'salary', 'transport', 'subscription',
+]
+
 
 class TransactionHandler:
     """Handles all transaction recording flows."""
@@ -61,7 +79,16 @@ class TransactionHandler:
             # Parse amount
             amount = parse_amount(text)
             if not amount:
-                # No financial signal — not a transaction
+                # No amount parsed. If the message CLEARLY describes a
+                # transaction (has a sale/purchase/expense verb) it's just
+                # missing the price — common with voice notes like
+                # "I bought two Highlanders from Polanco Autos". Rather than
+                # dropping it, start the guided flow and ask "How much?".
+                intent_type = self._detect_intent_type(text_lower)
+                if intent_type:
+                    return self._start_guided_from_intent(
+                        phone_number, text, intent_type)
+                # No transaction verb at all → truly not a transaction.
                 return [text_response(
                     "💬 Just type what you bought or sold and I'll record it!\n\n"
                     "Example: _sold shoes 50K to Sandra_\n\n"
@@ -2870,6 +2897,58 @@ class TransactionHandler:
 
         # Unknown step — build transaction from what we have
         return self._finalize_guided(phone_number, guided_type, guided_data)
+
+    def _detect_intent_type(self, text_lower: str):
+        """Return 'sale' | 'purchase' | 'expense' if the text has a clear
+        transaction verb, else None. Order: sale > purchase > expense so
+        "sold ... " wins over an incidental expense word."""
+        if any(w in text_lower for w in SALE_INTENT_WORDS):
+            return "sale"
+        if any(w in text_lower for w in BUY_INTENT_WORDS):
+            return "purchase"
+        if any(w in text_lower for w in EXPENSE_INTENT_WORDS):
+            return "expense"
+        return None
+
+    def _item_from_text(self, text: str) -> str:
+        """Best-effort item name from a verb-y sentence with no amount, e.g.
+        'I bought two Highlanders from Polanco Autos' -> 'Highlanders'.
+        Strips leading verb phrases, a leading quantity word, and a trailing
+        from/to <who> clause. Falls back to the original text if unsure."""
+        import re as _re
+        t = text.strip()
+        # Drop a trailing "from/to <vendor>" clause (who, not what).
+        t = _re.split(r'\b(?:from|to|for)\b', t, maxsplit=1, flags=_re.IGNORECASE)[0].strip()
+        # Strip common leading verb phrases.
+        t = _re.sub(
+            r'^\s*(i\s+)?(just\s+)?(bought|buy|purchased|purchase|sold|sell|'
+            r'sell to|spent|paid|restocked|restock|got|received)\s+',
+            '', t, flags=_re.IGNORECASE).strip()
+        # Strip a leading small-number word or digit ("two", "3") — quantity,
+        # captured later by the AI/guided flow, not part of the name.
+        t = _re.sub(
+            r'^\s*(a|an|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+',
+            '', t, flags=_re.IGNORECASE).strip()
+        return t or text.strip()
+
+    def _start_guided_from_intent(self, phone_number: str, text: str, intent_type: str) -> list:
+        """A clear transaction with no amount → seed the guided flow with the
+        item and jump to the 'How much?' step. Reuses the existing guided
+        machine (item already filled → _advance_guided to 'amount')."""
+        item = self._item_from_text(text)
+        guided_data = {"item": item, "original_text": text}
+        # _advance_guided(completed_step='item') moves to the amount step and
+        # returns the industry's ask_amount prompt, saving GUIDED_RECORDING.
+        prompts = self._advance_guided(phone_number, "item", intent_type, guided_data)
+        # Prepend a tiny confirmation of what we understood so the jump isn't
+        # jarring (especially for a voice note).
+        label = {"sale": "sale", "purchase": "purchase", "expense": "expense"}[intent_type]
+        head = text_response(
+            f"📝 Got it — a *{label}*"
+            + (f" of *{item}*." if item and item.lower() != text.strip().lower() else ".")
+            + "\n_Just need the amount._"
+        )
+        return [head] + (prompts or [])
 
     def _advance_guided(self, phone_number: str, completed_step: str, guided_type: str, data: dict, skip: bool = False) -> list:
         """Move to next guided step."""
