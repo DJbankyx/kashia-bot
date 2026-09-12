@@ -1143,6 +1143,130 @@ class TransactionHandler:
         except Exception as e:
             logger.warning(f"_stamp_sale_cost failed: {e}")
 
+    # ═══════════════════════════════════════════════════════════
+    # COST CORRECTION — fix a wrong cost already stamped on a past sale
+    # (docs/COST_CORRECTION_PLAN.md). The stamped COGS
+    # (cost_used_total/cost_unit/cost_source) is authoritative and never
+    # re-blends after a restock, so a wrong original cost needs an EXPLICIT
+    # restamp. Reports/returns read the stamp first, so restamping here fixes
+    # the P&L. Never silent: only called from an owner-driven correction.
+    # ═══════════════════════════════════════════════════════════
+
+    def restamp_sale_cost(self, phone_number: str, tx_id: str,
+                          new_unit_cost: int) -> dict:
+        """Re-stamp the COGS on an existing SALE with a corrected unit cost.
+
+        Rewrites cost_used_total / cost_unit / cost_source='corrected' (plus the
+        visible landing_cost) and keeps an audit trail (cost_corrected_at,
+        cost_corrected_from). qty-aware (total = unit * qty). Returns a dict
+        {ok, tx_id, old_total, new_total, delta, qty} — never raises.
+
+        GUARD: if the sale already has a recorded RETURN against it, we BLOCK
+        (R1 copied the OLD stamped cost onto the return row; restamping here
+        would desync them). The owner must reverse the return first.
+        """
+        try:
+            if not tx_id:
+                return {"ok": False, "error": "no transaction id"}
+            new_unit_cost = int(new_unit_cost or 0)
+            if new_unit_cost <= 0:
+                return {"ok": False, "error": "enter a valid cost greater than 0"}
+
+            tx = self.db.get_transaction(phone_number, tx_id) if hasattr(
+                self.db, "get_transaction") else None
+            if not tx:
+                # Fallback: scan recent transactions for the id.
+                for t in (self.db.get_transactions(phone_number, limit=400) or []):
+                    if t.get("transaction_id") == tx_id or t.get("id") == tx_id:
+                        tx = t
+                        break
+            if not tx:
+                return {"ok": False, "error": "transaction not found"}
+            if tx.get("type") != "sale":
+                return {"ok": False, "error": "only a sale's cost can be corrected"}
+
+            # Return-guard (see docstring).
+            if self.returned_qty_for(phone_number, tx_id) > 0:
+                return {"ok": False, "error": "has_return"}
+
+            qty = self._parse_qty(tx.get("quantity", 1) or 1) or 1
+            extra = dict(tx.get("extra_details") or {})
+            old_total = int(extra.get("cost_used_total")
+                            or tx.get("cost_used_total") or 0)
+            new_total = new_unit_cost * qty
+            corrected_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            updates = {
+                "cost_used_total": int(new_total),
+                "cost_unit": int(new_unit_cost),
+                "cost_source": "corrected",
+                "cost_corrected_at": corrected_at,
+                "cost_corrected_from": int(old_total),
+                "landing_cost": int(new_total),  # keep the visible field in sync
+            }
+            # CRITICAL: the accounting reader checks extra_details.cost_used_total
+            # FIRST (web-saved + return rows nest the stamp there), then the
+            # top-level field. update_transaction only writes top-level, so a
+            # stale NESTED stamp would shadow our correction. When the sale
+            # carries an extra_details stamp, rewrite the whole extra_details too.
+            if extra.get("cost_used_total") not in (None, ""):
+                extra["cost_used_total"] = int(new_total)
+                extra["cost_unit"] = int(new_unit_cost)
+                extra["cost_source"] = "corrected"
+                extra["cost_corrected_at"] = corrected_at
+                extra["cost_corrected_from"] = int(old_total)
+                updates["extra_details"] = extra
+
+            self.db.update_transaction(phone_number, tx_id, updates)
+            return {
+                "ok": True, "tx_id": tx_id, "qty": qty,
+                "old_total": old_total, "new_total": new_total,
+                "delta": new_total - old_total,
+            }
+        except Exception as e:
+            logger.warning(f"restamp_sale_cost failed: {e}")
+            return {"ok": False, "error": "could not correct the cost"}
+
+    def get_stamped_sales_for_product(self, phone_number: str, product_key: str,
+                                      product_name: str = "", variant: str = "",
+                                      scan_limit: int = 400) -> list:
+        """Return past SALE rows of a given product (optionally a specific
+        variant/leaf) that carry a stamped cost — the candidates a catalog cost
+        correction could restamp. Matches on extra_details.catalog_product (key)
+        or catalog_product_name, and (when given) the variant path. Excludes
+        sales that already have a return (they'd be blocked by restamp anyway)."""
+        out = []
+        try:
+            want_variant = (variant or "").strip().lower()
+            pname = (product_name or "").strip().lower()
+            for t in (self.db.get_transactions(phone_number, limit=scan_limit) or []):
+                if t.get("type") != "sale":
+                    continue
+                extra = t.get("extra_details") or {}
+                key_match = (
+                    (product_key and extra.get("catalog_product") == product_key)
+                    or (pname and (extra.get("catalog_product_name") or "").strip().lower() == pname)
+                )
+                if not key_match:
+                    continue
+                if want_variant:
+                    tv = str(extra.get("variant") or "").strip().lower()
+                    if tv != want_variant:
+                        continue
+                stamped = int(extra.get("cost_used_total")
+                              or t.get("cost_used_total") or 0)
+                if stamped <= 0:
+                    continue
+                tid = t.get("transaction_id") or t.get("id")
+                if not tid:
+                    continue
+                if self.returned_qty_for(phone_number, tid) > 0:
+                    continue  # can't restamp a returned sale
+                out.append(t)
+        except Exception as e:
+            logger.warning(f"get_stamped_sales_for_product failed: {e}")
+        return out
+
     def record_transaction_web(self, phone_number: str, tx_data: dict) -> dict:
         """M6b — STATELESS terminal save for the Mini App web view.
 
@@ -3485,6 +3609,34 @@ class TransactionHandler:
                 cost = parse_amount(text)
                 if not cost:
                     return [text_response("🏷️ Enter a valid amount (e.g. 50000, 150K, 19M):")]
+                # For a SALE, the P&L reads the STAMPED COGS (cost_used_total),
+                # NOT landing_cost. So a sale's cost edit must RESTAMP or profit
+                # won't change (the real bug). The entered value is per-unit;
+                # restamp_sale_cost multiplies by the sale's quantity.
+                tx = self.db.get_transaction(phone_number, tx_id) or {}
+                if tx.get("type") == "sale":
+                    res = self.restamp_sale_cost(phone_number, tx_id, int(cost))
+                    if res.get("ok"):
+                        self.session.reset(phone_number)
+                        delta = res.get("delta", 0)
+                        note = ""
+                        if delta:
+                            arrow = "↑" if delta > 0 else "↓"
+                            note = (f"\n\n_Profit on this sale recalculated "
+                                    f"({arrow} {format_amount(abs(delta))} cost)._")
+                        return self._edit_success(
+                            f"✅ Sale cost corrected to *{format_amount(cost)}* "
+                            f"per unit — COGS restamped.{note}")
+                    if res.get("error") == "has_return":
+                        return [text_response(
+                            "↩️ This sale has a recorded *return* against it, so its "
+                            "cost can't be corrected directly (the return copied the "
+                            "old cost). Reverse the return first, then correct the "
+                            "cost.\n\nType *back* or tap the menu.")]
+                    return [text_response(
+                        f"⚠️ Couldn't correct the cost: {res.get('error','unknown error')}")]
+                # Non-sale (purchase/expense): landing_cost isn't a COGS stamp,
+                # so a plain update is correct.
                 self.db.update_transaction(phone_number, tx_id, {"landing_cost": int(cost)})
                 self.session.reset(phone_number)
                 return self._edit_success(f"✅ Landing cost updated to *{format_amount(cost)}*!")

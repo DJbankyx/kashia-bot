@@ -287,6 +287,11 @@ class CatalogHandler:
         if button_id == "cat_cost":
             return self._start_set_cost(phone_number)
 
+        # Cost-correction backfill fork (after Set Cost, when past sales used the
+        # old cost). See docs/COST_CORRECTION_PLAN.md.
+        if button_id in ("cat_costfix_yes", "cat_costfix_no"):
+            return self._handle_cost_backfill(phone_number, button_id, session)
+
         if button_id == "cat_adjust":
             return self._start_adjust_stock(phone_number)
 
@@ -1502,6 +1507,33 @@ class CatalogHandler:
             products[product_key]["landing_cost"] = int(amount)
             self._save_products(phone_number, products)
             name = products[product_key].get("name", product_key)
+
+            # Cost-correction: if PAST sales already used the old cost, this catalog
+            # change alone won't fix their profit (COGS is stamped per-sale). Offer
+            # to also restamp them. See docs/COST_CORRECTION_PLAN.md.
+            past = self._stamped_sales_for(phone_number, product_key, name)
+            if past:
+                self.session.update_context(phone_number, {
+                    "costfix_key": product_key,
+                    "costfix_name": name,
+                    "costfix_unit_cost": int(amount),
+                    "costfix_tx_ids": [t.get("transaction_id") or t.get("id")
+                                       for t in past][:200],
+                })
+                n = len(past)
+                return [
+                    text_response(
+                        f"✅ *{name}* cost set to *{format_amount(amount)}* per unit."),
+                    button_response(
+                        f"📌 *{n}* past sale(s) of *{name}* used the old cost. "
+                        f"Their recorded profit won't change unless you correct them too.\n\n"
+                        f"Fix those past sales' cost as well?",
+                        [
+                            {"id": "cat_costfix_yes", "title": f"↩️ Also fix {n} past sale(s)"},
+                            {"id": "cat_costfix_no", "title": "🏷️ Catalog only"},
+                        ])
+                ]
+
             self.session.reset(phone_number)
             return [
                 text_response(f"✅ *{name}* cost set to *{format_amount(amount)}* per unit.\n\n_This updates your production cost calculations._"),
@@ -1514,6 +1546,66 @@ class CatalogHandler:
 
         self.session.reset(phone_number)
         return [text_response("❓ Product not found.")]
+
+    def _txn_handler(self):
+        """Lazy TransactionHandler for cost-correction helpers. restamp_sale_cost
+        and get_stamped_sales_for_product only use db/session, so categorizer +
+        get_industry_fn are safely None."""
+        from features.transactions import TransactionHandler
+        return TransactionHandler(self.session, self.db, None, None)
+
+    def _stamped_sales_for(self, phone_number: str, product_key: str, name: str) -> list:
+        """Past sales of this product that carry a stamped cost (correctable)."""
+        try:
+            return self._txn_handler().get_stamped_sales_for_product(
+                phone_number, product_key, name)
+        except Exception as e:
+            logger.warning(f"_stamped_sales_for failed: {e}")
+            return []
+
+    def _handle_cost_backfill(self, phone_number: str, button_id: str,
+                              session: dict) -> list:
+        """Handle the post-Set-Cost fork: restamp past sales (yes) or not (no)."""
+        context = session.get("context", {}) if isinstance(session, dict) else {}
+        name = context.get("costfix_name", "the product")
+        unit_cost = int(context.get("costfix_unit_cost", 0) or 0)
+        tx_ids = context.get("costfix_tx_ids", []) or []
+
+        if button_id == "cat_costfix_no" or not tx_ids or unit_cost <= 0:
+            self.session.reset(phone_number)
+            return [text_response(
+                f"👍 Kept the new cost for *{name}* going forward. Past sales left "
+                f"as recorded.")]
+
+        txn = self._txn_handler()
+        fixed = 0
+        skipped = 0
+        total_delta = 0
+        for tid in tx_ids:
+            res = txn.restamp_sale_cost(phone_number, tid, unit_cost)
+            if res.get("ok"):
+                fixed += 1
+                total_delta += res.get("delta", 0)
+            else:
+                skipped += 1
+
+        self.session.reset(phone_number)
+        msg = f"✅ Corrected the cost on *{fixed}* past sale(s) of *{name}*."
+        if total_delta:
+            arrow = "↑" if total_delta > 0 else "↓"
+            msg += (f"\n\n_Total COGS {arrow} {format_amount(abs(total_delta))} — "
+                    f"profit on those sales recalculated._")
+        if skipped:
+            msg += (f"\n\n_{skipped} sale(s) were skipped (e.g. they have a "
+                    f"recorded return) — correct those by reversing the return first._")
+        return [
+            text_response(msg),
+            button_response("What's next?", [
+                {"id": "cat_stock", "title": "📊 View Stock"},
+                {"id": "menu_report", "title": "📊 Dashboard"},
+                {"id": "menu_home", "title": "☰ Menu"},
+            ])
+        ]
 
     # ─────────────────────────────────────────────────────────
     # ADJUST STOCK
