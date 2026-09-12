@@ -832,7 +832,7 @@ _PAGE_HTML = """<!doctype html>
     api("api/summary?period=" + curPeriod)
       .then(function (d) {
         document.getElementById("biz").textContent = d.business || "Kashia";
-        document.getElementById("period").textContent = "\ud83d\udcc5 " + (d.period_label || "");
+        document.getElementById("period").textContent = "\\ud83d\\udcc5 " + (d.period_label || "");
         setSigned("net", d.pnl.net_profit);
         document.getElementById("rev").textContent = naira(d.pnl.revenue);
         document.getElementById("cogs").textContent = naira(d.pnl.cogs);
