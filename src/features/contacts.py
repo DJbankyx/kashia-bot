@@ -64,6 +64,9 @@ class ContactsHandler:
         if button_id == "crm_suppliers":
             return self._browse(phone_number, "supplier")
 
+        if button_id == "crm_expense_payees":
+            return self._browse(phone_number, "expense_payee")
+
         if button_id == "crm_search":
             return self._start_search(phone_number)
 
@@ -251,6 +254,7 @@ class ContactsHandler:
             sections=[{"title": "", "rows": [
                 {"id": "crm_customers", "title": f"👤 {cust_label}"},
                 {"id": "crm_suppliers", "title": "🏪 Suppliers"},
+                {"id": "crm_expense_payees", "title": "🧾 Expense Payees"},
                 {"id": "crm_search", "title": "🔍 Search"},
                 {"id": "crm_add", "title": "➕ Add Contact"},
                 {"id": "crm_reminders", "title": "🔴 Who Owes Me"},
@@ -275,6 +279,10 @@ class ContactsHandler:
             return t in ("customer", "both", "", "client")
         if want == "supplier":
             return t in ("supplier", "both")
+        if want == "expense_payee":
+            # Only people you pay expenses to (rent, utilities…) — kept out of
+            # the supplier list on purpose.
+            return t == "expense_payee"
         return True
 
     def _clean_contacts(self, phone_number: str) -> list:
@@ -290,8 +298,12 @@ class ContactsHandler:
         (Prev/Next) and row taps (crm_view_<id>) open the contact card.
         """
         cust_label, supp_label = self._type_labels(phone_number)
-        label = cust_label if want == "customer" else supp_label
-        emoji = "👤" if want == "customer" else "🏪"
+        if want == "customer":
+            label, emoji = cust_label, "👤"
+        elif want == "expense_payee":
+            label, emoji = "Expense Payees", "🧾"
+        else:
+            label, emoji = supp_label, "🏪"
 
         contacts = [c for c in self._clean_contacts(phone_number)
                     if self._contact_matches_type(c, want)]

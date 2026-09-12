@@ -1218,7 +1218,8 @@ class TransactionHandler:
                     owed = amount
                     desc = f"Credit {tx_type}: {description}"
                 try:
-                    self.db.record_debt(phone_number, vendor, owed, direction, desc)
+                    self.db.record_debt(phone_number, vendor, owed, direction, desc,
+                                        source_type=tx_type)
                     debt_recorded = owed
                 except Exception as e:
                     logger.warning(f"web save: record_debt failed: {e}")
@@ -1616,7 +1617,8 @@ class TransactionHandler:
                 if deposit_amount and balance_owed:
                     # Deposit: record only the balance as debt (I owe them the rest)
                     self.db.record_debt(phone_number, vendor, balance_owed, 'i_owe',
-                                        f"Balance after deposit: {description}")
+                                        f"Balance after deposit: {description}",
+                                        source_type=tx_type)
                     head = text_response(
                         f"✅ *Purchase saved!* {format_amount(amount)}\n\n"
                         f"💳 You paid: *{format_amount(deposit_amount)}*\n"
@@ -1634,7 +1636,8 @@ class TransactionHandler:
                     ])]
                 else:
                     # Full credit — no payment made
-                    self.db.record_debt(phone_number, vendor, amount, 'i_owe', f"Credit purchase: {description}")
+                    self.db.record_debt(phone_number, vendor, amount, 'i_owe', f"Credit purchase: {description}",
+                                        source_type=tx_type)
                     head = text_response(
                         f"✅ Saved! {format_amount(amount)} purchase on credit.\n"
                         f"📝 You owe *{vendor}* {format_amount(amount)}."

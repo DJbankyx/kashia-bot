@@ -154,6 +154,24 @@ def _summary(event, user_id: str):
     user = db.get_user(user_id) or {}
     business = user.get("business_name") or "Your business"
 
+    # Split payables (what you owe) into real suppliers (goods) vs expense
+    # payees (rent, utilities…). Expense_payee is an explicit contact type;
+    # legacy/unknown contacts fall back to the supplier side (no faked split).
+    owed_suppliers = 0
+    owed_expenses = 0
+    try:
+        for c in (db.get_all_creditors(user_id) or []):
+            amt = int(c.get("amount", 0) or 0)
+            if amt <= 0:
+                continue
+            if (c.get("type") or "").lower().strip() == "expense_payee":
+                owed_expenses += amt
+            else:
+                owed_suppliers += amt
+    except Exception:
+        owed_suppliers = pos["payables"]
+        owed_expenses = 0
+
     return _json(200, {
         "business": business,
         "period": period,
@@ -176,6 +194,9 @@ def _summary(event, user_id: str):
             "owed_to_me": pos["receivables"],
             "i_owe": pos["payables"],
             "net": pos["receivables"] - pos["payables"],
+            # Breakdown of what you owe, for CRM clarity in the app.
+            "i_owe_suppliers": owed_suppliers,
+            "i_owe_expenses": owed_expenses,
         },
         "position": {
             "inventory_value": pos["inventory_value"],
@@ -615,7 +636,7 @@ _PAGE_HTML = """<!doctype html>
     <div class="card"><div class="k">Cash in - out</div><div class="v" id="cash">—</div></div>
     <div class="row">
       <div class="card"><div class="k">Owed to you</div><div class="v pos" id="owed">—</div></div>
-      <div class="card"><div class="k">You owe</div><div class="v neg" id="iowe">—</div></div>
+      <div class="card"><div class="k">You owe</div><div class="v neg" id="iowe">—</div><div class="sub" id="iowebreak"></div></div>
     </div>
     <div class="card">
       <div class="k">Inventory value / Net position</div>
@@ -816,6 +837,17 @@ _PAGE_HTML = """<!doctype html>
         setSigned("cash", d.cash.net);
         document.getElementById("owed").textContent = naira(d.debt.owed_to_me);
         document.getElementById("iowe").textContent = naira(d.debt.i_owe);
+        var ib = document.getElementById("iowebreak");
+        if (ib) {
+          var sup = d.debt.i_owe_suppliers || 0, exp = d.debt.i_owe_expenses || 0;
+          // Only show the split when both sides are present — a single-source
+          // payable reads cleaner without the breakdown.
+          if (sup > 0 && exp > 0) {
+            ib.textContent = "Suppliers " + naira(sup) + " - Expenses " + naira(exp);
+          } else {
+            ib.textContent = "";
+          }
+        }
         document.getElementById("invval").textContent = naira(d.position.inventory_value);
         setSigned("netpos", d.position.net_position);
         if (d.uncosted_sales > 0) {

@@ -117,6 +117,14 @@ class DebtHandler:
                 lines.append(f"   {label}: {format_amount(buckets[label])}")
         return lines
 
+    @staticmethod
+    def _is_expense_payee(item: dict) -> bool:
+        """A creditor you owe from an EXPENSE (landlord, utilities…) rather than
+        a goods supplier. Only the explicit expense_payee type counts; suppliers,
+        'both', and legacy/unknown contacts stay on the supplier side (no faked
+        split for data we can't classify)."""
+        return (item.get("type") or "").lower().strip() == "expense_payee"
+
     def _debt_board(self, phone_number: str) -> list:
         """Tap-first Debt/Credit board (Telegram). Totals + aging buckets +
         a tappable row per person that opens their card."""
@@ -138,8 +146,20 @@ class DebtHandler:
             body.append("💰 *Owed to you:* nothing outstanding")
         body.append("")
 
+        # Split payables for CRM clarity: real suppliers (goods) vs expense
+        # payees (rent, utilities, etc). Legacy/unknown → supplier side.
+        supplier_creditors = [c for c in creditors if not self._is_expense_payee(c)]
+        expense_creditors = [c for c in creditors if self._is_expense_payee(c)]
+        owed_suppliers = sum(float(c.get("amount", 0) or 0) for c in supplier_creditors)
+        owed_expenses = sum(float(c.get("amount", 0) or 0) for c in expense_creditors)
+
         if total_out > 0:
             body.append(f"📝 *You owe:* {format_amount(total_out)}")
+            # Only show the split when it actually splits (both sides present),
+            # otherwise the single-line total is cleaner.
+            if owed_suppliers > 0 and owed_expenses > 0:
+                body.append(f"   🏭 Suppliers: {format_amount(owed_suppliers)}")
+                body.append(f"   🧾 Expenses: {format_amount(owed_expenses)}")
             body.extend(self._aging_lines(creditors))
         else:
             body.append("📝 *You owe:* nothing outstanding")
@@ -162,9 +182,8 @@ class DebtHandler:
                     "id": f"debt_person_in_{name}"[:60],
                     "title": f"{flag} {name} · {format_amount(d.get('amount', 0))}"[:60],
                 })
-        if creditors:
-            rows.append({"id": "debt_noop", "title": "─── 📝 You owe ───"})
-            for c in sorted(creditors, key=lambda x: -self._age_days(x))[:12]:
+        def _creditor_rows(items):
+            for c in sorted(items, key=lambda x: -self._age_days(x))[:12]:
                 name = c.get("name", "Unknown")
                 age = self._age_days(c)
                 flag = self._bucket_label(age).split(" ")[0]
@@ -172,6 +191,17 @@ class DebtHandler:
                     "id": f"debt_person_out_{name}"[:60],
                     "title": f"{flag} {name} · {format_amount(c.get('amount', 0))}"[:60],
                 })
+
+        if creditors:
+            if supplier_creditors and expense_creditors:
+                # Both kinds present → show two labelled groups.
+                rows.append({"id": "debt_noop", "title": "─── 📝 You owe · 🏭 Suppliers ───"})
+                _creditor_rows(supplier_creditors)
+                rows.append({"id": "debt_noop", "title": "─── 📝 You owe · 🧾 Expenses ───"})
+                _creditor_rows(expense_creditors)
+            else:
+                rows.append({"id": "debt_noop", "title": "─── 📝 You owe ───"})
+                _creditor_rows(creditors)
 
         # Always-available actions.
         rows.append({"id": "debt_record", "title": "➕ Record a new debt"})

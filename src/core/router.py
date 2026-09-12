@@ -584,7 +584,8 @@ class Router:
                 # Record the debt
                 if tx_type in ("purchase", "expense"):
                     self.db.record_debt(phone_number, name, amount_val, 'i_owe',
-                                        f"Credit purchase: {description}")
+                                        f"Credit purchase: {description}",
+                                        source_type=tx_type)
                     self.session.reset(phone_number)
                     return [
                         text_response(

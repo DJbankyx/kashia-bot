@@ -917,30 +917,57 @@ class Database:
         Also saves name and type if contact doesn't exist yet."""
         amount = int(amount)  # Ensure no floats
         contact_id = contact_name.strip().lower().replace(" ", "_")
-        # Money OUT (you paid them) = supplier; money IN (they paid you) = customer.
-        # Purchases and expenses both mean YOU paid a supplier — only sales create
-        # a customer. (Previously purchases were mis-tagged as customers.)
+        # Money OUT (you paid them) vs money IN (they paid you).
+        #   sale                 → customer
+        #   purchase (goods)     → supplier
+        #   expense (not goods)  → expense_payee  (a landlord/PHCN/etc — NOT a
+        #                          real supplier; kept separate for CRM clarity)
+        # This split means the supplier list only holds people you actually buy
+        # goods from, and expense payees get their own bucket.
         is_outgoing = tx_type in ('expense', 'purchase')
-        this_role = 'supplier' if is_outgoing else 'customer'
+        if tx_type == 'expense':
+            this_role = 'expense_payee'
+        elif tx_type == 'purchase':
+            this_role = 'supplier'
+        else:
+            this_role = 'customer'
         field = 'total_paid' if is_outgoing else 'total_received'
 
         # Reconcile the stored type with what this transaction implies, so an
-        # earlier mis-tag self-corrects and mixed relationships become "both":
-        #   no type yet            → this transaction's role
-        #   already this role/both → unchanged
-        #   the OTHER role         → upgrade to "both" (buys AND sells)
+        # earlier mis-tag self-corrects and mixed relationships resolve sensibly:
+        #   no type yet                    → this transaction's role
+        #   already this role / both       → unchanged
+        #   customer  + outgoing purchase  → both (buys AND sells)
+        #   customer  + expense            → both (you also pay them expenses)
+        #   supplier  + expense            → supplier stays (a real supplier
+        #                                    trumps an expense tag)
+        #   expense_payee + purchase       → upgrade to supplier (they turned out
+        #                                    to be a real goods supplier)
+        #   expense_payee + sale           → both
         resolved_type = this_role
         try:
             existing = self.contacts.get_item(
                 Key={'phone_number': phone_number, 'contact_id': contact_id}
             ).get('Item') or {}
             current = (existing.get('type') or '').lower().strip()
-            if current in ('both',):
+            if current == 'both':
                 resolved_type = 'both'
-            elif current in ('customer', 'supplier'):
-                resolved_type = current if current == this_role else 'both'
-            # 'client' (legacy customer alias) or blank → treat as this_role,
-            # unless this_role is supplier, in which case they now do both.
+            elif current == 'customer':
+                # customer + any outgoing (purchase or expense) → both
+                resolved_type = 'customer' if not is_outgoing else 'both'
+            elif current == 'supplier':
+                # supplier + sale → both; supplier + expense/purchase → supplier
+                resolved_type = 'both' if this_role == 'customer' else 'supplier'
+            elif current == 'expense_payee':
+                # expense_payee + purchase → real supplier; + sale → both;
+                # + expense → still expense_payee
+                if this_role == 'supplier':
+                    resolved_type = 'supplier'
+                elif this_role == 'customer':
+                    resolved_type = 'both'
+                else:
+                    resolved_type = 'expense_payee'
+            # 'client' (legacy customer alias) → treat like customer.
             elif current == 'client':
                 resolved_type = 'client' if not is_outgoing else 'both'
         except Exception as e:
@@ -985,13 +1012,27 @@ class Database:
     # DEBT & CREDIT TRACKING
     # ============================================================
 
-    def record_debt(self, phone_number, contact_name, amount, debt_type, description='', due_date=None):
+    def record_debt(self, phone_number, contact_name, amount, debt_type, description='', due_date=None, source_type=None):
         """
         Record a debt entry.
         debt_type: 'owed_to_me' (customer owes me) or 'i_owe' (I owe supplier)
+        source_type (optional): the transaction that created this debt —
+            'sale' | 'purchase' | 'expense'. Used only to stamp the contact type
+            so an "I owe" from an expense is tagged expense_payee (not supplier).
+            When omitted (e.g. legacy/WhatsApp callers) behaviour is unchanged:
+            owed_to_me → customer, i_owe → supplier.
         """
         contact_id = contact_name.strip().lower().replace(' ', '_')
         field = 'debt_owed_to_me' if debt_type == 'owed_to_me' else 'debt_i_owe'
+        # Default type for a brand-new contact created by this debt.
+        # owed_to_me → customer; i_owe → supplier, UNLESS it came from an
+        # expense, in which case they're an expense_payee (not a real supplier).
+        if debt_type == 'owed_to_me':
+            new_ctype = 'customer'
+        elif source_type == 'expense':
+            new_ctype = 'expense_payee'
+        else:
+            new_ctype = 'supplier'
         try:
             update_expr = (
                 f"SET {field} = if_not_exists({field}, :zero) + :amount, "
@@ -1003,7 +1044,7 @@ class Database:
                 ':amount': int(amount),
                 ':zero': 0,
                 ':name': contact_name.strip(),
-                ':ctype': 'customer' if debt_type == 'owed_to_me' else 'supplier',
+                ':ctype': new_ctype,
                 ':date': datetime.now().strftime('%Y-%m-%d'),
             }
             if due_date:
@@ -1066,6 +1107,7 @@ class Database:
                     'due_date': c.get('due_date', ''),
                     'description': c.get('last_debt_description', ''),
                     'contact_id': c.get('contact_id', ''),
+                    'type': (c.get('type') or '').lower().strip(),
                 })
         debtors.sort(key=lambda x: x['amount'], reverse=True)
         return debtors
@@ -1084,6 +1126,10 @@ class Database:
                     'due_date': c.get('due_date', ''),
                     'description': c.get('last_debt_description', ''),
                     'contact_id': c.get('contact_id', ''),
+                    # 'type' lets callers split payables into real suppliers vs
+                    # expense payees (landlord/utilities/etc). Legacy contacts
+                    # with no/unknown type fall back to the supplier side.
+                    'type': (c.get('type') or '').lower().strip(),
                 })
         creditors.sort(key=lambda x: x['amount'], reverse=True)
         return creditors
