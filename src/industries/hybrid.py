@@ -53,8 +53,8 @@ class HybridIndustry(BaseIndustry):
     def show_home_menu(self, phone_number: str) -> list:
         """Hybrid home menu with product + service quick actions."""
         return [list_response(
-            header="⚡ Kashia",
-            body="What would you like to do?",
+            header=self._home_header(phone_number),
+            body=self._home_body(phone_number),
             button_text="☰ Menu",
             sections=[
                 {

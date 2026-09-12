@@ -52,11 +52,83 @@ class BaseIndustry:
     def show_home_menu(self, phone_number: str) -> list:
         """The greeting/main menu with industry-specific buttons."""
         return [list_response(
-            header=f"{self.EMOJI} Kashia",
-            body="What would you like to do?",
+            header=self._home_header(phone_number),
+            body=self._home_body(phone_number),
             button_text="☰ Menu",
             sections=self._build_menu_sections()
         )]
+
+    # ─────────────────────────────────────────────────────────
+    # HOME-PAGE PULSE (shared by every industry) — home-page review
+    # ─────────────────────────────────────────────────────────
+    # Industries are stateless presentation classes (no db/session), so these
+    # helpers open their own lightweight Database() to read the live pulse. Both
+    # are heavily guarded: any failure falls back to the plain static menu so the
+    # home page NEVER breaks. Pulse is Telegram-only; WhatsApp keeps the static
+    # "What would you like to do?" body.
+
+    def _home_header(self, phone_number: str) -> str:
+        """Header = business name if we have it, else the industry-branded Kashia."""
+        try:
+            from services.database import Database
+            user = Database().get_user(phone_number) or {}
+            name = (user.get("business_name") or "").strip()
+            if name:
+                return f"{self.EMOJI} {name}"
+        except Exception:
+            pass
+        return f"{self.EMOJI} Kashia"
+
+    def _home_body(self, phone_number: str) -> str:
+        """On Telegram: a live pulse (greeting + today's headline). On WhatsApp or
+        any error: the plain prompt. Never raises."""
+        static = "What would you like to do?"
+        try:
+            from services.messaging_client import platform_for_user
+            if platform_for_user(phone_number) != "telegram":
+                return static
+        except Exception:
+            return static
+
+        try:
+            from datetime import datetime
+            from services.database import Database
+            from services.accounting import Accounting
+            from utils.whatsapp_ui import format_amount
+
+            db = Database()
+            acct = Accounting(db, None)
+            today = datetime.now().strftime("%Y-%m-%d")
+
+            pnl = acct.period_pnl(phone_number, today, today, "Today") or {}
+            cash = acct.period_cashflow(phone_number, today, today, "Today") or {}
+            sales_n = int(pnl.get("sales_count", 0))
+            cash_in = int(cash.get("cash_in", 0))
+            # Receivables (owed to you) — a standing figure, not today-only.
+            owed = 0
+            try:
+                owed = sum(int(d.get("amount", 0)) for d in
+                           (db.get_all_debtors(phone_number) or []))
+            except Exception:
+                owed = 0
+
+            hour = datetime.now().hour
+            greet = ("Good morning" if hour < 12 else
+                     "Good afternoon" if hour < 17 else "Good evening")
+
+            # Build a compact 'today' pulse. If nothing happened today, nudge.
+            if sales_n or cash_in:
+                pulse = (f"📊 Today: {sales_n} sale{'s' if sales_n != 1 else ''}"
+                         f" · {format_amount(cash_in)} in")
+            else:
+                pulse = "📊 No sales yet today — record one to get started."
+            if owed > 0:
+                pulse += f"\n🔴 Owed to you: {format_amount(owed)}"
+
+            return f"{greet}! 👋\n{pulse}"
+        except Exception:
+            # Any hiccup → the plain menu (home page must never break).
+            return static
 
     def _build_menu_sections(self) -> list:
         """Override to customize menu sections."""
