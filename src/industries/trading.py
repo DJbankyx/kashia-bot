@@ -174,7 +174,8 @@ class TradingIndustry(BaseIndustry):
                     {"id": "menu_billdoc", "title": "🧾 Bill a Customer", "description": "Combine several sales into ONE invoice/receipt"},
                     {"id": "biz_export", "title": "📁 Export Data", "description": "Excel, CSV download"},
                 ]
-            }]
+            }],
+            tap_first=True,
         )]
 
     def _show_crm_menu(self, phone_number: str) -> list:
@@ -193,7 +194,8 @@ class TradingIndustry(BaseIndustry):
                     {"id": "crm_reminders", "title": "⏰ Debt Reminders", "description": "Nudge debtors to pay"},
                     {"id": "crm_insights", "title": "📊 Customer Insights", "description": "Frequency, avg spend"},
                 ]
-            }]
+            }],
+            tap_first=True,
         )]
 
     def _show_settings_menu(self, phone_number: str) -> list:

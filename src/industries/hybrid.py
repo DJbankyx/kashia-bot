@@ -172,7 +172,8 @@ class HybridIndustry(BaseIndustry):
                     {"id": "biz_export", "title": "📁 Export Data",
                      "description": "Excel, CSV download"},
                 ]
-            }]
+            }],
+            tap_first=True,
         )]
 
     def _show_crm_menu(self, phone_number: str) -> list:
@@ -197,7 +198,8 @@ class HybridIndustry(BaseIndustry):
                     {"id": "crm_insights", "title": "📊 Customer Insights",
                      "description": "Frequency, avg spend, last seen"},
                 ]
-            }]
+            }],
+            tap_first=True,
         )]
 
     def _show_settings_menu(self, phone_number: str) -> list:

@@ -1065,6 +1065,20 @@ def _date_range(period: str):
             last_month_end.strftime("%B %Y"),
         )
 
+    if period == "quarter":
+        # The current calendar quarter (Q1 Jan–Mar … Q4 Oct–Dec) to date.
+        q = (now.month - 1) // 3            # 0..3
+        q_start_month = q * 3 + 1
+        start = now.replace(month=q_start_month, day=1).strftime("%Y-%m-%d")
+        end   = now.strftime("%Y-%m-%d")
+        return start, end, "Q%d %d" % (q + 1, now.year)
+
+    if period == "year":
+        # This calendar year to date.
+        start = now.strftime("%Y-01-01")
+        end   = now.strftime("%Y-%m-%d")
+        return start, end, str(now.year)
+
     # Default: this month
     start = now.strftime("%Y-%m-01")
     end   = now.strftime("%Y-%m-%d")

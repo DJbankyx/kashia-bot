@@ -196,7 +196,8 @@ class ManufacturingIndustry(BaseIndustry):
                     {"id": "biz_export", "title": "📁 Export Data",
                      "description": "Excel, CSV download"},
                 ]
-            }]
+            }],
+            tap_first=True,
         )]
 
     def _show_crm_menu(self, phone_number: str) -> list:
@@ -221,7 +222,8 @@ class ManufacturingIndustry(BaseIndustry):
                     {"id": "crm_insights", "title": "📊 Buyer Insights",
                      "description": "Frequency, avg order, last seen"},
                 ]
-            }]
+            }],
+            tap_first=True,
         )]
 
     def _show_settings_menu(self, phone_number: str) -> list:

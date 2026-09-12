@@ -24,6 +24,11 @@ import logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+# Period keys the Mini App may request. All are resolved by
+# features.reports._date_range (single source of truth for boundaries), so the
+# web numbers always match the chat dashboard for the same range.
+VALID_PERIODS = ("today", "week", "month", "last_month", "quarter", "year")
+
 
 def _json(status_code, body):
     return {
@@ -140,7 +145,7 @@ def _summary(event, user_id: str):
 
     qs = event.get("queryStringParameters") or {}
     period = (qs.get("period") or "month").lower()
-    if period not in ("today", "week", "month", "last_month"):
+    if period not in VALID_PERIODS:
         period = "month"
 
     db = Database()
@@ -482,7 +487,7 @@ def _charts(event, user_id: str):
 
     qs = event.get("queryStringParameters") or {}
     period = (qs.get("period") or "month").lower()
-    if period not in ("today", "week", "month", "last_month"):
+    if period not in VALID_PERIODS:
         period = "month"
 
     out = {"top_products": None, "profit_trend": None}
@@ -621,6 +626,7 @@ _PAGE_HTML = """<!doctype html>
 
   <div class="tabs">
     <div class="tab active" id="tab-dash" onclick="showTab('dash')">📊 Dashboard</div>
+    <div class="tab" id="tab-cat" onclick="showTab('cat')">🧾 Catalog</div>
     <div class="tab" id="tab-inv" onclick="showTab('inv')">📦 Inventory</div>
   </div>
   <button class="btn save" id="recordBtn" style="width:100%;margin-bottom:12px" onclick="openRecord()">➕ Record a transaction</button>
@@ -652,6 +658,18 @@ _PAGE_HTML = """<!doctype html>
       <div class="k">Net profit - last 6 months</div><img class="chart" id="imgTrend" alt="">
     </div>
     <div id="dashmsg" class="muted"></div>
+  </div>
+
+  <div id="view-cat" class="hidden">
+    <div class="row">
+      <div class="card"><div class="k">Products</div><div class="v" id="cat-count">—</div></div>
+      <div class="card"><div class="k">Total stock</div><div class="v" id="cat-units">—</div></div>
+    </div>
+    <div class="card"><div class="k">Stock value (at cost)</div><div class="v" id="cat-value">—</div></div>
+    <div class="card hidden" id="cat-lowcard"><div class="k">Low stock</div><div class="v neg" id="cat-low">—</div></div>
+    <input class="search" id="catsearch" placeholder="Search catalog..." oninput="renderCatalog()">
+    <div id="catgroups"><div class="muted">Loading...</div></div>
+    <div id="catmsg" class="muted"></div>
   </div>
 
   <div id="view-inv" class="hidden">
@@ -780,7 +798,7 @@ _PAGE_HTML = """<!doctype html>
   var tg = window.Telegram && window.Telegram.WebApp;
   if (tg) { tg.ready(); tg.expand(); }
   var initData = (tg && tg.initData) || "";
-  var PERIODS = [["today","Today"],["week","Week"],["month","Month"],["last_month","Last month"]];
+  var PERIODS = [["today","Today"],["week","Week"],["month","Month"],["last_month","Last month"],["quarter","Quarter"],["year","Year"]];
   var curPeriod = "month";
   var invData = null;
   var invLoaded = false;
@@ -809,10 +827,18 @@ _PAGE_HTML = """<!doctype html>
 
   window.showTab = function (which) {
     document.getElementById("tab-dash").classList.toggle("active", which === "dash");
+    document.getElementById("tab-cat").classList.toggle("active", which === "cat");
     document.getElementById("tab-inv").classList.toggle("active", which === "inv");
     document.getElementById("view-dash").classList.toggle("hidden", which !== "dash");
+    document.getElementById("view-cat").classList.toggle("hidden", which !== "cat");
     document.getElementById("view-inv").classList.toggle("hidden", which !== "inv");
-    if (which === "inv" && !invLoaded) loadInventory();
+    // Inventory + Catalog share the same product data (one fetch). Load it the
+    // first time either tab is opened, then render the one that's showing.
+    if ((which === "inv" || which === "cat") && !invLoaded) {
+      loadInventory();
+    } else if (which === "cat") {
+      renderCatalog();
+    }
   };
 
   function renderChips() {
@@ -887,12 +913,96 @@ _PAGE_HTML = """<!doctype html>
   function loadInventory() {
     invLoaded = true;
     api("api/inventory")
-      .then(function (d) { invData = d.products || []; renderInv(); })
+      .then(function (d) { invData = d.products || []; renderInv(); renderCatalog(); })
       .catch(function (e) {
-        document.getElementById("invmsg").innerHTML =
-          '<span class="err">' + (e.message || "Could not load") + '</span>';
+        var em = '<span class="err">' + (e.message || "Could not load") + '</span>';
+        document.getElementById("invmsg").innerHTML = em;
+        document.getElementById("catmsg").innerHTML = em;
       });
   }
+
+  // ── Catalog tab: a read-only "shelf" overview — totals up top, then products
+  // grouped by category. Reuses the SAME inventory data (one fetch). Tapping a
+  // product opens the same editor/variant-viewer as the Inventory tab, so the
+  // catalog stays actionable without a second data source.
+  window.renderCatalog = function () {
+    if (!invData) return;
+    var q = (document.getElementById("catsearch").value || "").toLowerCase().trim();
+    var rows = invData.filter(function (p) {
+      return !q || (p.name || "").toLowerCase().indexOf(q) >= 0
+                || (p.category || "").toLowerCase().indexOf(q) >= 0;
+    });
+
+    // Totals (across the FULL catalog, not just the filtered view).
+    var totUnits = 0, totValue = 0, lowCount = 0;
+    invData.forEach(function (p) {
+      totUnits += Number(p.stock || 0);
+      totValue += Number(p.stock_value || 0);
+      if (p.low_stock) lowCount += 1;
+    });
+    document.getElementById("cat-count").textContent = invData.length.toLocaleString();
+    document.getElementById("cat-units").textContent = totUnits.toLocaleString();
+    document.getElementById("cat-value").textContent = naira(totValue);
+    var lowCard = document.getElementById("cat-lowcard");
+    if (lowCount > 0) {
+      document.getElementById("cat-low").textContent = lowCount + " item(s)";
+      lowCard.classList.remove("hidden");
+    } else {
+      lowCard.classList.add("hidden");
+    }
+
+    var wrap = document.getElementById("catgroups");
+    if (!rows.length) { wrap.innerHTML = '<div class="muted">No products.</div>'; return; }
+
+    // Group by category (blank category → "Uncategorized").
+    var groups = {};
+    rows.forEach(function (p) {
+      var key = (p.category || "").trim() || "Uncategorized";
+      (groups[key] = groups[key] || []).push(p);
+    });
+    var names = Object.keys(groups).sort(function (a, b) {
+      if (a === "Uncategorized") return 1;
+      if (b === "Uncategorized") return -1;
+      return a.toLowerCase() < b.toLowerCase() ? -1 : 1;
+    });
+
+    wrap.innerHTML = "";
+    names.forEach(function (cat) {
+      var items = groups[cat];
+      var gUnits = 0, gValue = 0;
+      items.forEach(function (p) { gUnits += Number(p.stock || 0); gValue += Number(p.stock_value || 0); });
+      var head = document.createElement("div");
+      head.className = "k";
+      head.style.margin = "14px 2px 6px";
+      head.textContent = cat + " · " + items.length + " item(s) · " + naira(gValue);
+      wrap.appendChild(head);
+
+      var card = document.createElement("div");
+      card.className = "card";
+      card.style.padding = "4px 0";
+      items.forEach(function (p) {
+        var badges = "";
+        if (p.low_stock) badges += '<span class="badge low">low</span>';
+        if (p.has_variants) badges += '<span class="badge var">variants</span>';
+        var sub = [];
+        if (p.cost) sub.push("cost " + naira(p.cost));
+        if (p.sale_price) sub.push("price " + naira(p.sale_price));
+        var div = document.createElement("div");
+        div.className = "item tappable";
+        div.innerHTML = '<div><div class="name">' + escapeHtml(p.name || "?") + badges +
+          '</div><div class="meta">' + (sub.join(" / ") || "no price/cost set") + '</div></div>' +
+          '<div class="right"><div class="stock">' + Number(p.stock||0).toLocaleString() +
+          ' ' + escapeHtml(p.unit || "") + (p.has_variants ? ' ›' : '') + '</div><div class="meta">' +
+          (p.stock_value ? naira(p.stock_value) : "") + '</div></div>';
+        div.onclick = p.has_variants
+          ? (function (prod) { return function () { openVarView(prod); }; })(p)
+          : (function (prod) { return function () { openSheet(prod); }; })(p);
+        card.appendChild(div);
+      });
+      wrap.appendChild(card);
+    });
+    document.getElementById("catmsg").textContent = rows.length + " product(s)";
+  };
   window.renderInv = function () {
     if (!invData) return;
     var q = (document.getElementById("search").value || "").toLowerCase().trim();
