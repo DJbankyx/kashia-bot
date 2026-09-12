@@ -554,11 +554,14 @@ _PAGE_HTML = """<!doctype html>
   body { margin: 0; background: var(--bg); color: var(--text);
     font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
     padding: 14px 14px 40px; -webkit-font-smoothing: antialiased; }
-  h1 { font-size: 18px; margin: 2px 0; }
-  .sub { color: var(--hint); font-size: 13px; margin-bottom: 12px; }
+  h1 { font-size: 19px; font-weight: 700; margin: 2px 0 1px; }
+  .sub { color: var(--hint); font-size: 13px; margin-bottom: 14px; }
   .card { background: var(--card); border-radius: 14px; padding: 14px; margin-bottom: 10px; }
   .k { color: var(--hint); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
-  .v { font-size: 24px; font-weight: 700; margin-top: 3px; }
+  /* Values can be long (₦80,000,000). Keep them on one line and let the
+     browser shrink very long numbers rather than wrapping into a scatter. */
+  .v { font-size: 22px; font-weight: 700; margin-top: 4px; white-space: nowrap;
+       overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
   .row { display: flex; gap: 10px; }
   .row .card { flex: 1; }
   .pos { color: var(--pos); } .neg { color: var(--neg); }
@@ -674,11 +677,11 @@ _PAGE_HTML = """<!doctype html>
         </div>
       </div>
       <div class="field">
-        <label>Selling price (NGN)</label>
+        <label>Selling price (\u20a6)</label>
         <input id="sh-price" type="number" inputmode="numeric" min="0">
       </div>
       <div class="field">
-        <label>Cost per unit (NGN)</label>
+        <label>Cost per unit (\u20a6)</label>
         <input id="sh-cost" type="number" inputmode="numeric" min="0">
       </div>
       <div class="sheeterr" id="sh-err"></div>
@@ -708,7 +711,7 @@ _PAGE_HTML = """<!doctype html>
         <input id="rec-desc" class="hidden" placeholder="e.g. Hilux">
       </div>
       <div class="field">
-        <label id="rec-amount-label">Amount received (NGN)</label>
+        <label id="rec-amount-label">Amount received (\u20a6)</label>
         <input id="rec-amount" type="number" inputmode="numeric" min="0" oninput="recBalanceHint()">
       </div>
       <div class="field" id="rec-qty-wrap">
@@ -717,7 +720,7 @@ _PAGE_HTML = """<!doctype html>
         <div class="sub2">In the product's unit (set the unit in Catalog).</div>
       </div>
       <div class="field" id="rec-cost-wrap">
-        <label id="rec-cost-label">Cost of goods (total, NGN) — optional</label>
+        <label id="rec-cost-label">Cost of goods (total, \u20a6) — optional</label>
         <input id="rec-cost" type="number" inputmode="numeric" min="0" placeholder="for accurate profit">
       </div>
       <div class="field">
@@ -734,7 +737,7 @@ _PAGE_HTML = """<!doctype html>
         </div>
       </div>
       <div class="field hidden" id="rec-deposit-wrap">
-        <label id="rec-deposit-label">Deposit paid now (NGN)</label>
+        <label id="rec-deposit-label">Deposit paid now (\u20a6)</label>
         <input id="rec-deposit" type="number" inputmode="numeric" min="0" placeholder="amount paid so far" oninput="recBalanceHint()">
         <div class="sub2" id="rec-balance-hint"></div>
       </div>
@@ -782,7 +785,8 @@ _PAGE_HTML = """<!doctype html>
   var invData = null;
   var invLoaded = false;
 
-  function naira(n) { return "NGN " + Number(n||0).toLocaleString("en-NG"); }
+  // Web page (not a PDF) so the ₦ glyph is safe and reads cleaner than "NGN".
+  function naira(n) { return "\u20a6" + Number(n||0).toLocaleString("en-NG"); }
   function setSigned(id, n) {
     var el = document.getElementById(id);
     if (!el) return;
@@ -828,7 +832,7 @@ _PAGE_HTML = """<!doctype html>
     api("api/summary?period=" + curPeriod)
       .then(function (d) {
         document.getElementById("biz").textContent = d.business || "Kashia";
-        document.getElementById("period").textContent = "P&L - " + (d.period_label || "");
+        document.getElementById("period").textContent = "\ud83d\udcc5 " + (d.period_label || "");
         setSigned("net", d.pnl.net_profit);
         document.getElementById("rev").textContent = naira(d.pnl.revenue);
         document.getElementById("cogs").textContent = naira(d.pnl.cogs);
@@ -1205,7 +1209,7 @@ _PAGE_HTML = """<!doctype html>
     document.getElementById("rec-desc-label").textContent =
       t === "sale" ? "What did you sell?" : (t === "purchase" ? "What did you buy?" : "What was it for?");
     document.getElementById("rec-amount-label").textContent =
-      t === "sale" ? "Amount received (NGN)" : (t === "purchase" ? "Amount paid (NGN)" : "Amount (NGN)");
+      t === "sale" ? "Amount received (\u20a6)" : (t === "purchase" ? "Amount paid (\u20a6)" : "Amount (\u20a6)");
     // Sale/purchase pick from the catalog; expense is free text.
     var isExpense = (t === "expense");
     document.getElementById("rec-prod-btn").classList.toggle("hidden", isExpense);
@@ -1251,7 +1255,7 @@ _PAGE_HTML = """<!doctype html>
     var bal = Math.max(0, amount - dep);
     hint.textContent = dep >= amount
       ? "Fully paid — this will record as paid, not part."
-      : ("Balance owed: NGN " + bal.toLocaleString("en-NG"));
+      : ("Balance owed: " + naira(bal));
   };
   window.openRecord = function () {
     recTypeVal = "sale"; recPayVal = "cash"; recSubmitId = uuid();
