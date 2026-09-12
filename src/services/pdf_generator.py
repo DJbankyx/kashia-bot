@@ -1389,6 +1389,17 @@ class PDFGenerator:
         the statement matches the period the user is looking at.
         Returns: list of response dicts
         """
+        # Paywall (owner-enabled 2026-09-11): PDF financial statements are a
+        # Basic/Pro feature. Free users get an upgrade prompt instead of a PDF.
+        try:
+            from services.tier_manager import TierManager
+            allowed, msg = TierManager(database=self.db).check_can_generate_pdf(phone_number)
+            if not allowed:
+                return [{"type": "text", "content": msg}]
+        except Exception as e:
+            # Never let the gate itself break statement generation.
+            logger.warning(f"pdf statement paywall check failed: {e}")
+
         # Get user's industry class for tailored P&L
         user = self.db.get_user(phone_number)
         industry_class = user.get('industry_class', 'trading') if user else 'trading'

@@ -192,9 +192,10 @@ class TierManager:
         """
         Check if user can generate PDF statements.
         Returns: (allowed: bool, message: str or None)
+
+        Owner ENABLED the paywall (2026-09-11): PDF financial statements are a
+        paid (Basic/Pro) feature. The beta short-circuit was removed.
         """
-        # TODO: Re-enable tier check after beta testing
-        return True, None
         tier = self.get_user_tier(phone_number)
         limits = self.get_tier_limits(tier)
 
