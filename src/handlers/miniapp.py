@@ -29,6 +29,52 @@ logger.setLevel(logging.INFO)
 # web numbers always match the chat dashboard for the same range.
 VALID_PERIODS = ("today", "week", "month", "last_month", "quarter", "year")
 
+_DATE_RE = None  # compiled lazily
+
+
+def _resolve_range(qs: dict, period: str):
+    """Resolve (start, end, label) for a request. If the query supplies a valid
+    custom `from` (and optional `to`) date (YYYY-MM-DD), use that EXACT range —
+    a single day when from==to (or to omitted), else a span. Otherwise fall back
+    to the named period via reports._date_range. Dates pass straight to the
+    accounting engine (which already takes start/end dates), so custom ranges are
+    as accurate as the presets — no new math."""
+    import re
+    from datetime import datetime as _dt
+    from features.reports import _date_range
+
+    global _DATE_RE
+    if _DATE_RE is None:
+        _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+    frm = (qs.get("from") or "").strip()
+    to = (qs.get("to") or "").strip() or frm  # single day when 'to' omitted
+
+    def _valid(d):
+        if not _DATE_RE.match(d):
+            return False
+        try:
+            _dt.strptime(d, "%Y-%m-%d")
+            return True
+        except ValueError:
+            return False
+
+    if _valid(frm) and _valid(to):
+        # Normalise ordering so a swapped range still works.
+        if to < frm:
+            frm, to = to, frm
+
+        def _pretty(d):
+            return _dt.strptime(d, "%Y-%m-%d").strftime("%-d %b %Y")
+
+        try:
+            label = _pretty(frm) if frm == to else (_pretty(frm) + " - " + _pretty(to))
+        except ValueError:
+            label = frm if frm == to else (frm + " - " + to)
+        return frm, to, label
+
+    return _date_range(period)
+
 
 def _json(status_code, body):
     return {
@@ -116,12 +162,17 @@ def lambda_handler(event, context):
         # ── Writes (M6b: record a transaction) ──
         if method == "POST" and path.endswith("/app/api/transaction"):
             return _transaction_write(event, user_id)
+        # ── Writes (CRM: record a debt payment / collection) ──
+        if method == "POST" and path.endswith("/app/api/debt-payment"):
+            return _debt_payment_write(event, user_id)
 
         # ── Reads ──
         if method == "GET" and path.endswith("/app/api/summary"):
             return _summary(event, user_id)
         if method == "GET" and path.endswith("/app/api/inventory"):
             return _inventory(event, user_id)
+        if method == "GET" and path.endswith("/app/api/contacts"):
+            return _contacts(event, user_id)
         if method == "GET" and path.endswith("/app/api/charts"):
             return _charts(event, user_id)
         if method == "GET" and path.endswith("/app/api/tree"):
@@ -150,7 +201,7 @@ def _summary(event, user_id: str):
 
     db = Database()
     acct = Accounting(db)
-    start, end, label = _date_range(period)
+    start, end, label = _resolve_range(qs, period)
 
     pnl = acct.period_pnl(user_id, start, end, label)
     cf = acct.period_cashflow(user_id, start, end, label)
@@ -461,6 +512,122 @@ def _transaction_write(event, user_id: str):
     return _json(400, result)
 
 
+def _contacts(event, user_id: str):
+    """CRM data for the app: who owes me (debtors) + who I owe (creditors),
+    split payables into suppliers vs expense payees, and top customers/suppliers.
+    Reuses the SAME engine accessors as the chat debt board + CRM, so the numbers
+    match. Read-only."""
+    from services.database import Database
+    db = Database()
+
+    debtors = db.get_all_debtors(user_id) or []
+    creditors = db.get_all_creditors(user_id) or []
+
+    def _clean(lst):
+        out = []
+        for c in lst:
+            out.append({
+                "name": c.get("name", "Unknown"),
+                "amount": int(c.get("amount", 0) or 0),
+                "type": (c.get("type") or "").lower().strip(),
+                "last_date": c.get("last_date", ""),
+                "due_date": c.get("due_date", ""),
+            })
+        return out
+
+    debtors = _clean(debtors)
+    creditors = _clean(creditors)
+    owed_to_me = sum(c["amount"] for c in debtors)
+    i_owe = sum(c["amount"] for c in creditors)
+    owe_suppliers = sum(c["amount"] for c in creditors if c["type"] != "expense_payee")
+    owe_expenses = sum(c["amount"] for c in creditors if c["type"] == "expense_payee")
+
+    # Top contacts (by value) for a light CRM directory.
+    try:
+        top_customers = db.get_top_contacts(user_id, "customer", limit=8) or []
+        top_suppliers = db.get_top_contacts(user_id, "supplier", limit=8) or []
+    except Exception:
+        top_customers, top_suppliers = [], []
+
+    def _contact_row(c):
+        return {
+            "name": c.get("name", c.get("contact_id", "Unknown")),
+            "type": (c.get("type") or "").lower().strip(),
+            "total": int(c.get("total_received", 0) or c.get("total_paid", 0) or 0),
+        }
+
+    return _json(200, {
+        "owed_to_me": owed_to_me,
+        "i_owe": i_owe,
+        "i_owe_suppliers": owe_suppliers,
+        "i_owe_expenses": owe_expenses,
+        "debtors": debtors,     # people who owe ME (collect)
+        "creditors": creditors, # people I owe (repay)
+        "top_customers": [_contact_row(c) for c in top_customers],
+        "top_suppliers": [_contact_row(c) for c in top_suppliers],
+    })
+
+
+def _debt_payment_write(event, user_id: str):
+    """Record a debt payment from the app — a COLLECTION (a customer repays me)
+    or a REPAYMENT (I pay a supplier). Mirrors the chat debt board EXACTLY:
+    settle_debt (reduce the balance) + save_transaction (log the cash move), so
+    cash flow + the balance both stay correct. Idempotent via submit_id.
+
+    Body: {submit_id, name, amount, direction: 'in'|'out'}
+      in  = a debtor pays me   -> settle owed_to_me + log income (sale)
+      out = I repay a creditor -> settle i_owe      + log expense
+    """
+    from services.database import Database
+
+    data = _parse_body(event)
+    submit_id = str(data.get("submit_id") or "").strip()
+    if not submit_id:
+        return _json(400, {"error": "submit_id required"})
+    name = (data.get("name") or "").strip()
+    direction = (data.get("direction") or "").strip().lower()
+    try:
+        amount = int(data.get("amount") or 0)
+    except (TypeError, ValueError):
+        return _json(400, {"error": "amount must be a number"})
+    if not name:
+        return _json(400, {"error": "a contact name is required"})
+    if direction not in ("in", "out"):
+        return _json(400, {"error": "direction must be 'in' or 'out'"})
+    if amount <= 0:
+        return _json(400, {"error": "amount must be greater than 0"})
+
+    db = Database()
+
+    # Idempotency: claim BEFORE any side effect (mirrors _transaction_write).
+    claimed, _prior = db.claim_web_submit(user_id, submit_id)
+    if not claimed:
+        return _json(200, {"ok": True, "duplicate": True})
+
+    try:
+        if direction == "in":
+            remaining = db.settle_debt(user_id, name, float(amount), "owed_to_me")
+            db.save_transaction(
+                user_id, int(amount), "sale",
+                f"Debt repayment from {name}", "Sales & Income",
+                vendor=name, payment_method="cash",
+                extra_details={"source": "miniapp", "debt_payment": True})
+        else:
+            remaining = db.settle_debt(user_id, name, float(amount), "i_owe")
+            db.save_transaction(
+                user_id, int(amount), "expense",
+                f"Debt repayment to {name}", "Debt Repayment",
+                vendor=name, payment_method="cash",
+                extra_details={"source": "miniapp", "debt_payment": True})
+        return _json(200, {
+            "ok": True, "name": name, "direction": direction,
+            "amount": amount, "remaining": int(remaining or 0),
+        })
+    except Exception as e:
+        logger.error(f"miniapp debt payment failed: {e}")
+        return _json(500, {"error": "could not record the payment"})
+
+
 def _png_data_uri(path: str):
     """Read a PNG file and return a base64 data URI, or None. Returned inside a
     JSON body (data URI) so we avoid API Gateway binary-media-type config — the
@@ -499,7 +666,7 @@ def _charts(event, user_id: str):
 
     db = Database()
     acct = Accounting(db)
-    start, end, label = _date_range(period)
+    start, end, label = _resolve_range(qs, period)
 
     # Top products for the period (revenue by product name).
     try:
@@ -617,6 +784,15 @@ _PAGE_HTML = """<!doctype html>
   .btn.cancel { background: var(--card); color: var(--text); }
   .btn:disabled { opacity: .5; cursor: default; }
   .sheeterr { color: var(--neg); font-size: 13px; margin-top: 6px; min-height: 16px; }
+  .seclabel { color: var(--hint); font-size: 11px; text-transform: uppercase;
+    letter-spacing: .04em; margin: 16px 2px 6px; font-weight: 700; }
+  .datebox { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 12px; }
+  .datebox .df { flex: 1; min-width: 120px; }
+  .datebox label { display:block; color: var(--hint); font-size: 11px; margin-bottom: 4px; }
+  .datebox input { width: 100%; padding: 9px 10px; border-radius: 9px;
+    border: 1px solid var(--line); background: var(--card); color: var(--text); font-size: 15px; }
+  .datebox .apply { padding: 9px 14px; border-radius: 9px; border: none;
+    background: var(--accent); color: var(--btntext); font-weight: 700; cursor: pointer; }
   .hidden { display: none; }
 </style>
 </head>
@@ -626,13 +802,21 @@ _PAGE_HTML = """<!doctype html>
 
   <div class="tabs">
     <div class="tab active" id="tab-dash" onclick="showTab('dash')">📊 Dashboard</div>
-    <div class="tab" id="tab-cat" onclick="showTab('cat')">🧾 Catalog</div>
-    <div class="tab" id="tab-inv" onclick="showTab('inv')">📦 Inventory</div>
+    <div class="tab" id="tab-cat" onclick="showTab('cat')">📦 Catalog</div>
+    <div class="tab" id="tab-crm" onclick="showTab('crm')">👥 Customers</div>
   </div>
   <button class="btn save" id="recordBtn" style="width:100%;margin-bottom:12px" onclick="openRecord()">➕ Record a transaction</button>
 
   <div id="view-dash">
     <div class="chips" id="chips"></div>
+    <div class="datebox hidden" id="datebox">
+      <div class="df"><label>From</label><input type="date" id="date-from"></div>
+      <div class="df"><label>To (blank = single day)</label><input type="date" id="date-to"></div>
+      <button class="apply" onclick="applyDateRange()">Apply</button>
+      <div class="sheeterr" id="date-err" style="flex-basis:100%"></div>
+    </div>
+
+    <div class="seclabel" id="periodlabel">This period</div>
     <div class="card"><div class="k">Net profit</div><div class="v" id="net">—</div></div>
     <div class="row">
       <div class="card"><div class="k">Revenue</div><div class="v" id="rev">—</div></div>
@@ -643,6 +827,8 @@ _PAGE_HTML = """<!doctype html>
       <div class="card"><div class="k">Expenses</div><div class="v" id="opex">—</div></div>
     </div>
     <div class="card"><div class="k">Cash in - out</div><div class="v" id="cash">—</div></div>
+
+    <div class="seclabel">Current balances · as of today</div>
     <div class="row">
       <div class="card"><div class="k">Owed to you</div><div class="v pos" id="owed">—</div></div>
       <div class="card"><div class="k">You owe</div><div class="v neg" id="iowe">—</div><div class="sub" id="iowebreak"></div></div>
@@ -672,10 +858,32 @@ _PAGE_HTML = """<!doctype html>
     <div id="catmsg" class="muted"></div>
   </div>
 
-  <div id="view-inv" class="hidden">
-    <input class="search" id="search" placeholder="Search products..." oninput="renderInv()">
-    <div class="card" id="invlist"><div class="muted">Loading...</div></div>
-    <div id="invmsg" class="muted"></div>
+  <div id="view-crm" class="hidden">
+    <div class="row">
+      <div class="card"><div class="k">Owed to you</div><div class="v pos" id="crm-owed">—</div></div>
+      <div class="card"><div class="k">You owe</div><div class="v neg" id="crm-iowe">—</div><div class="sub" id="crm-iowebreak"></div></div>
+    </div>
+    <input class="search" id="crmsearch" placeholder="Search people..." oninput="renderCrm()">
+    <div id="crmlists"><div class="muted">Loading...</div></div>
+    <div id="crmmsg" class="muted"></div>
+  </div>
+
+  <!-- Debt-payment sheet (CRM write) -->
+  <div id="payOverlay" class="overlay hidden">
+    <div class="sheet">
+      <h2 id="pay-title">Record a payment</h2>
+      <div class="sub2" id="pay-sub"></div>
+      <div class="field">
+        <label id="pay-amount-label">Amount (\u20a6)</label>
+        <input id="pay-amount" type="number" inputmode="numeric" min="0" oninput="payHint()">
+        <div class="sub2" id="pay-hint"></div>
+      </div>
+      <div class="sheeterr" id="pay-err"></div>
+      <div class="actions">
+        <button class="btn cancel" onclick="closePay()">Cancel</button>
+        <button class="btn save" id="pay-save" onclick="savePay()">Record payment</button>
+      </div>
+    </div>
   </div>
 
   <!-- Edit sheet (bottom modal) -->
@@ -802,6 +1010,11 @@ _PAGE_HTML = """<!doctype html>
   var curPeriod = "month";
   var invData = null;
   var invLoaded = false;
+  var crmData = null;
+  var crmLoaded = false;
+  // Custom date range (single day or range). When set, overrides curPeriod.
+  var curFrom = "";
+  var curTo = "";
 
   // Web page (not a PDF) so the ₦ glyph is safe and reads cleaner than "NGN".
   function naira(n) { return "\u20a6" + Number(n||0).toLocaleString("en-NG"); }
@@ -824,20 +1037,29 @@ _PAGE_HTML = """<!doctype html>
         return r.json();
       });
   }
+  // Build the date query for summary/charts: a custom from/to range when set,
+  // else the named period. A single day = from==to.
+  function periodQuery() {
+    if (curFrom) {
+      return "from=" + encodeURIComponent(curFrom) +
+             "&to=" + encodeURIComponent(curTo || curFrom);
+    }
+    return "period=" + curPeriod;
+  }
 
   window.showTab = function (which) {
     document.getElementById("tab-dash").classList.toggle("active", which === "dash");
     document.getElementById("tab-cat").classList.toggle("active", which === "cat");
-    document.getElementById("tab-inv").classList.toggle("active", which === "inv");
+    document.getElementById("tab-crm").classList.toggle("active", which === "crm");
     document.getElementById("view-dash").classList.toggle("hidden", which !== "dash");
     document.getElementById("view-cat").classList.toggle("hidden", which !== "cat");
-    document.getElementById("view-inv").classList.toggle("hidden", which !== "inv");
-    // Inventory + Catalog share the same product data (one fetch). Load it the
-    // first time either tab is opened, then render the one that's showing.
-    if ((which === "inv" || which === "cat") && !invLoaded) {
-      loadInventory();
-    } else if (which === "cat") {
-      renderCatalog();
+    document.getElementById("view-crm").classList.toggle("hidden", which !== "crm");
+    // Catalog is the single product tab (Inventory merged in). Load products the
+    // first time it's opened, then render.
+    if (which === "cat") {
+      if (!invLoaded) { loadInventory(); } else { renderCatalog(); }
+    } else if (which === "crm") {
+      if (!crmLoaded) { loadCrm(); } else { renderCrm(); }
     }
   };
 
@@ -846,19 +1068,50 @@ _PAGE_HTML = """<!doctype html>
     c.innerHTML = "";
     PERIODS.forEach(function (p) {
       var el = document.createElement("div");
-      el.className = "chip" + (p[0] === curPeriod ? " active" : "");
+      // A preset is active only when no custom range is set.
+      el.className = "chip" + (!curFrom && p[0] === curPeriod ? " active" : "");
       el.textContent = p[1];
-      el.onclick = function () { curPeriod = p[0]; renderChips(); loadSummary(); };
+      el.onclick = function () {
+        curFrom = ""; curTo = "";           // clear any custom range
+        curPeriod = p[0];
+        toggleDatePicker(false);
+        renderChips(); loadSummary();
+      };
       c.appendChild(el);
     });
+    // Custom single-day / range picker chip.
+    var pick = document.createElement("div");
+    pick.className = "chip" + (curFrom ? " active" : "");
+    pick.textContent = "📅 Pick date";
+    pick.onclick = function () { toggleDatePicker(); };
+    c.appendChild(pick);
   }
+  function toggleDatePicker(show) {
+    var box = document.getElementById("datebox");
+    if (!box) return;
+    var willShow = (show === undefined) ? box.classList.contains("hidden") : show;
+    box.classList.toggle("hidden", !willShow);
+  }
+  window.applyDateRange = function () {
+    var f = document.getElementById("date-from").value;
+    var t = document.getElementById("date-to").value;
+    var err = document.getElementById("date-err");
+    if (!f) { err.textContent = "Pick at least a start date."; return; }
+    err.textContent = "";
+    curFrom = f;
+    curTo = t || f;         // single day when 'to' left blank
+    renderChips();
+    loadSummary();
+  };
   function loadSummary() {
     var msg = document.getElementById("dashmsg");
     msg.textContent = "";
-    api("api/summary?period=" + curPeriod)
+    api("api/summary?" + periodQuery())
       .then(function (d) {
         document.getElementById("biz").textContent = d.business || "Kashia";
         document.getElementById("period").textContent = "\\ud83d\\udcc5 " + (d.period_label || "");
+        var pl = document.getElementById("periodlabel");
+        if (pl) pl.textContent = (d.period_label ? (d.period_label + " · this period") : "This period");
         setSigned("net", d.pnl.net_profit);
         document.getElementById("rev").textContent = naira(d.pnl.revenue);
         document.getElementById("cogs").textContent = naira(d.pnl.cogs);
@@ -896,7 +1149,7 @@ _PAGE_HTML = """<!doctype html>
     // endpoint returns an image. A chart failure never breaks the dashboard.
     var cTop = document.getElementById("chartTop"), cTrend = document.getElementById("chartTrend");
     cTop.classList.add("hidden"); cTrend.classList.add("hidden");
-    api("api/charts?period=" + curPeriod)
+    api("api/charts?" + periodQuery())
       .then(function (d) {
         if (d.top_products) {
           document.getElementById("imgTop").src = d.top_products;
@@ -913,18 +1166,16 @@ _PAGE_HTML = """<!doctype html>
   function loadInventory() {
     invLoaded = true;
     api("api/inventory")
-      .then(function (d) { invData = d.products || []; renderInv(); renderCatalog(); })
+      .then(function (d) { invData = d.products || []; renderCatalog(); })
       .catch(function (e) {
-        var em = '<span class="err">' + (e.message || "Could not load") + '</span>';
-        document.getElementById("invmsg").innerHTML = em;
-        document.getElementById("catmsg").innerHTML = em;
+        document.getElementById("catmsg").innerHTML =
+          '<span class="err">' + (e.message || "Could not load") + '</span>';
       });
   }
 
-  // ── Catalog tab: a read-only "shelf" overview — totals up top, then products
-  // grouped by category. Reuses the SAME inventory data (one fetch). Tapping a
-  // product opens the same editor/variant-viewer as the Inventory tab, so the
-  // catalog stays actionable without a second data source.
+  // ── Catalog tab (Inventory merged in): totals up top, then products grouped
+  // by category, searchable. Every product is tappable — non-variant opens the
+  // edit sheet (stock/price/cost), variant opens the read-only tree viewer.
   window.renderCatalog = function () {
     if (!invData) return;
     var q = (document.getElementById("catsearch").value || "").toLowerCase().trim();
@@ -1003,44 +1254,135 @@ _PAGE_HTML = """<!doctype html>
     });
     document.getElementById("catmsg").textContent = rows.length + " product(s)";
   };
-  window.renderInv = function () {
-    if (!invData) return;
-    var q = (document.getElementById("search").value || "").toLowerCase().trim();
-    var list = document.getElementById("invlist");
-    var rows = invData.filter(function (p) {
-      return !q || (p.name || "").toLowerCase().indexOf(q) >= 0
-                || (p.category || "").toLowerCase().indexOf(q) >= 0;
-    });
-    if (!rows.length) { list.innerHTML = '<div class="muted">No products.</div>'; return; }
-    list.innerHTML = "";
-    rows.forEach(function (p) {
-      var margin = (p.sale_price && p.cost) ? (p.sale_price - p.cost) : 0;
-      var badges = "";
-      if (p.low_stock) badges += '<span class="badge low">low</span>';
-      if (p.has_variants) badges += '<span class="badge var">variants</span>';
-      var sub = [];
-      if (p.cost) sub.push("cost " + naira(p.cost));
-      if (p.sale_price) sub.push("price " + naira(p.sale_price));
-      if (margin) sub.push("margin " + naira(margin));
+  // Inventory was merged into Catalog; keep renderInv as an alias so post-write
+  // refreshes (edit sheet save) re-render the single Catalog view.
+  window.renderInv = function () { renderCatalog(); };
+
+  // ── CRM tab: who owes me (collect) + who I owe (repay). Tap a person to
+  // record a payment (reuses the shared debt engine via api/debt-payment).
+  function loadCrm() {
+    crmLoaded = true;
+    api("api/contacts")
+      .then(function (d) { crmData = d; renderCrm(); })
+      .catch(function (e) {
+        document.getElementById("crmmsg").innerHTML =
+          '<span class="err">' + (e.message || "Could not load") + '</span>';
+      });
+  }
+  window.renderCrm = function () {
+    if (!crmData) return;
+    var q = (document.getElementById("crmsearch").value || "").toLowerCase().trim();
+    document.getElementById("crm-owed").textContent = naira(crmData.owed_to_me || 0);
+    document.getElementById("crm-iowe").textContent = naira(crmData.i_owe || 0);
+    var ib = document.getElementById("crm-iowebreak");
+    var sup = crmData.i_owe_suppliers || 0, exp = crmData.i_owe_expenses || 0;
+    ib.textContent = (sup > 0 && exp > 0)
+      ? ("Suppliers " + naira(sup) + " - Expenses " + naira(exp)) : "";
+
+    function filt(list) {
+      return (list || []).filter(function (c) {
+        return !q || (c.name || "").toLowerCase().indexOf(q) >= 0;
+      });
+    }
+    var debtors = filt(crmData.debtors);    // owe ME → collect (in)
+    var creditors = filt(crmData.creditors); // I owe → repay (out)
+
+    function personRow(c, direction) {
       var div = document.createElement("div");
-      // Every product is now tappable. Non-variant products open the edit sheet
-      // (stock/price/cost). Variant (tree) products open a READ-ONLY variant
-      // viewer that drills the tree (per-leaf stock/cost) — leaf editing still
-      // lives in chat, so the web view avoids ambiguous which-leaf writes.
       div.className = "item tappable";
-      div.innerHTML = '<div><div class="name">' + escapeHtml(p.name || "?") + badges +
-        '</div><div class="meta">' + (sub.join(" / ") || "no price/cost set") + '</div></div>' +
-        '<div class="right"><div class="stock">' + Number(p.stock||0).toLocaleString() +
-        ' ' + escapeHtml(p.unit || "") +
-        (p.has_variants ? ' ›' : '') + '</div><div class="meta">' +
-        (p.stock_value ? naira(p.stock_value) : "") + '</div></div>';
-      div.onclick = p.has_variants
-        ? (function (prod) { return function () { openVarView(prod); }; })(p)
-        : (function (prod) { return function () { openSheet(prod); }; })(p);
-      list.appendChild(div);
-    });
-    document.getElementById("invmsg").textContent = rows.length + " product(s)";
+      var sub = direction === "in" ? "owes you" : "you owe";
+      div.innerHTML = '<div><div class="name">' + escapeHtml(c.name || "?") +
+        '</div><div class="meta">' + sub + '</div></div>' +
+        '<div class="right"><div class="stock">' + naira(c.amount || 0) + '</div>' +
+        '<div class="meta">tap to record ›</div></div>';
+      div.onclick = (function (name, amt, dir) {
+        return function () { openPay(name, amt, dir); };
+      })(c.name, c.amount || 0, direction);
+      return div;
+    }
+
+    var wrap = document.getElementById("crmlists");
+    wrap.innerHTML = "";
+    if (!debtors.length && !creditors.length) {
+      wrap.innerHTML = '<div class="muted">No outstanding debts. Record a credit sale or purchase to see people here.</div>';
+      document.getElementById("crmmsg").textContent = "";
+      return;
+    }
+    if (debtors.length) {
+      var h1 = document.createElement("div");
+      h1.className = "k"; h1.style.margin = "14px 2px 6px";
+      h1.textContent = "🟢 Owes me (" + debtors.length + ")";
+      wrap.appendChild(h1);
+      var c1 = document.createElement("div"); c1.className = "card"; c1.style.padding = "4px 0";
+      debtors.forEach(function (c) { c1.appendChild(personRow(c, "in")); });
+      wrap.appendChild(c1);
+    }
+    if (creditors.length) {
+      var h2 = document.createElement("div");
+      h2.className = "k"; h2.style.margin = "14px 2px 6px";
+      h2.textContent = "🔴 I owe (" + creditors.length + ")";
+      wrap.appendChild(h2);
+      var c2 = document.createElement("div"); c2.className = "card"; c2.style.padding = "4px 0";
+      creditors.forEach(function (c) { c2.appendChild(personRow(c, "out")); });
+      wrap.appendChild(c2);
+    }
+    document.getElementById("crmmsg").textContent = "";
   };
+
+  // ── Debt-payment sheet (CRM write) ──
+  var payCtx = null;   // {name, amount, direction}
+  window.openPay = function (name, amount, direction) {
+    payCtx = { name: name, amount: amount, direction: direction };
+    document.getElementById("pay-title").textContent =
+      direction === "in" ? ("Record payment from " + name) : ("Record payment to " + name);
+    document.getElementById("pay-sub").textContent =
+      direction === "in"
+        ? (name + " owes you " + naira(amount))
+        : ("You owe " + name + " " + naira(amount));
+    var amt = document.getElementById("pay-amount");
+    amt.value = amount ? Number(amount) : "";
+    amt.max = amount || undefined;
+    document.getElementById("pay-err").textContent = "";
+    document.getElementById("pay-hint").textContent = "";
+    document.getElementById("pay-save").disabled = false;
+    document.getElementById("payOverlay").classList.remove("hidden");
+    payHint();
+  };
+  window.closePay = function () {
+    document.getElementById("payOverlay").classList.add("hidden");
+    payCtx = null;
+  };
+  window.payHint = function () {
+    if (!payCtx) return;
+    var v = parseInt(document.getElementById("pay-amount").value, 10) || 0;
+    var rem = Math.max(0, (payCtx.amount || 0) - v);
+    document.getElementById("pay-hint").textContent =
+      v > 0 ? ("Remaining after this: " + naira(rem)) : "";
+  };
+  window.savePay = function () {
+    if (!payCtx) return;
+    var v = parseInt(document.getElementById("pay-amount").value, 10) || 0;
+    var err = document.getElementById("pay-err");
+    if (v <= 0) { err.textContent = "Enter an amount greater than 0."; return; }
+    var btn = document.getElementById("pay-save");
+    btn.disabled = true;
+    var body = {
+      submit_id: "pay_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
+      name: payCtx.name, amount: v, direction: payCtx.direction
+    };
+    apiPost("api/debt-payment", body)
+      .then(function (r) {
+        closePay();
+        // Refresh CRM + dashboard (a payment moves cash + the balance).
+        crmLoaded = false; loadCrm();
+        loadSummary();
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        err.textContent = e.message || "Could not record the payment.";
+      });
+  };
+
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, function (c) {
       return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
