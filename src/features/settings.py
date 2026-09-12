@@ -91,6 +91,13 @@ class SettingsHandler:
         if button_id == "set_notify_off":
             return self._set_notifications(phone_number, False)
 
+        # ── Preferences screen + real toggles (rebuild part B) ──
+        if button_id in ("set_preferences", "menu_settings"):
+            return self._show_preferences(phone_number)
+
+        if button_id.startswith("set_pref_"):
+            return self._toggle_pref(phone_number, button_id[len("set_pref_"):])
+
         if button_id == "set_costing":
             return self._show_costing(phone_number)
 
@@ -390,6 +397,141 @@ class SettingsHandler:
             f"✅ Costing method set to *{label}*.\n\n"
             f"_Applies to sales recorded from now on. Change anytime in "
             f"Help & Settings._"
+        )]
+
+    # ─────────────────────────────────────────────────────────
+    # PREFERENCES — real in-place toggles (settings rebuild, part B)
+    # ─────────────────────────────────────────────────────────
+
+    def _is_telegram(self, phone_number: str) -> bool:
+        try:
+            from services.messaging_client import platform_for_user
+            return platform_for_user(phone_number) == "telegram"
+        except Exception:
+            return False
+
+    # Preference flags: user-record key + default (default True = on).
+    _PREF_FLAGS = {
+        "daily":        ("notify_daily", True),
+        "weekly":       ("notify_weekly", True),
+        "insightsnudge": ("insights_nudge", True),
+    }
+
+    @staticmethod
+    def _on(v, default=True):
+        """Interpret a stored flag as bool (handles True/'true'/None/missing)."""
+        if v is None:
+            return default
+        if isinstance(v, bool):
+            return v
+        return str(v).lower() not in ("false", "0", "no", "off")
+
+    def _show_preferences(self, phone_number: str) -> list:
+        """The in-place toggle screen. Each row shows its live ON/OFF state and
+        flips when tapped (re-rendering this same card). Telegram tap-first;
+        WhatsApp falls back to the simple all-on/all-off notification buttons."""
+        user = self.db.get_user(phone_number) or {}
+
+        if not self._is_telegram(phone_number):
+            # WhatsApp keeps the simpler coupled control.
+            return self._show_notifications(phone_number)
+
+        def _row(key, on_title, off_title, desc):
+            fkey, dflt = self._PREF_FLAGS[key]
+            on = self._on(user.get(fkey), dflt)
+            mark = "✅" if on else "⬜"
+            return {"id": f"set_pref_{key}",
+                    "title": f"{mark} {on_title if on else off_title}"[:60],
+                    "description": desc}
+
+        mode = str(user.get("costing_mode", "average")).lower()
+        costing_label = "🎯 Specific" if mode == "specific" else "⚖️ Weighted avg"
+
+        rows = [
+            _row("daily", "Daily report: ON", "Daily report: OFF",
+                 "7PM daily summary"),
+            _row("weekly", "Weekly report: ON", "Weekly report: OFF",
+                 "Sunday evening overview"),
+            _row("insightsnudge", "Smart Insights nudge: ON",
+                 "Smart Insights nudge: OFF", "Weekly AI business tip (Pro)"),
+            {"id": "set_costing", "title": f"🧮 Costing: {costing_label}",
+             "description": "How cost of sales is valued"},
+            {"id": "sec_settings", "title": "⬅️ Back to Settings"},
+        ]
+        return [list_response(
+            header="⚙️ Preferences",
+            body="Tap a switch to turn it on or off.",
+            button_text="Toggle",
+            sections=[{"title": "", "rows": rows}],
+            no_paginate=True,
+        )]
+
+    def _toggle_pref(self, phone_number: str, key: str) -> list:
+        """Flip one preference flag, then re-render the Preferences screen."""
+        spec = self._PREF_FLAGS.get(key)
+        if not spec:
+            return self._show_preferences(phone_number)
+        fkey, dflt = spec
+        user = self.db.get_user(phone_number) or {}
+        new_val = not self._on(user.get(fkey), dflt)
+        try:
+            self.db.update_user(phone_number, {fkey: new_val})
+        except Exception as e:
+            logger.warning(f"toggle {key} failed: {e}")
+        return self._show_preferences(phone_number)
+
+    # ─────────────────────────────────────────────────────────
+    # SETTINGS HOME — grouped (settings rebuild, part A)
+    # ─────────────────────────────────────────────────────────
+
+    def show_settings(self, phone_number: str) -> list:
+        """Grouped Settings home (Telegram tap-first): Account / Preferences /
+        Help / Danger Zone. WhatsApp keeps the industry's flat list."""
+        if not self._is_telegram(phone_number):
+            # Let the industry render its classic settings list on WhatsApp.
+            industry = None
+            try:
+                if getattr(self, "router", None):
+                    industry = self.router._get_industry_handler(phone_number)
+            except Exception:
+                industry = None
+            if industry and hasattr(industry, "_show_settings_menu"):
+                return industry._show_settings_menu(phone_number)
+            # Fallback minimal list.
+            return [text_response("⚙️ Settings — type *menu* to go back.")]
+
+        return [list_response(
+            header="⚙️ Settings",
+            body="Manage your account, preferences and data.",
+            button_text="Open",
+            sections=[
+                {"title": "👤 Account", "rows": [
+                    {"id": "set_usage", "title": "📊 Usage & Limits",
+                     "description": "Your tier & what's left this month"},
+                    {"id": "set_upgrade", "title": "⭐ Upgrade Plan",
+                     "description": "Free → Basic → Pro"},
+                    {"id": "set_industry", "title": "🔄 Change Industry",
+                     "description": "Switch business type"},
+                    {"id": "set_password", "title": "🔒 Set / Change PIN",
+                     "description": "Protect sensitive actions"},
+                ]},
+                {"title": "⚙️ Preferences", "rows": [
+                    {"id": "set_preferences", "title": "🔔 Notifications & Toggles",
+                     "description": "Daily/weekly reports, insights nudge, costing"},
+                ]},
+                {"title": "❓ Help", "rows": [
+                    {"id": "set_tutorial", "title": "❓ How to Use",
+                     "description": "Quick guide & tutorial"},
+                    {"id": "set_bug", "title": "🐛 Report a Problem",
+                     "description": "Send feedback"},
+                ]},
+                {"title": "🗑️ Danger Zone", "rows": [
+                    {"id": "set_reset", "title": "🧹 Clear My Data",
+                     "description": "Wipe transactions, contacts & catalog (keep account)"},
+                    {"id": "set_hardreset", "title": "🗑️ Full Reset",
+                     "description": "Delete everything & start onboarding over"},
+                ]},
+            ],
         )]
 
     # ─────────────────────────────────────────────────────────

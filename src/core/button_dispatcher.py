@@ -125,6 +125,17 @@ class ButtonDispatcher:
             except Exception:
                 pass
 
+        # ── Telegram: grouped, tap-first Settings home (sec_settings). Runs
+        # BEFORE the industry handler so Telegram gets the new grouped screen;
+        # WhatsApp keeps the industry's classic settings list. ──
+        if bid in ("sec_settings", "menu_settings") and r.settings is not None:
+            try:
+                from services.messaging_client import platform_for_user
+                if platform_for_user(phone_number) == "telegram":
+                    return r.settings.show_settings(phone_number)
+            except Exception:
+                pass
+
         # ── Industry-specific buttons ──
         industry = r._get_industry_handler(phone_number)
         if industry:

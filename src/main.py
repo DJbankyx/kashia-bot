@@ -113,6 +113,7 @@ class KashiaBot:
         self.router.settings = SettingsHandler(
             self.router.session, self.db, self.tier_manager
         )
+        self.router.settings.router = self.router  # for the grouped-settings WhatsApp fallback
         self.router.production = ProductionHandler(self.router.session, self.db)
         self.router.recurring = RecurringHandler(self.router.session, self.db)
         self.router.quotes = QuotesHandler(self.router.session, self.db)

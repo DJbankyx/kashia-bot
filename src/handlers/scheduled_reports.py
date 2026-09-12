@@ -41,7 +41,7 @@ def lambda_handler(event, context):
         # so Telegram users get their reports on Telegram.
         whatsapp = WhatsAppClient()
 
-        active_users = get_active_users(db)
+        active_users = get_active_users(db, report_type)
 
         if not active_users:
             logger.info("No active users to notify.")
@@ -343,8 +343,13 @@ def build_inactivity_alert(db, phone, now):
 # HELPERS
 # ============================================
 
-def get_active_users(db):
-    """Get all users who have onboarded and have notifications enabled."""
+def get_active_users(db, report_type="daily"):
+    """Get all users who have onboarded and have this report's notifications on.
+
+    Honors the SPLIT toggles: `notify_daily` for daily runs, `notify_weekly` for
+    weekly runs (each defaults ON). Falls back to the legacy master
+    `notifications_enabled` flag (if a user explicitly set that to False, respect
+    it for both)."""
     try:
         response = db.users.scan(
             FilterExpression='attribute_exists(phone_number) AND onboarding_complete = :true',
@@ -371,9 +376,16 @@ def get_active_users(db):
             if not phone:
                 continue
 
-            # Check notification preference (default: enabled)
-            notifications = user.get('notifications_enabled', True)
-            if notifications is False or notifications == 'false':
+            # Master switch (legacy): if explicitly off, skip everything.
+            master = user.get('notifications_enabled', True)
+            if master is False or master == 'false':
+                continue
+
+            # Per-report toggle (settings rebuild): daily runs honor
+            # notify_daily, weekly runs honor notify_weekly. Each defaults ON.
+            flag = 'notify_weekly' if report_type == 'weekly' else 'notify_daily'
+            pref = user.get(flag, True)
+            if pref is False or pref == 'false':
                 continue
 
             # Check for recent activity (transactions in last 30 days)
