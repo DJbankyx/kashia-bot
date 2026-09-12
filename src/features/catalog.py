@@ -1472,9 +1472,12 @@ class CatalogHandler:
             lines.append(f"✅ Added *{len(added)}* product{'s' if len(added) != 1 else ''}: {', '.join(added)}")
         if already_exists:
             lines.append(f"ℹ️ Already existed: {', '.join(already_exists)}")
-        lines.append("\n_Add more, or tap Done._")
+        lines.append("\n💬 *Type more names* to keep adding, or tap a button below.")
 
+        # Explicit choices: "Add More" re-shows the prompt; "Done" finishes.
+        # (Typing more names still works too — the state stays in add mode.)
         return [button_response("\n".join(lines), [
+            {"id": "cat_add", "title": "➕ Add More"},
             {"id": "cat_cancel", "title": "✅ Done"},
         ])]
 
