@@ -53,6 +53,8 @@ class TradingIndustry(BaseIndustry):
                         {"id": "record_purchase", "title": "📦 Record Purchase", "description": "Bought stock/goods"},
                         {"id": "record_expense", "title": "💸 Record Expense", "description": "Rent, transport, bills"},
                         {"id": "menu_dashboard", "title": "📊 Dashboard & Reports", "description": "Sales, profit, margins at a glance"},
+                        {"id": "dash_drill_ai_month", "title": "🧠 Smart Insights", "description": "AI reads your numbers (Pro)"},
+                        {"id": "menu_billdoc", "title": "🧾 Bill a Customer", "description": "Combine sales into one invoice/receipt"},
                     ]
                 },
                 {
