@@ -107,7 +107,7 @@ class ExportHandler:
         if button_id.startswith("doc_statement_"):
             # doc_statement_<period> — generate for the chosen range (PIN-gated).
             period = button_id[len("doc_statement_"):] or "month"
-            if period not in ("today", "week", "month", "last_month"):
+            if period not in ("today", "week", "month", "last_month", "quarter", "year"):
                 period = "month"
             pin_check = requires_pin(self.db, self.session, phone_number, "doc_statement")
             if pin_check:
@@ -171,6 +171,8 @@ class ExportHandler:
             {"id": "doc_statement_week", "title": "📆 This Week"},
             {"id": "doc_statement_month", "title": "🗓️ This Month"},
             {"id": "doc_statement_last_month", "title": "📅 Last Month"},
+            {"id": "doc_statement_quarter", "title": "📊 This Quarter"},
+            {"id": "doc_statement_year", "title": "📈 This Year"},
             {"id": "menu_export", "title": "← Documents"},
         ]
         return [list_response(

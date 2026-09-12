@@ -280,6 +280,45 @@ class KashiaBot:
                 resolved.extend(export_responses)
                 continue
 
+            if resp.get("type") == "__EXPORT_FILTERED__":
+                # Export a period/date-scoped transaction LIST (sales/purchases/
+                # expenses) as Excel or PDF — wires the existing filtered
+                # exporter to the Records view. PIN-gated like other data
+                # exports; the PDF form is paywalled (Basic/Pro).
+                content = resp.get("content", {}) or {}
+                fmt = content.get("fmt", "excel")
+                # PDF gate (tier) — free users get an upgrade prompt, never a
+                # file. check_can_generate_pdf returns (allowed, message).
+                if fmt == "pdf":
+                    try:
+                        allowed, gate_msg = self.tier_manager.check_can_generate_pdf(
+                            phone_number)
+                        if not allowed:
+                            resolved.append({"type": "text", "content": gate_msg or
+                                "PDF export is a Basic/Pro feature."})
+                            continue
+                    except Exception:
+                        pass  # gate failure never blocks generation
+                # PIN gate (consistent with other data exports; "export" is a
+                # protected action, so a PIN is asked only when the user set one).
+                try:
+                    from core.pin_guard import requires_pin
+                    pin_check = requires_pin(self.db, self.session, phone_number,
+                                             "export")
+                    if pin_check:
+                        resolved.extend(pin_check)
+                        continue
+                except Exception:
+                    pass
+                export_responses = self.export_service.handle_filtered_export(
+                    phone_number,
+                    content.get("filter_type", "my_sales"),
+                    content.get("start"), content.get("end"),
+                    content.get("label", ""), fmt,
+                )
+                resolved.extend(export_responses)
+                continue
+
             if resp.get("type") == "__EXPORT_PDF_STATEMENT__":
                 # Generate and send PDF financial statement for the requested
                 # period (carried from the dashboard/report), defaulting to month.

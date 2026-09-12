@@ -220,6 +220,10 @@ class Router:
         if state == states.BILLDOC_SELECT and getattr(self, "billdoc", None) is not None:
             return self.billdoc.handle(phone_number, text_stripped, session)
 
+        # ── Records: typed date / range for the period-scoped record list ──
+        if state == states.RECORDS_DATE:
+            return self.reports.handle_records_date(phone_number, text_stripped, session)
+
         # ═══════════════════════════════════════════════════════
         # 5. IDLE STATE — the default
         # ═══════════════════════════════════════════════════════

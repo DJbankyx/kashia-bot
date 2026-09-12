@@ -584,14 +584,18 @@ class PDFGenerator:
         try:
             now = datetime.now()
 
-            if period == "month":
+            # Resolve the window via the SHARED _date_range so EVERY period
+            # (today/week/month/last_month/quarter/year) is correct — the old
+            # code only handled "month" and silently made everything else the
+            # whole year, so the picker was misleading.
+            try:
+                from features.reports import _date_range
+                start_date, end_date, period_label = _date_range(period)
+            except Exception:
+                # Safe fallback: this month.
                 start_date = now.strftime('%Y-%m-01')
                 end_date = now.strftime('%Y-%m-%d')
                 period_label = now.strftime('%B %Y')
-            else:
-                start_date = now.strftime('%Y-01-01')
-                end_date = now.strftime('%Y-%m-%d')
-                period_label = f"Year {now.year}"
 
             transactions = self.db.get_transactions_by_period(phone_number, start_date, end_date)
 

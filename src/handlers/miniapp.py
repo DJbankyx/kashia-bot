@@ -173,6 +173,10 @@ def lambda_handler(event, context):
             return _inventory(event, user_id)
         if method == "GET" and path.endswith("/app/api/contacts"):
             return _contacts(event, user_id)
+        if method == "GET" and path.endswith("/app/api/records"):
+            return _records(event, user_id)
+        if method == "GET" and path.endswith("/app/api/export"):
+            return _export(event, user_id)
         if method == "GET" and path.endswith("/app/api/charts"):
             return _charts(event, user_id)
         if method == "GET" and path.endswith("/app/api/tree"):
@@ -568,6 +572,135 @@ def _contacts(event, user_id: str):
     })
 
 
+def _records(event, user_id: str):
+    """Period/date-scoped transaction LIST for the Records view. Same window
+    resolver as the dashboard (_resolve_range: named period OR custom from/to,
+    single day when to==from), filtered by type. Paginated (limit/offset).
+    Returns rows the UI renders + a running total for the whole (unpaged) set."""
+    from services.database import Database
+    from utils.parser import is_bad_vendor
+
+    qs = event.get("queryStringParameters") or {}
+    tx_type = (qs.get("type") or "sale").lower()
+    if tx_type not in ("sale", "purchase", "expense"):
+        tx_type = "sale"
+    period = (qs.get("period") or "month").lower()
+    if period not in VALID_PERIODS:
+        period = "month"
+    try:
+        limit = max(1, min(200, int(qs.get("limit") or 50)))
+    except (TypeError, ValueError):
+        limit = 50
+    try:
+        offset = max(0, int(qs.get("offset") or 0))
+    except (TypeError, ValueError):
+        offset = 0
+
+    start, end, label = _resolve_range(qs, period)
+
+    db = Database()
+    all_txns = db.get_transactions_by_period(user_id, start, end) or []
+    rows = [t for t in all_txns if t.get("type") == tx_type]
+    # Newest first.
+    rows.sort(key=lambda t: t.get("created_at", t.get("date", "")), reverse=True)
+
+    total = sum(int(t.get("amount", 0) or 0) for t in rows)
+    count = len(rows)
+    page = rows[offset:offset + limit]
+
+    def _desc(t):
+        item = (t.get("item_name") or "").strip()
+        brand = (t.get("brand") or "").strip()
+        if item and brand and not item.lower().startswith(brand.lower()):
+            return (brand + " " + item)[:40]
+        if item:
+            return item[:40]
+        return (t.get("description") or t.get("raw_text") or "Transaction")[:40]
+
+    out = []
+    for t in page:
+        vendor = t.get("vendor", "") or ""
+        if is_bad_vendor(vendor):
+            vendor = ""
+        out.append({
+            "desc": _desc(t),
+            "amount": int(t.get("amount", 0) or 0),
+            "vendor": vendor,
+            "date": t.get("date", ""),
+            "qty": t.get("quantity", ""),
+        })
+
+    return _json(200, {
+        "type": tx_type, "period": period, "period_label": label,
+        "total": total, "count": count,
+        "offset": offset, "limit": limit,
+        "has_more": (offset + limit) < count,
+        "records": out,
+    })
+
+
+def _export(event, user_id: str):
+    """Build a period/date-scoped, per-type transaction-LIST export (Excel or
+    PDF) and return a presigned download URL. Reuses the SAME exporter as chat
+    (export_service.handle_filtered_export) + the SAME window resolver, so the
+    file matches the Records view. Returns {ok, url, filename} — the browser
+    opens/downloads the URL."""
+    from services.database import Database
+    from services.export_service import ExportService
+
+    qs = event.get("queryStringParameters") or {}
+    tx_type = (qs.get("type") or "sale").lower()
+    if tx_type not in ("sale", "purchase", "expense"):
+        tx_type = "sale"
+    period = (qs.get("period") or "month").lower()
+    if period not in VALID_PERIODS:
+        period = "month"
+    fmt = (qs.get("fmt") or "excel").lower()
+    if fmt not in ("excel", "pdf"):
+        fmt = "excel"
+
+    # PDF is a paid feature (mirror chat). Excel stays open.
+    if fmt == "pdf":
+        try:
+            from services.tier_manager import TierManager
+            allowed, msg = TierManager(database=Database()).check_can_generate_pdf(user_id)
+            if not allowed:
+                return _json(403, {"error": "pdf_paywalled",
+                                   "message": msg or "PDF export is a Basic/Pro feature."})
+        except Exception:
+            pass
+
+    start, end, label = _resolve_range(qs, period)
+    filter_map = {"sale": "my_sales", "purchase": "my_purchases",
+                  "expense": "my_expenses"}
+
+    db = Database()
+    svc = ExportService(database=db)
+    try:
+        # Reuse the SAME exporter as chat. It BUILDS the file and DELIVERS it to
+        # the user's Telegram chat (the file lands where they can save/forward
+        # it) — cleaner + more reliable than handing a raw presigned S3 URL to
+        # an in-app browser. The app just confirms it was sent.
+        resp = svc.handle_filtered_export(
+            user_id, filter_map.get(tx_type, "my_sales"),
+            start, end, label, fmt)
+        # handle_filtered_export returns a chat response list; surface a concise
+        # status to the app.
+        txt = ""
+        if isinstance(resp, list) and resp:
+            txt = (resp[0].get("content") or "")
+        empty = "No " in txt and "to export" in txt
+        return _json(200, {
+            "ok": not empty,
+            "delivered_to_chat": not empty,
+            "empty": empty,
+            "message": txt or ("Your %s export was sent to your chat." % tx_type),
+        })
+    except Exception as e:
+        logger.error(f"miniapp export failed: {e}")
+        return _json(500, {"error": "export failed"})
+
+
 def _debt_payment_write(event, user_id: str):
     """Record a debt payment from the app — a COLLECTION (a customer repays me)
     or a REPAYMENT (I pay a supplier). Mirrors the chat debt board EXACTLY:
@@ -804,6 +937,7 @@ _PAGE_HTML = """<!doctype html>
     <div class="tab active" id="tab-dash" onclick="showTab('dash')">📊 Dashboard</div>
     <div class="tab" id="tab-cat" onclick="showTab('cat')">📦 Catalog</div>
     <div class="tab" id="tab-crm" onclick="showTab('crm')">👥 Customers</div>
+    <div class="tab" id="tab-rec" onclick="showTab('rec')">📋 Records</div>
   </div>
   <button class="btn save" id="recordBtn" style="width:100%;margin-bottom:12px" onclick="openRecord()">➕ Record a transaction</button>
 
@@ -866,6 +1000,28 @@ _PAGE_HTML = """<!doctype html>
     <input class="search" id="crmsearch" placeholder="Search people..." oninput="renderCrm()">
     <div id="crmlists"><div class="muted">Loading...</div></div>
     <div id="crmmsg" class="muted"></div>
+  </div>
+
+  <div id="view-rec" class="hidden">
+    <div class="chips" id="rec-type-tabs">
+      <div class="chip active" data-rt="sale" onclick="recSetType('sale')">💰 Sales</div>
+      <div class="chip" data-rt="purchase" onclick="recSetType('purchase')">📦 Purchases</div>
+      <div class="chip" data-rt="expense" onclick="recSetType('expense')">💸 Expenses</div>
+    </div>
+    <div class="chips" id="rec-chips"></div>
+    <div class="datebox hidden" id="rec-datebox">
+      <div class="df"><label>From</label><input type="date" id="rec-date-from"></div>
+      <div class="df"><label>To (blank = single day)</label><input type="date" id="rec-date-to"></div>
+      <button class="apply" onclick="recApplyDate()">Apply</button>
+      <div class="sheeterr" id="rec-date-err" style="flex-basis:100%"></div>
+    </div>
+    <div class="card"><div class="k" id="rec-total-k">Total</div><div class="v" id="rec-total">—</div></div>
+    <div class="row">
+      <button class="btn save" style="flex:1" onclick="recExport('excel')">⬇️ Excel</button>
+      <button class="btn cancel" style="flex:1" onclick="recExport('pdf')">🧾 PDF</button>
+    </div>
+    <div id="rec-list"><div class="muted">Loading...</div></div>
+    <div id="rec-msg" class="muted"></div>
   </div>
 
   <!-- Debt-payment sheet (CRM write) -->
@@ -1015,6 +1171,11 @@ _PAGE_HTML = """<!doctype html>
   // Custom date range (single day or range). When set, overrides curPeriod.
   var curFrom = "";
   var curTo = "";
+  // Records tab state (independent period + range + type).
+  var recType = "sale";
+  var recPeriod = "month";
+  var recFrom = "";
+  var recTo = "";
 
   // Web page (not a PDF) so the ₦ glyph is safe and reads cleaner than "NGN".
   function naira(n) { return "\u20a6" + Number(n||0).toLocaleString("en-NG"); }
@@ -1051,15 +1212,19 @@ _PAGE_HTML = """<!doctype html>
     document.getElementById("tab-dash").classList.toggle("active", which === "dash");
     document.getElementById("tab-cat").classList.toggle("active", which === "cat");
     document.getElementById("tab-crm").classList.toggle("active", which === "crm");
+    document.getElementById("tab-rec").classList.toggle("active", which === "rec");
     document.getElementById("view-dash").classList.toggle("hidden", which !== "dash");
     document.getElementById("view-cat").classList.toggle("hidden", which !== "cat");
     document.getElementById("view-crm").classList.toggle("hidden", which !== "crm");
+    document.getElementById("view-rec").classList.toggle("hidden", which !== "rec");
     // Catalog is the single product tab (Inventory merged in). Load products the
     // first time it's opened, then render.
     if (which === "cat") {
       if (!invLoaded) { loadInventory(); } else { renderCatalog(); }
     } else if (which === "crm") {
       if (!crmLoaded) { loadCrm(); } else { renderCrm(); }
+    } else if (which === "rec") {
+      recRenderChips(); loadRecords();
     }
   };
 
@@ -1380,6 +1545,109 @@ _PAGE_HTML = """<!doctype html>
       .catch(function (e) {
         btn.disabled = false;
         err.textContent = e.message || "Could not record the payment.";
+      });
+  };
+
+  // ── Records tab: period/date-scoped transaction list + export ──
+  var REC_PERIODS = [["today","Today"],["week","Week"],["month","Month"],
+                     ["last_month","Last month"],["quarter","Quarter"],["year","Year"]];
+  window.recSetType = function (t) {
+    recType = t;
+    var tabs = document.getElementById("rec-type-tabs").children;
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].classList.toggle("active", tabs[i].getAttribute("data-rt") === t);
+    }
+    var k = document.getElementById("rec-total-k");
+    k.textContent = "Total " + (t === "sale" ? "sales" : (t === "purchase" ? "purchases" : "expenses"));
+    loadRecords();
+  };
+  function recRenderChips() {
+    var c = document.getElementById("rec-chips");
+    c.innerHTML = "";
+    REC_PERIODS.forEach(function (p) {
+      var el = document.createElement("div");
+      el.className = "chip" + (!recFrom && p[0] === recPeriod ? " active" : "");
+      el.textContent = p[1];
+      el.onclick = function () {
+        recFrom = ""; recTo = ""; recPeriod = p[0];
+        document.getElementById("rec-datebox").classList.add("hidden");
+        recRenderChips(); loadRecords();
+      };
+      c.appendChild(el);
+    });
+    var pick = document.createElement("div");
+    pick.className = "chip" + (recFrom ? " active" : "");
+    pick.textContent = "📅 Pick date";
+    pick.onclick = function () {
+      document.getElementById("rec-datebox").classList.toggle("hidden");
+    };
+    c.appendChild(pick);
+  }
+  window.recApplyDate = function () {
+    var f = document.getElementById("rec-date-from").value;
+    var t = document.getElementById("rec-date-to").value;
+    var err = document.getElementById("rec-date-err");
+    if (!f) { err.textContent = "Pick at least a start date."; return; }
+    err.textContent = "";
+    recFrom = f; recTo = t || f;
+    recRenderChips(); loadRecords();
+  };
+  function recQuery() {
+    var q = "type=" + recType;
+    if (recFrom) {
+      q += "&from=" + encodeURIComponent(recFrom) + "&to=" + encodeURIComponent(recTo || recFrom);
+    } else {
+      q += "&period=" + recPeriod;
+    }
+    return q;
+  }
+  function loadRecords() {
+    document.getElementById("rec-msg").textContent = "";
+    document.getElementById("rec-list").innerHTML = '<div class="muted">Loading...</div>';
+    api("api/records?" + recQuery())
+      .then(function (d) { renderRecords(d); })
+      .catch(function (e) {
+        document.getElementById("rec-list").innerHTML =
+          '<span class="err">' + (e.message || "Could not load") + '</span>';
+      });
+  }
+  function renderRecords(d) {
+    document.getElementById("rec-total").textContent = naira(d.total || 0);
+    var list = document.getElementById("rec-list");
+    var rows = d.records || [];
+    if (!rows.length) {
+      list.innerHTML = '<div class="muted">No records in ' + escapeHtml(d.period_label || "this period") + '.</div>';
+      document.getElementById("rec-msg").textContent = "";
+      return;
+    }
+    var card = document.createElement("div");
+    card.className = "card"; card.style.padding = "4px 0";
+    rows.forEach(function (t) {
+      var meta = [t.date || ""];
+      if (t.vendor) meta.push(t.vendor);
+      var div = document.createElement("div");
+      div.className = "item";
+      div.innerHTML = '<div><div class="name">' + escapeHtml(t.desc || "?") +
+        '</div><div class="meta">' + escapeHtml(meta.join(" · ")) + '</div></div>' +
+        '<div class="right"><div class="stock">' + naira(t.amount || 0) + '</div></div>';
+      card.appendChild(div);
+    });
+    list.innerHTML = "";
+    list.appendChild(card);
+    var note = d.count + " record(s) · " + (d.period_label || "");
+    if (d.has_more) note += " · showing " + rows.length + " of " + d.count + " (narrow the date or export for all)";
+    document.getElementById("rec-msg").textContent = note;
+  }
+  window.recExport = function (fmt) {
+    var msg = document.getElementById("rec-msg");
+    msg.textContent = "Preparing " + fmt.toUpperCase() + " export...";
+    api("api/export?" + recQuery() + "&fmt=" + fmt)
+      .then(function (d) {
+        msg.textContent = d.message ||
+          (d.ok ? "Export sent to your chat." : "Nothing to export.");
+      })
+      .catch(function (e) {
+        msg.textContent = e.message || "Export failed.";
       });
   };
 

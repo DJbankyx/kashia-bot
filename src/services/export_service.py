@@ -426,23 +426,21 @@ class ExportService:
         try:
             transactions = self.db.get_transactions_by_period(phone_number, start_date, end_date)
 
-            # Apply same filters as the report
-            COGS_CATEGORIES = ['Goods & Stock', 'Production & Manufacturing', 'Service Costs']
-
+            # Filter by transaction TYPE so the exported rows EXACTLY match the
+            # Records view (reports._tab_report filters by type). ('income' is a
+            # legacy alias for 'sale'.) A debt-repayment sale row is excluded
+            # from Sales so it doesn't double-count as revenue in the export.
             if filter_type == 'my_sales':
                 filtered = [tx for tx in transactions
                            if tx.get('type') in ('income', 'sale')
-                           and 'Debt payment' not in tx.get('description', '')]
+                           and 'Debt payment' not in tx.get('description', '')
+                           and 'Debt repayment' not in tx.get('description', '')]
                 label = 'Sales'
             elif filter_type == 'my_purchases':
-                filtered = [tx for tx in transactions
-                           if tx.get('type') in ('expense', 'purchase')
-                           and tx.get('category', '') in COGS_CATEGORIES]
+                filtered = [tx for tx in transactions if tx.get('type') == 'purchase']
                 label = 'Purchases'
             elif filter_type == 'my_expenses':
-                filtered = [tx for tx in transactions
-                           if tx.get('type') == 'expense'
-                           and tx.get('category', '') not in COGS_CATEGORIES]
+                filtered = [tx for tx in transactions if tx.get('type') == 'expense']
                 label = 'Expenses'
             else:
                 filtered = transactions

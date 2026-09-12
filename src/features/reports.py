@@ -97,6 +97,24 @@ class ReportsHandler:
         if button_id == "biz_reports":
             return self.show(phone_number)
 
+        # ── Record-list period toggle (rec_<period>) — reuses the current tab
+        #    stashed in context, re-renders the list for the new period. ──
+        if button_id.startswith("rec_") and button_id[len("rec_"):] in (
+                "today", "week", "month", "last_month", "quarter", "year"):
+            ctx = session.get("context", {}) if isinstance(session, dict) else {}
+            tab = ctx.get("rec_tab", "sale")
+            return self._tab_report(phone_number, tab,
+                                    period=button_id[len("rec_"):])
+
+        # ── Pick a date / range for the record list ──
+        if button_id == "rec_pickdate":
+            return self._start_pick_date(phone_number, session)
+
+        # ── Export the CURRENT record view (type + range) as Excel / PDF ──
+        if button_id in ("rec_export_excel", "rec_export_pdf"):
+            fmt = "excel" if button_id.endswith("excel") else "pdf"
+            return self._export_records(phone_number, session, fmt)
+
         # ── Export from report (period stored in session context) ──
         if button_id.startswith("report_export_"):
             period = button_id.replace("report_export_", "")
@@ -718,64 +736,87 @@ class ReportsHandler:
     # BUSINESS TABS — Sales / Purchases / Expenses
     # ─────────────────────────────────────────────────────────
 
-    def _tab_report(self, phone_number: str, tab_type: str) -> list:
-        """
-        Filtered view for one tab — Sales, Purchases, or Expenses.
-        Shows this month by default with period switcher buttons.
-        """
-        now = datetime.now()
-        start_date = now.strftime("%Y-%m-01")
-        end_date   = now.strftime("%Y-%m-%d")
-        label      = now.strftime("%B %Y")
+    # Max transaction rows shown inline before we nudge to narrow/export.
+    _RECORDS_MAX_ROWS = 25
+
+    def _records_range(self, period: str, start: str = "", end: str = ""):
+        """Resolve (start, end, label) for the record list. An explicit
+        start/end (single day when equal) wins; else the named period via the
+        shared _date_range. Single source of truth for the record-list window."""
+        if start and end:
+            try:
+                s, e = (start, end) if start <= end else (end, start)
+                from datetime import datetime as _dt
+                def _pretty(d):
+                    return _dt.strptime(d, "%Y-%m-%d").strftime("%-d %b %Y")
+                lbl = _pretty(s) if s == e else (_pretty(s) + " – " + _pretty(e))
+                return s, e, lbl
+            except Exception:
+                pass
+        return _date_range(period if period in
+                           ("today", "week", "month", "last_month", "quarter", "year")
+                           else "month")
+
+    def _tab_report(self, phone_number: str, tab_type: str,
+                    period: str = "month", start: str = "", end: str = "") -> list:
+        """Filtered record list for one tab — Sales, Purchases, or Expenses —
+        for ANY period, single day, or custom range. Telegram gets a period
+        toggle + pick-a-date + export actions; the window is resolved by
+        _records_range (shared). WhatsApp gets the same content (buttons render
+        as its native list)."""
+        start_date, end_date, label = self._records_range(period, start, end)
 
         all_txns = self.db.get_transactions_by_period(
             phone_number, start_date, end_date
         ) or []
 
-        # Filter
         if tab_type == "sale":
             filtered = [t for t in all_txns if t.get("type") == "sale"]
-            emoji    = "💰"
-            tab_name = "Sales"
+            emoji, tab_name = "💰", "Sales"
         elif tab_type == "purchase":
             filtered = [t for t in all_txns if t.get("type") == "purchase"]
-            emoji    = "📦"
-            tab_name = "Purchases"
+            emoji, tab_name = "📦", "Purchases"
         else:  # expense
             filtered = [t for t in all_txns if t.get("type") == "expense"]
-            emoji    = "💸"
-            tab_name = "Expenses"
+            emoji, tab_name = "💸", "Expenses"
+
+        # Stash the current view so period taps / pick-a-date / export know the
+        # type and range without re-encoding it all into every button id.
+        self.session.update_context(phone_number, {
+            "rec_tab": tab_type, "rec_period": period,
+            "rec_start": start_date if (start and end) else "",
+            "rec_end": end_date if (start and end) else "",
+        })
 
         if not filtered:
             return [
                 text_response(
                     f"{emoji} *{tab_name} — {label}*\n\n"
-                    f"No {tab_name.lower()} recorded this month.\n\n"
-                    f"_Record a transaction from the main menu._"
-                )
+                    f"No {tab_name.lower()} in this period.\n\n"
+                    f"_Try another period below, or record one from the menu._"
+                ),
+                self._records_actions(tab_type, has_rows=False),
             ]
 
-        total   = _sum(filtered)
-        count   = len(filtered)
-        avg     = total / count if count > 0 else 0
+        total = _sum(filtered)
+        count = len(filtered)
+        avg   = total / count if count > 0 else 0
 
-        # Header
         lines = [
             f"{emoji} *{tab_name} — {label}*",
-            f"",
+            "",
             f"Total:    {format_amount(total)}",
             f"Count:    {count} transaction{'s' if count != 1 else ''}",
             f"Average:  {format_amount(avg)}",
-            f"",
-            f"*Records:*",
+            "",
+            "*Records:*",
         ]
 
-        # List each transaction — newest first, max 15
         sorted_txns = sorted(
             filtered,
             key=lambda t: t.get("created_at", t.get("date", "")),
             reverse=True
-        )[:15]
+        )[:self._RECORDS_MAX_ROWS]
 
         for t in sorted_txns:
             desc    = _clean_desc(t)
@@ -786,23 +827,107 @@ class ReportsHandler:
             vendor_str = f" · {vendor}" if vendor else ""
             lines.append(f"• {desc}{vendor_str} — {amt}  _{date_s}_")
 
-        if count > 15:
-            lines.append(f"\n_...and {count - 15} more. Export for full list._")
-
-        # Map tab_type to edit button ID
-        edit_btn_id = f"report_edit_{tab_type}"
+        if count > self._RECORDS_MAX_ROWS:
+            lines.append(
+                f"\n_...and {count - self._RECORDS_MAX_ROWS} more. Narrow the "
+                f"period or Export for the full list._")
 
         return [
             text_response("\n".join(lines)),
-            button_response(
-                "Actions:",
-                [
-                    {"id": edit_btn_id,             "title": "✏️ Edit Records"},
-                    {"id": "report_month",          "title": "🗓️ Full P&L"},
-                    {"id": "menu_home",             "title": "☰ Menu"},
-                ]
-            )
+            self._records_actions(tab_type, has_rows=True),
         ]
+
+    def _records_actions(self, tab_type: str, has_rows: bool):
+        """The action card under a record list: period toggle + pick-a-date +
+        (when there are rows) export + edit. Rendered as a tap-first grid on
+        Telegram; a native list on WhatsApp."""
+        rows = [
+            {"id": "rec_today",      "title": "📅 Today"},
+            {"id": "rec_week",       "title": "📆 Week"},
+            {"id": "rec_month",      "title": "🗓️ Month"},
+            {"id": "rec_last_month", "title": "📅 Last month"},
+            {"id": "rec_quarter",    "title": "📊 Quarter"},
+            {"id": "rec_year",       "title": "📈 Year"},
+            {"id": "rec_pickdate",   "title": "📅 Pick a date"},
+        ]
+        if has_rows:
+            rows.append({"id": "rec_export_excel", "title": "⬇️ Export Excel"})
+            rows.append({"id": "rec_export_pdf",   "title": "🧾 Export PDF"})
+            rows.append({"id": f"report_edit_{tab_type}", "title": "✏️ Edit Records"})
+        rows.append({"id": "menu_home", "title": "☰ Menu"})
+        return list_response(
+            header="Records", body="Choose a period, pick a date, or export.",
+            button_text="Select",
+            sections=[{"title": "Period & actions", "rows": rows}],
+            tap_first=True,
+        )
+
+    def _start_pick_date(self, phone_number: str, session: dict) -> list:
+        """Prompt for a single date or a range, then re-render the list for it."""
+        from core import states
+        ctx = session.get("context", {}) if isinstance(session, dict) else {}
+        # Keep the current tab so the typed-date handler knows which records.
+        self.session.save(phone_number, states.RECORDS_DATE, {
+            "rec_tab": ctx.get("rec_tab", "sale"),
+        })
+        return [text_response(
+            "📅 *Pick a date*\n\n"
+            "Type a single day:  `2026-09-03`\n"
+            "…or a range:  `2026-09-01 to 2026-09-15`\n\n"
+            "_Type *back* to cancel._"
+        )]
+
+    def handle_records_date(self, phone_number: str, text: str, session: dict) -> list:
+        """Parse a typed date / range from the pick-a-date prompt, then show the
+        record list for that window. Accepts 'YYYY-MM-DD' (single day) or
+        'YYYY-MM-DD to YYYY-MM-DD' (range)."""
+        import re
+        from core import states
+        ctx = session.get("context", {}) if isinstance(session, dict) else {}
+        tab = ctx.get("rec_tab", "sale")
+        t = (text or "").strip().lower()
+        if t in ("back", "cancel", "menu"):
+            self.session.reset(phone_number)
+            return self._tab_report(phone_number, tab)
+
+        dates = re.findall(r"\d{4}-\d{2}-\d{2}", text or "")
+        # Validate each parsed date is a real calendar date.
+        good = []
+        for d in dates:
+            try:
+                datetime.strptime(d, "%Y-%m-%d")
+                good.append(d)
+            except ValueError:
+                pass
+        if not good:
+            return [text_response(
+                "❌ I couldn't read that date. Use *YYYY-MM-DD* "
+                "(e.g. 2026-09-03), or a range like "
+                "*2026-09-01 to 2026-09-15*. Type *back* to cancel.")]
+
+        start = good[0]
+        end = good[1] if len(good) > 1 else good[0]  # single day when one date
+        self.session.reset(phone_number)
+        return self._tab_report(phone_number, tab, period="custom",
+                                start=start, end=end)
+
+    def _export_records(self, phone_number: str, session: dict, fmt: str) -> list:
+        """Export the CURRENT record view (type + resolved range) to Excel/PDF.
+        Emits a marker resolved in main._resolve_markers → the existing
+        export_service.handle_filtered_export (which builds the filtered tx list
+        file). Range comes from the stashed view context."""
+        ctx = session.get("context", {}) if isinstance(session, dict) else {}
+        tab = ctx.get("rec_tab", "sale")
+        period = ctx.get("rec_period", "month")
+        start = ctx.get("rec_start", "")
+        end = ctx.get("rec_end", "")
+        s, e, label = self._records_range(period, start, end)
+        filter_map = {"sale": "my_sales", "purchase": "my_purchases",
+                      "expense": "my_expenses"}
+        return [{"type": "__EXPORT_FILTERED__", "content": {
+            "filter_type": filter_map.get(tab, "my_sales"),
+            "start": s, "end": e, "label": label, "fmt": fmt,
+        }}]
 
     # ─────────────────────────────────────────────────────────
     # REPORT B — True Margin (landing cost based)

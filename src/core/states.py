@@ -29,6 +29,9 @@ CRM_HINT = "CRM_HINT"
 # ─── Post-purchase cost choice (Use new / Keep old / Weighted avg) ───
 COST_CHOICE = "COST_CHOICE"
 
+# ─── Records: typed date / range for the period-scoped record list ───
+RECORDS_DATE = "RECORDS_DATE"
+
 # ─── Export / Documents ───
 EXPORTING = "EXPORTING"
 INVOICING = "INVOICING"
@@ -101,4 +104,5 @@ EXEMPT_STATES = {
     LANDING_COST, PAYMENT_METHOD, PRODUCTION_RECORDING, RECURRING_SERVICES,
     VARIANT_SELECTION, TG_FASTENTRY, INVOICE_BUILDER,
     SCAN_CONFIRM, RETURN_RECORDING, BILLDOC_SELECT,
+    RECORDS_DATE,
 }
