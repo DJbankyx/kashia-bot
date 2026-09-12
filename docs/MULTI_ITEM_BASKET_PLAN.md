@@ -8,6 +8,26 @@ and the single-item flow stay exactly as they are.
 
 ---
 
+## ⏸️ STATUS: DEFERRED (owner decision, 2026-09-11) — plan kept, NOT built
+On review the owner chose to skip B for now. Rationale (agreed):
+- The original DOCUMENT pain is ALREADY solved two other ways: the multi-item
+  CHAT parse ("sold 2 shoes and 3 bags to Sandra 36k" → separate lines) and
+  Bill-a-Customer (features/billdoc.py — pick several existing sales → ONE
+  invoice/receipt). So combining items into one document is covered TODAY.
+- B is a data-ENTRY convenience (basket at sale time), not a missing capability.
+  For a car dealership, multi-item single-basket sales are rare.
+- B is the highest-RISK item on the backlog (it's the one change that most
+  directly touches the money/save path and adds state to the most-used tidy box)
+  for the least incremental value right now.
+This doc is kept intact and BUILD-READY. Revisit only if real users regularly
+ring up multi-item baskets at sale time (e.g. selling parts/accessories
+alongside vehicles). If revived, follow B1→B2→B3 with heavy verification and
+resolve the 3 decisions below (esp. part-payment across a basket).
+
+_Everything below is the original build plan, unchanged._
+
+---
+
 ## What exists today (grounded in tg_fastentry.py)
 - The tidy-box is a step machine on an `fx` session dict (state `TG_FASTENTRY`):
   item pick → (variant drill) → qty → price/total → payment → who → confirm →
