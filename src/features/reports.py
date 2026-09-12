@@ -505,6 +505,7 @@ class ReportsHandler:
             {"id": f"dash_drill_expenses_{period}", "title": "💸 Expense breakdown"},
             {"id": f"dash_drill_position_{period}", "title": "🏦 Stock & who owes"},
             {"id": f"dash_drill_charts_{period}", "title": "📈 Charts"},
+            {"id": f"dash_drill_ai_{period}", "title": "🧠 Smart Insights"},
             {"id": f"report_pdf_{period}", "title": "📄 PDF report"},
             {"id": f"report_export_{period}", "title": "📎 Excel"},
             {"id": "menu_home", "title": "☰ Menu"},
@@ -545,6 +546,26 @@ class ReportsHandler:
                 sections=[{"title": "", "rows": back_rows}],
                 no_paginate=True,
             )]
+
+        # ── 🧠 Smart Insights (AI) — Pro-gated (build AI2) ──
+        if what == "ai":
+            from services.tier_manager import TierManager
+            allowed, msg = TierManager(database=self.db).check_can_use_insights(phone_number)
+            if not allowed:
+                # Upsell card with a real Subscribe CTA (into the S3 picker).
+                return [list_response(
+                    header="🧠 Smart Insights",
+                    body=msg,
+                    button_text="Upgrade",
+                    sections=[{"title": "", "rows": [
+                        {"id": "set_upgrade_pro", "title": "⭐ Go Pro"},
+                        {"id": "set_upgrade_basic", "title": "🚀 Go Basic"},
+                    ] + back_rows}],
+                    no_paginate=True,
+                )]
+            from services.ai_insights import AIInsights
+            text = AIInsights(self.db, self.session).smart_insights(phone_number, period)
+            return _drill_card(f"🧠 Smart Insights — {d['label']}", [text])
 
         # Drill bodies do NOT repeat the title (the list_response header carries
         # it) — keeps each card clean with no doubled heading.

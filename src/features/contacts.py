@@ -90,6 +90,9 @@ class ContactsHandler:
         if button_id == "crm_insights":
             return self._show_insights(phone_number)
 
+        if button_id == "crm_ai_insights":
+            return self._show_ai_insights(phone_number)
+
         # ── Contact profile tap (crm_view_[contact_id]) ──
         if button_id.startswith("crm_view_"):
             contact_id = button_id[9:]
@@ -1063,7 +1066,29 @@ class ContactsHandler:
         lines.append("━━━━━━━━━━━━━━━━━━━━")
         lines.append("_Record more transactions to improve these insights._")
 
-        return [text_response("\n".join(lines))]
+        out = [text_response("\n".join(lines))]
+        # Offer the AI Smart Insights upsell/entry on Telegram (Pro-gated when
+        # tapped). The basic insights above stay free for everyone.
+        if self._is_telegram(phone_number):
+            out.append(button_response(
+                "Want Kashia to read your numbers and tell you what to do?",
+                [{"id": "crm_ai_insights", "title": "🧠 Smart Insights (AI)"}]
+            ))
+        return out
+
+    def _show_ai_insights(self, phone_number: str) -> list:
+        """AI Smart Insights (Pro-gated). Reuses the shared AIInsights service —
+        same result as the dashboard's 🧠 drill."""
+        from services.tier_manager import TierManager
+        allowed, msg = TierManager(database=self.db).check_can_use_insights(phone_number)
+        if not allowed:
+            return [button_response(msg, [
+                {"id": "set_upgrade_pro", "title": "⭐ Go Pro"},
+                {"id": "set_upgrade_basic", "title": "🚀 Go Basic"},
+            ])]
+        from services.ai_insights import AIInsights
+        text = AIInsights(self.db, self.session).smart_insights(phone_number, "month")
+        return [text_response(text)]
 
 
 # ─────────────────────────────────────────────────────────

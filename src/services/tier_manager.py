@@ -188,6 +188,23 @@ class TierManager:
 
         return True, None
 
+    def check_can_use_insights(self, phone_number):
+        """Check if a user can use AI Smart Insights (Pro-only, via the
+        crm_insights tier flag). Returns (allowed, message_or_None). Mirrors the
+        PDF paywall — Free/Basic get an upgrade prompt."""
+        tier = self.get_user_tier(phone_number)
+        limits = self.get_tier_limits(tier)
+        if not limits.get('crm_insights'):
+            message = (
+                "🧠 *Smart Insights (AI) is a Pro feature.*\n\n"
+                "Upgrade to *Pro* (₦6,000/month) and Kashia will read your numbers "
+                "and tell you what's really going on — best/worst margins, cash to "
+                "chase, who's gone quiet, and what to do about it.\n\n"
+                "Tap below or type *UPGRADE* to see plans."
+            )
+            return False, message
+        return True, None
+
     def check_can_generate_pdf(self, phone_number):
         """
         Check if user can generate PDF statements.
