@@ -1118,6 +1118,7 @@ _PAGE_HTML = """<!doctype html>
 
   <div id="view-dash">
     <div class="chips" id="chips"></div>
+    <div class="chips hidden" id="dash-more-panel" style="flex-wrap:wrap"></div>
     <div class="datebox hidden" id="datebox">
       <div class="df"><label>From</label><input type="date" id="date-from"></div>
       <div class="df"><label>To (blank = single day)</label><input type="date" id="date-to"></div>
@@ -1231,6 +1232,7 @@ _PAGE_HTML = """<!doctype html>
       <div class="chip" data-rt="expense" onclick="recSetType('expense')">💸 Expenses</div>
     </div>
     <div class="chips" id="rec-chips"></div>
+    <div class="chips hidden" id="rec-more-panel" style="flex-wrap:wrap"></div>
     <div class="datebox hidden" id="rec-datebox">
       <div class="df"><label>From</label><input type="date" id="rec-date-from"></div>
       <div class="df"><label>To (blank = single day)</label><input type="date" id="rec-date-to"></div>
@@ -1461,42 +1463,42 @@ _PAGE_HTML = """<!doctype html>
     return "period=" + curPeriod;
   }
 
-  // ── Shared "specific period" dropdown options ──
-  // Lets the user pick ANY quarter/month/year (not just the current one, which
-  // was the "stuck on this quarter" problem). Each option carries the exact
-  // query the backend resolves (period + y + m/q).
+  // ── Shared "specific period" options — used by both Dashboard + Records ──
+  // Produces a list of {val, label} for ANY quarter/month/year (not just current).
   function buildPeriodOptions() {
     var now = new Date();
     var yNow = now.getFullYear();
     var MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-    var opts = [["", "More periods…"]];
-    // Quarters: current year + last year.
+    var opts = [];
     [yNow, yNow - 1].forEach(function (y) {
       for (var q = 1; q <= 4; q++) {
-        opts.push(["period=quarter&y=" + y + "&q=" + q, "Q" + q + " " + y]);
+        opts.push({val: "period=quarter&y=" + y + "&q=" + q, label: "Q" + q + " " + y});
       }
     });
-    // Years: current + last two.
     [yNow, yNow - 1, yNow - 2].forEach(function (y) {
-      opts.push(["period=year&y=" + y, "Year " + y]);
+      opts.push({val: "period=year&y=" + y, label: "Year " + y});
     });
-    // Specific months: last 12 months.
     for (var i = 0; i < 12; i++) {
       var d = new Date(yNow, now.getMonth() - i, 1);
-      opts.push(["period=month&y=" + d.getFullYear() + "&m=" + (d.getMonth() + 1),
-                 MON[d.getMonth()] + " " + d.getFullYear()]);
+      opts.push({val: "period=month&y=" + d.getFullYear() + "&m=" + (d.getMonth() + 1),
+                 label: MON[d.getMonth()] + " " + d.getFullYear()});
     }
     return opts;
   }
-  function fillPeriodSelect(sel, current) {
-    if (!sel) return;
-    sel.innerHTML = "";
+  // Toggle an expanded list of specific-period chips below the main chips row.
+  function toggleSpecificPanel(panelId, curSpec, onPick) {
+    var panel = document.getElementById(panelId);
+    if (!panel) return;
+    if (!panel.classList.contains("hidden")) { panel.classList.add("hidden"); return; }
+    panel.innerHTML = "";
     buildPeriodOptions().forEach(function (o) {
-      var el = document.createElement("option");
-      el.value = o[0]; el.textContent = o[1];
-      if (o[0] && o[0] === current) el.selected = true;
-      sel.appendChild(el);
+      var el = document.createElement("div");
+      el.className = "chip" + (o.val === curSpec ? " active" : "");
+      el.textContent = o.label;
+      el.onclick = function () { panel.classList.add("hidden"); onPick(o.val); };
+      panel.appendChild(el);
     });
+    panel.classList.remove("hidden");
   }
 
   window.showTab = function (which) {
@@ -1539,20 +1541,18 @@ _PAGE_HTML = """<!doctype html>
       };
       c.appendChild(el);
     });
-    // "More periods…" dropdown: pick ANY quarter / month / year.
-    var sel = document.createElement("select");
-    sel.className = "chip";
-    sel.style.maxWidth = "150px";
-    fillPeriodSelect(sel, curSpecific);
-    sel.onchange = function () {
-      if (!sel.value) return;
-      curFrom = ""; curTo = "";
-      curSpecific = sel.value;      // e.g. "period=quarter&y=2026&q=1"
-      toggleDatePicker(false);
-      renderChips(); loadSummary();
+    // "More periods…" button — tap to expand a panel of specific quarters/months/years.
+    // Uses a tap-first div panel (no <select>) for full Telegram WebView compatibility.
+    var more = document.createElement("div");
+    more.className = "chip" + (curSpecific ? " active" : "");
+    more.textContent = curSpecific ? "Specific \u25be" : "More \u25be";
+    more.onclick = function () {
+      toggleSpecificPanel("dash-more-panel", curSpecific, function (val) {
+        curFrom = ""; curTo = ""; curSpecific = val;
+        renderChips(); loadSummary();
+      });
     };
-    if (curSpecific) sel.classList.add("active");
-    c.appendChild(sel);
+    c.appendChild(more);
     // Custom single-day / range picker chip.
     var pick = document.createElement("div");
     pick.className = "chip" + (curFrom ? " active" : "");
@@ -1936,18 +1936,19 @@ _PAGE_HTML = """<!doctype html>
       };
       c.appendChild(el);
     });
-    // "More periods…" dropdown — any quarter / month / year.
-    var sel = document.createElement("select");
-    sel.className = "chip"; sel.style.maxWidth = "150px";
-    fillPeriodSelect(sel, recSpecific);
-    sel.onchange = function () {
-      if (!sel.value) return;
-      recFrom = ""; recTo = ""; recSpecific = sel.value;
-      document.getElementById("rec-datebox").classList.add("hidden");
-      recRenderChips(); loadRecords();
+    // "More periods…" button — tap-first panel, no <select>, Telegram WebView safe.
+    var more2 = document.createElement("div");
+    more2.className = "chip" + (recSpecific ? " active" : "");
+    more2.textContent = recSpecific ? "Specific \u25be" : "More \u25be";
+    more2.onclick = function () {
+      toggleSpecificPanel("rec-more-panel", recSpecific, function (val) {
+        recFrom = ""; recTo = ""; recSpecific = val;
+        document.getElementById("rec-datebox").classList.add("hidden");
+        recRenderChips(); loadRecords();
+      });
     };
-    if (recSpecific) sel.classList.add("active");
-    c.appendChild(sel);
+    if (recSpecific) more2.classList.add("active");
+    c.appendChild(more2);
     var pick = document.createElement("div");
     pick.className = "chip" + (recFrom ? " active" : "");
     pick.textContent = "📅 Pick date";
@@ -2248,13 +2249,21 @@ _PAGE_HTML = """<!doctype html>
 
   window.deleteProduct = function () {
     if (!editing) return;
-    if (!confirm("Delete \"" + (editing.name || "this product") +
-                 "\" from your catalog? Past sales are not affected.")) return;
     var key = editing.key;
-    document.getElementById("sh-err").textContent = "";
+    var err = document.getElementById("sh-err");
+    var btn = document.getElementById("sh-delete");
+    // Two-tap confirm — no confirm() dialog (not supported in Telegram WebView).
+    if (btn.getAttribute("data-confirm") !== "1") {
+      btn.setAttribute("data-confirm","1");
+      btn.textContent = "Tap again to confirm delete";
+      setTimeout(function(){btn.removeAttribute("data-confirm");btn.textContent="\\ud83d\\uddd1\\ufe0f Delete product";},4000);
+      return;
+    }
+    btn.removeAttribute("data-confirm");
+    btn.textContent = "\\ud83d\\uddd1\\ufe0f Delete product";
+    if (err) err.textContent = "";
     apiPost("api/product", { action: "delete", key: key })
       .then(function () {
-        // Drop from local data + re-render.
         invData = (invData || []).filter(function (p) { return p.key !== key; });
         closeSheet();
         renderCatalog();
