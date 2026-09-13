@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Kashia WhatsApp Bot - Build 20260911234927
+Description: Kashia WhatsApp Bot - Build 20260913022920
 
 Globals:
   Function:
@@ -30,7 +30,7 @@ Resources:
     Type: AWS::Serverless::Api
     Properties:
       StageName: !Ref Stage
-      Description: Kashia WhatsApp Bot - Build 20260911234927
+      Description: Kashia WhatsApp Bot - Build 20260913022920
 
   # ============================================
   # LAMBDA FUNCTIONS
@@ -43,7 +43,7 @@ Resources:
       CodeUri: src/
       Layers:
         - !Ref DependenciesLayer
-      Description: Kashia WhatsApp Bot - Build 20260911234927
+      Description: Kashia WhatsApp Bot - Build 20260913022920
       Events:
         WebhookPost:
           Type: Api
@@ -83,7 +83,7 @@ Resources:
       CodeUri: src/
       Layers:
         - !Ref DependenciesLayer
-      Description: Kashia WhatsApp Bot - Build 20260911234927
+      Description: Kashia WhatsApp Bot - Build 20260913022920
       Timeout: 300
       # Async (EventBridge Schedule) invocation failures land here after Lambda's
       # built-in retries, so a failed daily/weekly report is not silently lost.
@@ -95,13 +95,13 @@ Resources:
           Type: Schedule
           Properties:
             Schedule: cron(0 19 * * ? *)
-            Description: Kashia WhatsApp Bot - Build 20260911234927
+            Description: Kashia WhatsApp Bot - Build 20260913022920
             Enabled: true
         WeeklyReport:
           Type: Schedule
           Properties:
             Schedule: cron(0 17 ? * SUN *)
-            Description: Kashia WhatsApp Bot - Build 20260911234927
+            Description: Kashia WhatsApp Bot - Build 20260913022920
             Enabled: true
       Policies:
         - DynamoDBCrudPolicy:
@@ -362,6 +362,30 @@ Resources:
             RestApiId: !Ref WebhookApi
             Path: /app/api/transaction
             Method: post
+        ContactsGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /app/api/contacts
+            Method: get
+        DebtPaymentWrite:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /app/api/debt-payment
+            Method: post
+        RecordsGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /app/api/records
+            Method: get
+        ExportGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /app/api/export
+            Method: get
       Policies:
         # UsersTable needs WRITE (M6a): the product catalog lives on the user
         # record, so catalog edits (stock/price/cost) update it.
@@ -617,7 +641,7 @@ Resources:
     Type: AWS::Serverless::LayerVersion
     Properties:
       LayerName: !Sub kashia-dependencies-${Stage}
-      Description: Kashia WhatsApp Bot - Build 20260911234927
+      Description: Kashia WhatsApp Bot - Build 20260913022920
       ContentUri: layers/dependencies/layer.zip
       CompatibleRuntimes:
         - python3.12
@@ -627,7 +651,7 @@ Resources:
 # ============================================
 Outputs:
   WebhookUrl:
-    Description: Kashia WhatsApp Bot - Build 20260911234927
+    Description: Kashia WhatsApp Bot - Build 20260913022920
     Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/webhook"
   MiniAppUrl:
     Description: Telegram Mini App page URL (set as the bot Menu Button web_app url)
@@ -639,9 +663,9 @@ Outputs:
     Description: Point Telegram setWebhook at this URL
     Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/telegram"
   WebhookFunctionArn:
-    Description: Kashia WhatsApp Bot - Build 20260911234927
+    Description: Kashia WhatsApp Bot - Build 20260913022920
     Value: !GetAtt WebhookFunction.Arn
   ScheduledReportsFunctionArn:
-    Description: Kashia WhatsApp Bot - Build 20260911234927
+    Description: Kashia WhatsApp Bot - Build 20260913022920
     Value: !GetAtt ScheduledReportsFunction.Arn
 # force deploy Sat Jul  4 18:39:10 WAT 2026

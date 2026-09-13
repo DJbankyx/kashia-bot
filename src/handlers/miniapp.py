@@ -546,29 +546,48 @@ def _contacts(event, user_id: str):
     owe_suppliers = sum(c["amount"] for c in creditors if c["type"] != "expense_payee")
     owe_expenses = sum(c["amount"] for c in creditors if c["type"] == "expense_payee")
 
-    # Top contacts (by value) for a light CRM directory.
+    # Full contact directory (customers + suppliers + both) with details, so
+    # the app can list everyone and show a detail card — not just debtors.
     try:
-        top_customers = db.get_top_contacts(user_id, "customer", limit=8) or []
-        top_suppliers = db.get_top_contacts(user_id, "supplier", limit=8) or []
+        contacts = db.get_contacts(user_id, limit=100) or []
     except Exception:
-        top_customers, top_suppliers = [], []
+        contacts = []
 
-    def _contact_row(c):
+    def _person(c):
+        ctype = (c.get("type") or "").lower().strip()
+        received = int(c.get("total_received", 0) or 0)  # money IN (customer)
+        paid = int(c.get("total_paid", 0) or 0)          # money OUT (supplier)
         return {
             "name": c.get("name", c.get("contact_id", "Unknown")),
-            "type": (c.get("type") or "").lower().strip(),
-            "total": int(c.get("total_received", 0) or c.get("total_paid", 0) or 0),
+            "type": ctype or "contact",
+            "phone": c.get("contact_phone", "") or "",
+            "total_received": received,
+            "total_paid": paid,
+            "spend": received,   # what a CUSTOMER has spent with you
+            "transactions": int(c.get("transaction_count", 0) or 0),
+            "last_date": c.get("last_transaction_date", "") or "",
+            "owes_me": int(c.get("debt_owed_to_me", 0) or 0),
+            "i_owe": int(c.get("debt_i_owe", 0) or 0),
         }
+
+    people = [_person(c) for c in contacts]
+    # Customers = anyone who has bought (customer/both, or has received-total).
+    customers = [p for p in people
+                 if p["type"] in ("customer", "both") or p["total_received"] > 0]
+    suppliers = [p for p in people
+                 if p["type"] in ("supplier", "expense_payee", "both") or p["total_paid"] > 0]
+    customers.sort(key=lambda p: p["total_received"], reverse=True)
+    suppliers.sort(key=lambda p: p["total_paid"], reverse=True)
 
     return _json(200, {
         "owed_to_me": owed_to_me,
         "i_owe": i_owe,
         "i_owe_suppliers": owe_suppliers,
         "i_owe_expenses": owe_expenses,
-        "debtors": debtors,     # people who owe ME (collect)
-        "creditors": creditors, # people I owe (repay)
-        "top_customers": [_contact_row(c) for c in top_customers],
-        "top_suppliers": [_contact_row(c) for c in top_suppliers],
+        "debtors": debtors,       # people who owe ME (collect)
+        "creditors": creditors,   # people I owe (repay)
+        "customers": customers,   # full customer directory (with details)
+        "suppliers": suppliers,   # full supplier directory
     })
 
 
@@ -997,9 +1016,34 @@ _PAGE_HTML = """<!doctype html>
       <div class="card"><div class="k">Owed to you</div><div class="v pos" id="crm-owed">—</div></div>
       <div class="card"><div class="k">You owe</div><div class="v neg" id="crm-iowe">—</div><div class="sub" id="crm-iowebreak"></div></div>
     </div>
+    <div class="chips" id="crm-dir-tabs">
+      <div class="chip active" data-cd="customers" onclick="crmSetDir('customers')">👤 Customers</div>
+      <div class="chip" data-cd="suppliers" onclick="crmSetDir('suppliers')">🏭 Suppliers</div>
+    </div>
     <input class="search" id="crmsearch" placeholder="Search people..." oninput="renderCrm()">
     <div id="crmlists"><div class="muted">Loading...</div></div>
     <div id="crmmsg" class="muted"></div>
+  </div>
+
+  <!-- Contact detail sheet -->
+  <div id="cdOverlay" class="overlay hidden">
+    <div class="sheet">
+      <h2 id="cd-name">Contact</h2>
+      <div class="sub2" id="cd-type"></div>
+      <div class="row">
+        <div class="card"><div class="k" id="cd-spend-k">Total spent</div><div class="v" id="cd-spend">—</div></div>
+        <div class="card"><div class="k">Transactions</div><div class="v" id="cd-txns">—</div></div>
+      </div>
+      <div class="card"><div class="k">Last transaction</div><div class="v" id="cd-last" style="font-size:16px">—</div></div>
+      <div class="card hidden" id="cd-debtcard">
+        <div class="k" id="cd-debt-k">Balance</div><div class="v" id="cd-debt">—</div>
+      </div>
+      <div class="sub2 hidden" id="cd-phone"></div>
+      <div class="actions">
+        <button class="btn cancel" onclick="closeContact()">Close</button>
+        <button class="btn save hidden" id="cd-pay" onclick="cdRecordPayment()">💵 Record payment</button>
+      </div>
+    </div>
   </div>
 
   <div id="view-rec" class="hidden">
@@ -1217,6 +1261,10 @@ _PAGE_HTML = """<!doctype html>
     document.getElementById("view-cat").classList.toggle("hidden", which !== "cat");
     document.getElementById("view-crm").classList.toggle("hidden", which !== "crm");
     document.getElementById("view-rec").classList.toggle("hidden", which !== "rec");
+    // "Record a transaction" belongs on the Dashboard only — it's noise on the
+    // Catalog / Customers / Records views.
+    var rb = document.getElementById("recordBtn");
+    if (rb) rb.classList.toggle("hidden", which !== "dash");
     // Catalog is the single product tab (Inventory merged in). Load products the
     // first time it's opened, then render.
     if (which === "cat") {
@@ -1434,6 +1482,15 @@ _PAGE_HTML = """<!doctype html>
           '<span class="err">' + (e.message || "Could not load") + '</span>';
       });
   }
+  var crmDir = "customers";   // which directory the CRM tab shows
+  window.crmSetDir = function (d) {
+    crmDir = d;
+    var tabs = document.getElementById("crm-dir-tabs").children;
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].classList.toggle("active", tabs[i].getAttribute("data-cd") === d);
+    }
+    renderCrm();
+  };
   window.renderCrm = function () {
     if (!crmData) return;
     var q = (document.getElementById("crmsearch").value || "").toLowerCase().trim();
@@ -1444,54 +1501,94 @@ _PAGE_HTML = """<!doctype html>
     ib.textContent = (sup > 0 && exp > 0)
       ? ("Suppliers " + naira(sup) + " - Expenses " + naira(exp)) : "";
 
-    function filt(list) {
-      return (list || []).filter(function (c) {
-        return !q || (c.name || "").toLowerCase().indexOf(q) >= 0;
-      });
-    }
-    var debtors = filt(crmData.debtors);    // owe ME → collect (in)
-    var creditors = filt(crmData.creditors); // I owe → repay (out)
-
-    function personRow(c, direction) {
-      var div = document.createElement("div");
-      div.className = "item tappable";
-      var sub = direction === "in" ? "owes you" : "you owe";
-      div.innerHTML = '<div><div class="name">' + escapeHtml(c.name || "?") +
-        '</div><div class="meta">' + sub + '</div></div>' +
-        '<div class="right"><div class="stock">' + naira(c.amount || 0) + '</div>' +
-        '<div class="meta">tap to record ›</div></div>';
-      div.onclick = (function (name, amt, dir) {
-        return function () { openPay(name, amt, dir); };
-      })(c.name, c.amount || 0, direction);
-      return div;
-    }
+    var list = (crmDir === "suppliers" ? crmData.suppliers : crmData.customers) || [];
+    list = list.filter(function (c) {
+      return !q || (c.name || "").toLowerCase().indexOf(q) >= 0;
+    });
 
     var wrap = document.getElementById("crmlists");
     wrap.innerHTML = "";
-    if (!debtors.length && !creditors.length) {
-      wrap.innerHTML = '<div class="muted">No outstanding debts. Record a credit sale or purchase to see people here.</div>';
+    if (!list.length) {
+      wrap.innerHTML = '<div class="muted">No ' + crmDir +
+        ' yet. Record a sale (with a name) or a purchase to build your list.</div>';
       document.getElementById("crmmsg").textContent = "";
       return;
     }
-    if (debtors.length) {
-      var h1 = document.createElement("div");
-      h1.className = "k"; h1.style.margin = "14px 2px 6px";
-      h1.textContent = "🟢 Owes me (" + debtors.length + ")";
-      wrap.appendChild(h1);
-      var c1 = document.createElement("div"); c1.className = "card"; c1.style.padding = "4px 0";
-      debtors.forEach(function (c) { c1.appendChild(personRow(c, "in")); });
-      wrap.appendChild(c1);
+
+    var card = document.createElement("div");
+    card.className = "card"; card.style.padding = "4px 0";
+    list.forEach(function (c) {
+      var isCust = (crmDir === "customers");
+      var val = isCust ? c.total_received : c.total_paid;
+      var sub = c.transactions + " txn(s)";
+      if (c.last_date) sub += " · last " + c.last_date;
+      // Debt flag on the row.
+      if (c.owes_me > 0) sub += " · owes you " + naira(c.owes_me);
+      else if (c.i_owe > 0) sub += " · you owe " + naira(c.i_owe);
+      var div = document.createElement("div");
+      div.className = "item tappable";
+      div.innerHTML = '<div><div class="name">' + escapeHtml(c.name || "?") +
+        '</div><div class="meta">' + escapeHtml(sub) + '</div></div>' +
+        '<div class="right"><div class="stock">' + naira(val || 0) + '</div>' +
+        '<div class="meta">' + (isCust ? "spent ›" : "paid ›") + '</div></div>';
+      div.onclick = (function (person) {
+        return function () { openContact(person); };
+      })(c);
+      card.appendChild(div);
+    });
+    wrap.appendChild(card);
+    document.getElementById("crmmsg").textContent = list.length + " " + crmDir;
+  };
+
+  // ── Contact detail sheet — tap a person to see their details + record a
+  // payment if they carry a debt. ──
+  var cdCtx = null;
+  window.openContact = function (c) {
+    cdCtx = c;
+    var isCust = (crmDir === "customers");
+    document.getElementById("cd-name").textContent = c.name || "Contact";
+    document.getElementById("cd-type").textContent =
+      (c.type ? c.type.charAt(0).toUpperCase() + c.type.slice(1) : "Contact");
+    document.getElementById("cd-spend-k").textContent = isCust ? "Total spent" : "Total paid";
+    document.getElementById("cd-spend").textContent =
+      naira(isCust ? c.total_received : c.total_paid);
+    document.getElementById("cd-txns").textContent = (c.transactions || 0);
+    document.getElementById("cd-last").textContent = c.last_date || "—";
+
+    var debtCard = document.getElementById("cd-debtcard");
+    var payBtn = document.getElementById("cd-pay");
+    if (c.owes_me > 0) {
+      document.getElementById("cd-debt-k").textContent = "Owes you";
+      document.getElementById("cd-debt").textContent = naira(c.owes_me);
+      debtCard.classList.remove("hidden");
+      payBtn.classList.remove("hidden");
+    } else if (c.i_owe > 0) {
+      document.getElementById("cd-debt-k").textContent = "You owe";
+      document.getElementById("cd-debt").textContent = naira(c.i_owe);
+      debtCard.classList.remove("hidden");
+      payBtn.classList.remove("hidden");
+    } else {
+      debtCard.classList.add("hidden");
+      payBtn.classList.add("hidden");
     }
-    if (creditors.length) {
-      var h2 = document.createElement("div");
-      h2.className = "k"; h2.style.margin = "14px 2px 6px";
-      h2.textContent = "🔴 I owe (" + creditors.length + ")";
-      wrap.appendChild(h2);
-      var c2 = document.createElement("div"); c2.className = "card"; c2.style.padding = "4px 0";
-      creditors.forEach(function (c) { c2.appendChild(personRow(c, "out")); });
-      wrap.appendChild(c2);
-    }
-    document.getElementById("crmmsg").textContent = "";
+
+    var phoneEl = document.getElementById("cd-phone");
+    if (c.phone) { phoneEl.textContent = "📞 " + c.phone; phoneEl.classList.remove("hidden"); }
+    else { phoneEl.classList.add("hidden"); }
+
+    document.getElementById("cdOverlay").classList.remove("hidden");
+  };
+  window.closeContact = function () {
+    document.getElementById("cdOverlay").classList.add("hidden");
+    cdCtx = null;
+  };
+  window.cdRecordPayment = function () {
+    if (!cdCtx) return;
+    var c = cdCtx;
+    closeContact();
+    // "in" = they owe me (collect); "out" = I owe them (repay).
+    if (c.owes_me > 0) openPay(c.name, c.owes_me, "in");
+    else if (c.i_owe > 0) openPay(c.name, c.i_owe, "out");
   };
 
   // ── Debt-payment sheet (CRM write) ──
