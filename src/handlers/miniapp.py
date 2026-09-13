@@ -76,6 +76,19 @@ def _resolve_range(qs: dict, period: str):
     return _date_range(period)
 
 
+def _json_default(o):
+    """JSON fallback: DynamoDB returns numbers as Decimal, which json.dumps
+    can't serialize. Coerce to int when whole, else float. Anything else →
+    str (never crash the response)."""
+    try:
+        from decimal import Decimal
+        if isinstance(o, Decimal):
+            return int(o) if o == o.to_integral_value() else float(o)
+    except Exception:
+        pass
+    return str(o)
+
+
 def _json(status_code, body):
     return {
         "statusCode": status_code,
@@ -85,7 +98,9 @@ def _json(status_code, body):
             # strictly needed, but be explicit and safe.
             "Cache-Control": "no-store",
         },
-        "body": json.dumps(body),
+        # default=_json_default → Decimal (and any stray type) is serialized
+        # safely, so a raw DynamoDB value can never 500 the endpoint.
+        "body": json.dumps(body, default=_json_default),
     }
 
 
@@ -644,9 +659,9 @@ def _records(event, user_id: str):
         out.append({
             "desc": _desc(t),
             "amount": int(t.get("amount", 0) or 0),
-            "vendor": vendor,
-            "date": t.get("date", ""),
-            "qty": t.get("quantity", ""),
+            "vendor": str(vendor or ""),
+            "date": str(t.get("date", "") or ""),
+            "qty": str(t.get("quantity", "") or ""),
         })
 
     return _json(200, {
@@ -1322,7 +1337,7 @@ _PAGE_HTML = """<!doctype html>
     api("api/summary?" + periodQuery())
       .then(function (d) {
         document.getElementById("biz").textContent = d.business || "Kashia";
-        document.getElementById("period").textContent = "\\ud83d\\udcc5 " + (d.period_label || "");
+        document.getElementById("period").textContent = (d.period_label || "");
         var pl = document.getElementById("periodlabel");
         if (pl) pl.textContent = (d.period_label ? (d.period_label + " · this period") : "This period");
         setSigned("net", d.pnl.net_profit);
@@ -2151,10 +2166,12 @@ _PAGE_HTML = """<!doctype html>
       .then(function () {
         closeRecord();
         if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
-        // Refresh dashboard + inventory so the new numbers show.
+        // Refresh dashboard + catalog so the new numbers show. (Inventory was
+        // merged into Catalog; guard the element in case a view is absent.)
         loadSummary();
         invLoaded = false;
-        if (!document.getElementById("view-inv").classList.contains("hidden")) loadInventory();
+        var catView = document.getElementById("view-cat");
+        if (catView && !catView.classList.contains("hidden")) loadInventory();
       })
       .catch(function (e) {
         btn.disabled = false;
