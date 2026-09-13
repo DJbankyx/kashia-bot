@@ -856,15 +856,17 @@ def _export(event, user_id: str):
         resp = svc.handle_filtered_export(
             user_id, filter_map.get(tx_type, "my_sales"),
             start, end, label, fmt)
-        # handle_filtered_export returns a chat response list; surface a concise
-        # status to the app.
+        # handle_filtered_export returns a chat response list; surface a concise,
+        # HONEST status to the app (don't claim success on empty/failed delivery).
         txt = ""
         if isinstance(resp, list) and resp:
             txt = (resp[0].get("content") or "")
-        empty = "No " in txt and "to export" in txt
+        empty = ("No " in txt and "to export" in txt)
+        failed = ("couldn't deliver" in txt or "failed" in txt.lower())
+        ok = not empty and not failed and ("exported" in txt.lower())
         return _json(200, {
-            "ok": not empty,
-            "delivered_to_chat": not empty,
+            "ok": ok,
+            "delivered_to_chat": ok,
             "empty": empty,
             "message": txt or ("Your %s export was sent to your chat." % tx_type),
         })
@@ -1035,12 +1037,13 @@ _PAGE_HTML = """<!doctype html>
   .sub { color: var(--hint); font-size: 13px; margin-bottom: 14px; }
   .card { background: var(--card); border-radius: 14px; padding: 14px; margin-bottom: 10px; }
   .k { color: var(--hint); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
-  /* Values can be long (₦80,000,000). Keep them on one line and let the
-     browser shrink very long numbers rather than wrapping into a scatter. */
-  .v { font-size: 22px; font-weight: 700; margin-top: 4px; white-space: nowrap;
-       overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+  /* Values can be long (₦2,180,000,000). Let them WRAP within the card rather
+     than overflow/clip (clipping money digits is worse than a 2-line value). */
+  .v { font-size: 22px; font-weight: 700; margin-top: 4px;
+       overflow-wrap: anywhere; word-break: break-word;
+       font-variant-numeric: tabular-nums; line-height: 1.15; }
   .row { display: flex; gap: 10px; }
-  .row .card { flex: 1; }
+  .row .card { flex: 1; min-width: 0; }   /* min-width:0 lets flex kids shrink */
   .pos { color: var(--pos); } .neg { color: var(--neg); }
   .err { color: var(--neg); font-size: 14px; }
   .muted { color: var(--hint); font-size: 12px; margin: 14px 0; text-align:center; }
@@ -1139,9 +1142,9 @@ _PAGE_HTML = """<!doctype html>
       <div class="card"><div class="k">Owed to you</div><div class="v pos" id="owed">—</div></div>
       <div class="card"><div class="k">You owe</div><div class="v neg" id="iowe">—</div><div class="sub" id="iowebreak"></div></div>
     </div>
-    <div class="card">
-      <div class="k">Inventory value / Net position</div>
-      <div class="v"><span id="invval">—</span> <span class="k">/</span> <span id="netpos">—</span></div>
+    <div class="row">
+      <div class="card"><div class="k">Inventory value</div><div class="v" id="invval">—</div></div>
+      <div class="card"><div class="k">Net position</div><div class="v" id="netpos">—</div></div>
     </div>
     <div class="card hidden" id="chartTop">
       <div class="k">Top products</div><img class="chart" id="imgTop" alt="">

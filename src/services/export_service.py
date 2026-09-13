@@ -519,9 +519,13 @@ class ExportService:
         filepath = f"/tmp/{filename}"
         wb.save(filepath)
 
-        # Deliver
-        self.deliver_file(phone_number, filepath, filename,
-                         caption=f"{label} - {period_label} ({len(transactions)} transactions)")
+        # Deliver — honour the result so we don't claim success on a failed
+        # upload/send (was: always "check your chat" even when delivery failed).
+        ok, _url = self.deliver_file(
+            phone_number, filepath, filename,
+            caption=f"{label} - {period_label} ({len(transactions)} transactions)")
+        if not ok:
+            return [{"type": "text", "content": "⚠️ I built the Excel but couldn't deliver it. Please try again in a moment."}]
         return [{"type": "text", "content": f"\u2705 Excel exported!\n\n{label} \u2014 {period_label}\n{len(transactions)} transactions | Total: NGN {total:,}\n\n\U0001f4ce Check your chat for the file."}]
 
     def _export_filtered_pdf(self, phone_number, transactions, label, period_label, business_name):
@@ -588,8 +592,10 @@ class ExportService:
 
         doc.build(story)
 
-        self.deliver_file(phone_number, filepath, filename,
-                         caption=f"{label} - {period_label}")
+        ok, _url = self.deliver_file(phone_number, filepath, filename,
+                                     caption=f"{label} - {period_label}")
+        if not ok:
+            return [{"type": "text", "content": "⚠️ I built the PDF but couldn't deliver it. Please try again in a moment."}]
         return [{"type": "text", "content": f"\u2705 PDF exported!\n\n{label} \u2014 {period_label}\n{len(transactions)} transactions | Total: NGN {total:,}\n\n\U0001f4ce Check your chat for the file."}]
     def export_full_history_csv(self, phone_number):
         """Export ALL transactions as a CSV file"""
