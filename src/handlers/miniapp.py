@@ -73,7 +73,66 @@ def _resolve_range(qs: dict, period: str):
             label = frm if frm == to else (frm + " - " + to)
         return frm, to, label
 
+    # A SPECIFIC month / quarter / year picked from the dropdown (e.g.
+    # period=quarter&y=2026&q=1, period=month&y=2025&m=3, period=year&y=2024).
+    # This is what lets the user pick ANY quarter/month/year, not just the
+    # current one (the named presets always end 'today').
+    specific = _specific_range(period, qs)
+    if specific:
+        return specific
+
     return _date_range(period)
+
+
+def _specific_range(period: str, qs: dict):
+    """Resolve an explicitly-chosen month/quarter/year from y/m/q query params.
+    Returns (start, end, label) or None if not applicable/invalid. A window in
+    the FUTURE past today is capped at today (a partial current period)."""
+    import calendar
+    from datetime import datetime as _dt
+    now = _dt.now()
+
+    def _i(key, default=None):
+        try:
+            return int(qs.get(key))
+        except (TypeError, ValueError):
+            return default
+
+    y = _i("y")
+    if not y or y < 2000 or y > 2100:
+        return None
+    today = now.strftime("%Y-%m-%d")
+
+    def _cap(end):
+        return end if end <= today else today
+
+    if period == "year":
+        start = "%04d-01-01" % y
+        end = _cap("%04d-12-31" % y)
+        return start, end, str(y)
+
+    if period == "quarter":
+        q = _i("q")
+        if q not in (1, 2, 3, 4):
+            return None
+        sm = (q - 1) * 3 + 1          # start month
+        em = sm + 2                    # end month
+        last_day = calendar.monthrange(y, em)[1]
+        start = "%04d-%02d-01" % (y, sm)
+        end = _cap("%04d-%02d-%02d" % (y, em, last_day))
+        return start, end, "Q%d %d" % (q, y)
+
+    if period == "month":
+        mth = _i("m")
+        if mth not in range(1, 13):
+            return None
+        last_day = calendar.monthrange(y, mth)[1]
+        start = "%04d-%02d-01" % (y, mth)
+        end = _cap("%04d-%02d-%02d" % (y, mth, last_day))
+        label = _dt(y, mth, 1).strftime("%B %Y")
+        return start, end, label
+
+    return None
 
 
 def _json_default(o):
@@ -405,11 +464,14 @@ def _parse_body(event) -> dict:
 
 
 def _product_write(event, user_id: str):
-    """M6a — apply a catalog write for the AUTH'D user only. Body:
-        {action, key, variant?, value}
-    Actions: set_price, set_cost, set_stock (exact), set_stock_delta (+/-).
-    All reuse existing engine methods; money-safe (value-sets, per-user, tree
-    leaf aware). Echoes the recomputed product row so the UI reflects truth."""
+    """Catalog write for the AUTH'D user only. Reuses the CatalogHandler engine
+    (same product data model as chat); money-safe, per-user, tree-leaf aware.
+
+    Value actions:  set_price | set_cost | set_stock | set_stock_delta
+    CRUD actions:   add | rename | delete | set_unit | set_reorder | set_category
+    Variant leaf:   set_leaf_stock | set_leaf_cost  (body carries path:[...])
+
+    Echoes the recomputed row (or {ok} for delete) so the UI reflects truth."""
     from services.database import Database
     from features.catalog import CatalogHandler
 
@@ -417,27 +479,107 @@ def _product_write(event, user_id: str):
     action = str(data.get("action", "")).strip()
     key = str(data.get("key", "")).strip()
     variant = str(data.get("variant", "") or "").strip()
-    raw_value = data.get("value")
 
-    if not key or action not in ("set_price", "set_cost", "set_stock", "set_stock_delta"):
+    VALUE_ACTIONS = ("set_price", "set_cost", "set_stock", "set_stock_delta")
+    CRUD_ACTIONS = ("add", "rename", "delete", "set_unit", "set_reorder", "set_category")
+    LEAF_ACTIONS = ("set_leaf_stock", "set_leaf_cost")
+    if action not in VALUE_ACTIONS + CRUD_ACTIONS + LEAF_ACTIONS:
         return _json(400, {"error": "bad request"})
 
     db = Database()
     cat = CatalogHandler(None, db)
-
-    # Resolve the product on the AUTH'D user's catalog only.
     products = cat._get_products(user_id) or {}
+
+    def _echo(k):
+        updated = cat.get_normalized_product(user_id, k)
+        return _json(200, {"ok": True, "product": _row_from_product(updated, cat)})
+
+    # ── ADD a new product (no existing key required) ──
+    if action == "add":
+        name = str(data.get("name", "")).strip()
+        if not name:
+            return _json(400, {"error": "a product name is required"})
+        new_key = name.lower().replace(" ", "_")
+        if new_key in products:
+            return _json(409, {"error": "a product with that name already exists"})
+        products[new_key] = {
+            "name": name.title(),
+            "stock": 0,
+            "landing_cost": 0,
+            "sale_price": 0,
+            "category": str(data.get("category", "") or "").strip(),
+            "variants": [],
+        }
+        cat._save_products(user_id, products)
+        return _echo(new_key)
+
+    # Everything else needs an existing product.
+    if not key:
+        return _json(400, {"error": "product key required"})
     prod = products.get(key)
     if not isinstance(prod, dict):
         return _json(404, {"error": "product not found"})
     name = prod.get("name") or key
 
-    # Validate the value per action (server-side; never trust the client).
+    # ── CRUD (direct dict mutation → save; matches the chat data shape) ──
+    if action == "delete":
+        del products[key]
+        cat._save_products(user_id, products)
+        return _json(200, {"ok": True, "deleted": key})
+    if action == "rename":
+        new_name = str(data.get("name", "")).strip()
+        if not new_name:
+            return _json(400, {"error": "a new name is required"})
+        # Keep the KEY stable (past sales reference catalog_product by key);
+        # only the display name changes.
+        prod["name"] = new_name.title()
+        cat._save_products(user_id, products)
+        return _echo(key)
+    if action == "set_unit":
+        prod["primary_unit"] = str(data.get("unit", "") or "").strip()
+        cat._save_products(user_id, products)
+        return _echo(key)
+    if action == "set_category":
+        prod["category"] = str(data.get("category", "") or "").strip()
+        cat._save_products(user_id, products)
+        return _echo(key)
+    if action == "set_reorder":
+        try:
+            prod["reorder_level"] = max(0, int(data.get("value")))
+        except (TypeError, ValueError):
+            return _json(400, {"error": "reorder must be a number"})
+        cat._save_products(user_id, products)
+        return _echo(key)
+
+    # ── Variant-leaf writes (drill path → engine, tree-leaf aware) ──
+    if action in LEAF_ACTIONS:
+        path = data.get("path") or []
+        if isinstance(path, str):
+            path = [p.strip() for p in path.split(",") if p.strip()]
+        path = [str(p).strip() for p in path if str(p).strip()]
+        if not path:
+            return _json(400, {"error": "a variant path is required"})
+        leaf = " / ".join(path)   # _COMBO_SEP
+        try:
+            value = int(data.get("value"))
+        except (TypeError, ValueError):
+            return _json(400, {"error": "value must be a number"})
+        if value < 0:
+            return _json(400, {"error": "value must be 0 or more"})
+        if action == "set_leaf_stock":
+            res = cat.set_stock_exact(user_id, name, value, leaf)
+            if not bool(res.get("matched", True)):
+                return _json(500, {"error": "write failed"})
+        else:  # set_leaf_cost
+            if not cat.set_cost_direct(user_id, name, value, leaf):
+                return _json(500, {"error": "write failed"})
+        return _echo(key)
+
+    # ── Value actions (existing): price / cost / stock exact / stock delta ──
     try:
-        value = int(raw_value)
+        value = int(data.get("value"))
     except (TypeError, ValueError):
         return _json(400, {"error": "value must be a number"})
-
     if action in ("set_price", "set_cost", "set_stock") and value < 0:
         return _json(400, {"error": "value must be 0 or more"})
 
@@ -452,13 +594,9 @@ def _product_write(event, user_id: str):
     elif action == "set_stock_delta":
         res = cat.update_stock(user_id, name, value, variant=variant, cost_mode="keep")
         ok = bool(res.get("matched", True))
-
     if not ok:
         return _json(500, {"error": "write failed"})
-
-    # Echo the recomputed row (true stored state, not the client's optimistic value).
-    updated = cat.get_normalized_product(user_id, key)
-    return _json(200, {"ok": True, "product": _row_from_product(updated, cat)})
+    return _echo(key)
 
 
 def _transaction_write(event, user_id: str):
@@ -1021,9 +1159,31 @@ _PAGE_HTML = """<!doctype html>
     </div>
     <div class="card"><div class="k">Stock value (at cost)</div><div class="v" id="cat-value">—</div></div>
     <div class="card hidden" id="cat-lowcard"><div class="k">Low stock</div><div class="v neg" id="cat-low">—</div></div>
+    <button class="btn save" style="width:100%;margin-bottom:10px" onclick="openAddProduct()">➕ Add product</button>
     <input class="search" id="catsearch" placeholder="Search catalog..." oninput="renderCatalog()">
     <div id="catgroups"><div class="muted">Loading...</div></div>
     <div id="catmsg" class="muted"></div>
+  </div>
+
+  <!-- Add-product sheet -->
+  <div id="addOverlay" class="overlay hidden">
+    <div class="sheet">
+      <h2>Add a product</h2>
+      <div class="sub2">Creates a catalog item. Set price/cost/stock after.</div>
+      <div class="field">
+        <label>Product name</label>
+        <input id="add-name" placeholder="e.g. Hilux">
+      </div>
+      <div class="field">
+        <label>Category (optional)</label>
+        <input id="add-cat" placeholder="e.g. Vehicles">
+      </div>
+      <div class="sheeterr" id="add-err"></div>
+      <div class="actions">
+        <button class="btn cancel" onclick="closeAddProduct()">Cancel</button>
+        <button class="btn save" id="add-save" onclick="saveAddProduct()">Add</button>
+      </div>
+    </div>
   </div>
 
   <div id="view-crm" class="hidden">
@@ -1103,9 +1263,13 @@ _PAGE_HTML = """<!doctype html>
 
   <!-- Edit sheet (bottom modal) -->
   <div id="overlay" class="overlay hidden">
-    <div class="sheet">
+    <div class="sheet" style="max-height:88vh;overflow-y:auto">
       <h2 id="sh-name">Product</h2>
       <div class="sub2" id="sh-sub"></div>
+      <div class="field">
+        <label>Name</label>
+        <input id="sh-rename" placeholder="Product name">
+      </div>
       <div class="field">
         <label>Stock</label>
         <input id="sh-stock" type="number" inputmode="numeric" min="0">
@@ -1125,11 +1289,26 @@ _PAGE_HTML = """<!doctype html>
         <label>Cost per unit (\u20a6)</label>
         <input id="sh-cost" type="number" inputmode="numeric" min="0">
       </div>
+      <div class="row">
+        <div class="field" style="flex:1">
+          <label>Unit</label>
+          <input id="sh-unit" placeholder="e.g. piece, kg">
+        </div>
+        <div class="field" style="flex:1">
+          <label>Reorder level</label>
+          <input id="sh-reorder" type="number" inputmode="numeric" min="0">
+        </div>
+      </div>
+      <div class="field">
+        <label>Category</label>
+        <input id="sh-cat" placeholder="e.g. Vehicles">
+      </div>
       <div class="sheeterr" id="sh-err"></div>
       <div class="actions">
         <button class="btn cancel" onclick="closeSheet()">Cancel</button>
         <button class="btn save" id="sh-save" onclick="saveSheet()">Save changes</button>
       </div>
+      <button class="btn cancel" id="sh-delete" style="width:100%;margin-top:8px;color:var(--neg)" onclick="deleteProduct()">🗑️ Delete product</button>
     </div>
   </div>
 
@@ -1221,7 +1400,10 @@ _PAGE_HTML = """<!doctype html>
   var tg = window.Telegram && window.Telegram.WebApp;
   if (tg) { tg.ready(); tg.expand(); }
   var initData = (tg && tg.initData) || "";
-  var PERIODS = [["today","Today"],["week","Week"],["month","Month"],["last_month","Last month"],["quarter","Quarter"],["year","Year"]];
+  // Quick chips = the common ranges. Specific Quarter/Month/Year (any one, not
+  // just the current) live in the "More periods…" dropdown so the user is never
+  // stuck on the current quarter.
+  var PERIODS = [["today","Today"],["week","Week"],["month","This month"],["last_month","Last month"]];
   var curPeriod = "month";
   var invData = null;
   var invLoaded = false;
@@ -1230,11 +1412,13 @@ _PAGE_HTML = """<!doctype html>
   // Custom date range (single day or range). When set, overrides curPeriod.
   var curFrom = "";
   var curTo = "";
+  var curSpecific = "";   // dashboard specific month/quarter/year query, if picked
   // Records tab state (independent period + range + type).
   var recType = "sale";
   var recPeriod = "month";
   var recFrom = "";
   var recTo = "";
+  var recSpecific = "";   // records specific month/quarter/year query, if picked
 
   // Web page (not a PDF) so the ₦ glyph is safe and reads cleaner than "NGN".
   function naira(n) { return "\u20a6" + Number(n||0).toLocaleString("en-NG"); }
@@ -1257,14 +1441,55 @@ _PAGE_HTML = """<!doctype html>
         return r.json();
       });
   }
-  // Build the date query for summary/charts: a custom from/to range when set,
-  // else the named period. A single day = from==to.
+  // Build the date query for summary/charts:
+  //  - a custom from/to range (single day = from==to), OR
+  //  - a SPECIFIC month/quarter/year picked from the dropdown (period + y + m/q),
+  //  - else the named quick period.
   function periodQuery() {
     if (curFrom) {
       return "from=" + encodeURIComponent(curFrom) +
              "&to=" + encodeURIComponent(curTo || curFrom);
     }
+    if (curSpecific) return curSpecific;   // e.g. "period=quarter&y=2026&q=1"
     return "period=" + curPeriod;
+  }
+
+  // ── Shared "specific period" dropdown options ──
+  // Lets the user pick ANY quarter/month/year (not just the current one, which
+  // was the "stuck on this quarter" problem). Each option carries the exact
+  // query the backend resolves (period + y + m/q).
+  function buildPeriodOptions() {
+    var now = new Date();
+    var yNow = now.getFullYear();
+    var MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    var opts = [["", "More periods…"]];
+    // Quarters: current year + last year.
+    [yNow, yNow - 1].forEach(function (y) {
+      for (var q = 1; q <= 4; q++) {
+        opts.push(["period=quarter&y=" + y + "&q=" + q, "Q" + q + " " + y]);
+      }
+    });
+    // Years: current + last two.
+    [yNow, yNow - 1, yNow - 2].forEach(function (y) {
+      opts.push(["period=year&y=" + y, "Year " + y]);
+    });
+    // Specific months: last 12 months.
+    for (var i = 0; i < 12; i++) {
+      var d = new Date(yNow, now.getMonth() - i, 1);
+      opts.push(["period=month&y=" + d.getFullYear() + "&m=" + (d.getMonth() + 1),
+                 MON[d.getMonth()] + " " + d.getFullYear()]);
+    }
+    return opts;
+  }
+  function fillPeriodSelect(sel, current) {
+    if (!sel) return;
+    sel.innerHTML = "";
+    buildPeriodOptions().forEach(function (o) {
+      var el = document.createElement("option");
+      el.value = o[0]; el.textContent = o[1];
+      if (o[0] && o[0] === current) el.selected = true;
+      sel.appendChild(el);
+    });
   }
 
   window.showTab = function (which) {
@@ -1296,17 +1521,31 @@ _PAGE_HTML = """<!doctype html>
     c.innerHTML = "";
     PERIODS.forEach(function (p) {
       var el = document.createElement("div");
-      // A preset is active only when no custom range is set.
-      el.className = "chip" + (!curFrom && p[0] === curPeriod ? " active" : "");
+      // A quick chip is active only when no custom range / specific period set.
+      el.className = "chip" + (!curFrom && !curSpecific && p[0] === curPeriod ? " active" : "");
       el.textContent = p[1];
       el.onclick = function () {
-        curFrom = ""; curTo = "";           // clear any custom range
+        curFrom = ""; curTo = ""; curSpecific = "";   // clear custom / specific
         curPeriod = p[0];
         toggleDatePicker(false);
         renderChips(); loadSummary();
       };
       c.appendChild(el);
     });
+    // "More periods…" dropdown: pick ANY quarter / month / year.
+    var sel = document.createElement("select");
+    sel.className = "chip";
+    sel.style.maxWidth = "150px";
+    fillPeriodSelect(sel, curSpecific);
+    sel.onchange = function () {
+      if (!sel.value) return;
+      curFrom = ""; curTo = "";
+      curSpecific = sel.value;      // e.g. "period=quarter&y=2026&q=1"
+      toggleDatePicker(false);
+      renderChips(); loadSummary();
+    };
+    if (curSpecific) sel.classList.add("active");
+    c.appendChild(sel);
     // Custom single-day / range picker chip.
     var pick = document.createElement("div");
     pick.className = "chip" + (curFrom ? " active" : "");
@@ -1661,8 +1900,8 @@ _PAGE_HTML = """<!doctype html>
   };
 
   // ── Records tab: period/date-scoped transaction list + export ──
-  var REC_PERIODS = [["today","Today"],["week","Week"],["month","Month"],
-                     ["last_month","Last month"],["quarter","Quarter"],["year","Year"]];
+  var REC_PERIODS = [["today","Today"],["week","Week"],["month","This month"],
+                     ["last_month","Last month"]];
   window.recSetType = function (t) {
     recType = t;
     var tabs = document.getElementById("rec-type-tabs").children;
@@ -1678,15 +1917,27 @@ _PAGE_HTML = """<!doctype html>
     c.innerHTML = "";
     REC_PERIODS.forEach(function (p) {
       var el = document.createElement("div");
-      el.className = "chip" + (!recFrom && p[0] === recPeriod ? " active" : "");
+      el.className = "chip" + (!recFrom && !recSpecific && p[0] === recPeriod ? " active" : "");
       el.textContent = p[1];
       el.onclick = function () {
-        recFrom = ""; recTo = ""; recPeriod = p[0];
+        recFrom = ""; recTo = ""; recSpecific = ""; recPeriod = p[0];
         document.getElementById("rec-datebox").classList.add("hidden");
         recRenderChips(); loadRecords();
       };
       c.appendChild(el);
     });
+    // "More periods…" dropdown — any quarter / month / year.
+    var sel = document.createElement("select");
+    sel.className = "chip"; sel.style.maxWidth = "150px";
+    fillPeriodSelect(sel, recSpecific);
+    sel.onchange = function () {
+      if (!sel.value) return;
+      recFrom = ""; recTo = ""; recSpecific = sel.value;
+      document.getElementById("rec-datebox").classList.add("hidden");
+      recRenderChips(); loadRecords();
+    };
+    if (recSpecific) sel.classList.add("active");
+    c.appendChild(sel);
     var pick = document.createElement("div");
     pick.className = "chip" + (recFrom ? " active" : "");
     pick.textContent = "📅 Pick date";
@@ -1701,13 +1952,15 @@ _PAGE_HTML = """<!doctype html>
     var err = document.getElementById("rec-date-err");
     if (!f) { err.textContent = "Pick at least a start date."; return; }
     err.textContent = "";
-    recFrom = f; recTo = t || f;
+    recFrom = f; recTo = t || f; recSpecific = "";
     recRenderChips(); loadRecords();
   };
   function recQuery() {
     var q = "type=" + recType;
     if (recFrom) {
       q += "&from=" + encodeURIComponent(recFrom) + "&to=" + encodeURIComponent(recTo || recFrom);
+    } else if (recSpecific) {
+      q += "&" + recSpecific;
     } else {
       q += "&period=" + recPeriod;
     }
@@ -1786,11 +2039,14 @@ _PAGE_HTML = """<!doctype html>
   window.openSheet = function (p) {
     editing = p;
     document.getElementById("sh-name").textContent = p.name || "Product";
-    document.getElementById("sh-sub").textContent =
-      "Stock in " + (p.unit || "units") + " · edits save to your catalog";
+    document.getElementById("sh-sub").textContent = "Edits save to your catalog";
+    document.getElementById("sh-rename").value = p.name || "";
     document.getElementById("sh-stock").value = Number(p.stock || 0);
     document.getElementById("sh-price").value = p.sale_price ? Number(p.sale_price) : "";
     document.getElementById("sh-cost").value = p.cost ? Number(p.cost) : "";
+    document.getElementById("sh-unit").value = p.unit || "";
+    document.getElementById("sh-reorder").value = p.reorder_level ? Number(p.reorder_level) : "";
+    document.getElementById("sh-cat").value = p.category || "";
     document.getElementById("sh-err").textContent = "";
     document.getElementById("sh-save").disabled = false;
     document.getElementById("overlay").classList.remove("hidden");
@@ -1839,13 +2095,8 @@ _PAGE_HTML = """<!doctype html>
         }
         var kids = d.children || [];
         if (!kids.length) {
-          // A leaf reached directly — show its stock/cost.
-          var leaf = document.createElement("div");
-          leaf.className = "item";
-          leaf.innerHTML = '<div class="name">Leaf</div><div class="meta">' +
-            Number(d.stock||0).toLocaleString() + ' in stock' +
-            (d.cost ? ' · cost ' + naira(d.cost) : '') + '</div>';
-          list.appendChild(leaf);
+          // A leaf reached directly — show EDITABLE stock/cost for this leaf.
+          renderLeafEditor(list, varPath, d.stock, d.cost);
         }
         if (d.axis) {
           var ax = document.createElement("div");
@@ -1855,18 +2106,23 @@ _PAGE_HTML = """<!doctype html>
         }
         kids.forEach(function (c) {
           var row = document.createElement("div");
-          row.className = "item" + (c.is_leaf ? "" : " tappable");
+          row.className = "item tappable";
           var meta = c.is_leaf
             ? (Number(c.stock||0).toLocaleString() + " in stock"
-               + (c.cost ? " · cost " + naira(c.cost) : ""))
+               + (c.cost ? " · cost " + naira(c.cost) : "") + " · tap to edit")
             : (Number(c.stock||0).toLocaleString() + " total →");
           row.innerHTML = '<div><div class="name">' + escapeHtml(c.value) +
             '</div><div class="meta">' + meta + '</div></div>';
-          if (!c.is_leaf) {
-            row.onclick = (function (val) {
-              return function () { varPath.push(val); drillVarView(); };
-            })(c.value);
-          }
+          row.onclick = (function (val, isLeaf, st, co) {
+            return function () {
+              if (isLeaf) {
+                // Edit this leaf inline (path + this value).
+                renderLeafEditor(list, varPath.concat([val]), st, co, val);
+              } else {
+                varPath.push(val); drillVarView();
+              }
+            };
+          })(c.value, c.is_leaf, c.stock, c.cost);
           list.appendChild(row);
         });
       })
@@ -1874,6 +2130,49 @@ _PAGE_HTML = """<!doctype html>
         list.innerHTML = "";
         err.textContent = e.message || "Could not load variants";
       });
+  }
+  // Editable stock/cost for a specific leaf (path = full value path to the leaf).
+  function renderLeafEditor(list, path, stock, cost, leafLabel) {
+    var box = document.createElement("div");
+    box.className = "card"; box.style.marginTop = "8px";
+    var title = leafLabel ? escapeHtml(leafLabel) : (path.length ? escapeHtml(path[path.length-1]) : "This variant");
+    box.innerHTML =
+      '<div class="k" style="margin-bottom:6px">Edit ' + title + '</div>' +
+      '<div class="field"><label>Stock</label>' +
+      '<input id="leaf-stock" type="number" inputmode="numeric" min="0" value="' + Number(stock||0) + '"></div>' +
+      '<div class="field"><label>Cost per unit (\u20a6)</label>' +
+      '<input id="leaf-cost" type="number" inputmode="numeric" min="0" value="' + (cost ? Number(cost) : "") + '"></div>' +
+      '<div class="sheeterr" id="leaf-err"></div>';
+    var btn = document.createElement("button");
+    btn.className = "btn save"; btn.style.width = "100%"; btn.textContent = "Save variant";
+    btn.onclick = function () { saveLeaf(path, Number(stock||0), Number(cost||0)); };
+    box.appendChild(btn);
+    list.appendChild(box);
+  }
+  function saveLeaf(path, oldStock, oldCost) {
+    var err = document.getElementById("leaf-err");
+    var st = Math.max(0, parseInt(document.getElementById("leaf-stock").value, 10) || 0);
+    var coRaw = document.getElementById("leaf-cost").value;
+    var co = coRaw === "" ? null : Math.max(0, parseInt(coRaw, 10) || 0);
+    var ops = [];
+    if (st !== oldStock)
+      ops.push({ action: "set_leaf_stock", key: varProd.key, path: path, value: st });
+    if (co !== null && co !== oldCost)
+      ops.push({ action: "set_leaf_cost", key: varProd.key, path: path, value: co });
+    if (!ops.length) { drillVarView(); return; }
+    if (err) err.textContent = "";
+    ops.reduce(function (chain, op) {
+      return chain.then(function () { return apiPost("api/product", op); });
+    }, Promise.resolve())
+    .then(function () {
+      // Refresh the product row (stock rolled up) + re-render the drill.
+      invLoaded = false; loadInventory();
+      drillVarView();
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    })
+    .catch(function (e) {
+      if (err) err.textContent = e.message || "Save failed";
+    });
   }
   window.saveSheet = function () {
     if (!editing) return;
@@ -1884,14 +2183,28 @@ _PAGE_HTML = """<!doctype html>
     var newPrice = priceRaw === "" ? null : Math.max(0, parseInt(priceRaw, 10) || 0);
     var newCost = costRaw === "" ? null : Math.max(0, parseInt(costRaw, 10) || 0);
 
+    var newName = (document.getElementById("sh-rename").value || "").trim();
+    var newUnit = (document.getElementById("sh-unit").value || "").trim();
+    var reorderRaw = document.getElementById("sh-reorder").value;
+    var newReorder = reorderRaw === "" ? null : Math.max(0, parseInt(reorderRaw, 10) || 0);
+    var newCat = (document.getElementById("sh-cat").value || "").trim();
+
     // Only send the fields that actually changed.
     var ops = [];
+    if (newName && newName !== (editing.name || ""))
+      ops.push({ action: "rename", key: key, name: newName });
     if (newStock !== Number(editing.stock || 0))
       ops.push({ action: "set_stock", key: key, value: newStock });
     if (newPrice !== null && newPrice !== Number(editing.sale_price || 0))
       ops.push({ action: "set_price", key: key, value: newPrice });
     if (newCost !== null && newCost !== Number(editing.cost || 0))
       ops.push({ action: "set_cost", key: key, value: newCost });
+    if (newUnit !== (editing.unit || ""))
+      ops.push({ action: "set_unit", key: key, unit: newUnit });
+    if (newReorder !== null && newReorder !== Number(editing.reorder_level || 0))
+      ops.push({ action: "set_reorder", key: key, value: newReorder });
+    if (newCat !== (editing.category || ""))
+      ops.push({ action: "set_category", key: key, category: newCat });
 
     if (!ops.length) { closeSheet(); return; }
 
@@ -1921,6 +2234,56 @@ _PAGE_HTML = """<!doctype html>
       saveBtn.disabled = false;
       document.getElementById("sh-err").textContent = e.message || "Save failed";
     });
+  };
+
+  window.deleteProduct = function () {
+    if (!editing) return;
+    if (!confirm("Delete \"" + (editing.name || "this product") +
+                 "\" from your catalog? Past sales are not affected.")) return;
+    var key = editing.key;
+    document.getElementById("sh-err").textContent = "";
+    apiPost("api/product", { action: "delete", key: key })
+      .then(function () {
+        // Drop from local data + re-render.
+        invData = (invData || []).filter(function (p) { return p.key !== key; });
+        closeSheet();
+        renderCatalog();
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+      })
+      .catch(function (e) {
+        document.getElementById("sh-err").textContent = e.message || "Delete failed";
+      });
+  };
+
+  // ── Add product ──
+  window.openAddProduct = function () {
+    document.getElementById("add-name").value = "";
+    document.getElementById("add-cat").value = "";
+    document.getElementById("add-err").textContent = "";
+    document.getElementById("add-save").disabled = false;
+    document.getElementById("addOverlay").classList.remove("hidden");
+  };
+  window.closeAddProduct = function () {
+    document.getElementById("addOverlay").classList.add("hidden");
+  };
+  window.saveAddProduct = function () {
+    var name = (document.getElementById("add-name").value || "").trim();
+    var cat = (document.getElementById("add-cat").value || "").trim();
+    var err = document.getElementById("add-err");
+    if (!name) { err.textContent = "Enter a product name."; return; }
+    var btn = document.getElementById("add-save");
+    btn.disabled = true; err.textContent = "";
+    apiPost("api/product", { action: "add", name: name, category: cat })
+      .then(function (j) {
+        if (j.product) (invData = invData || []).push(j.product);
+        closeAddProduct();
+        renderCatalog();
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        err.textContent = e.message || "Could not add product";
+      });
   };
 
   // ── Record a transaction (M6b) ──
