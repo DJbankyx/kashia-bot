@@ -1440,7 +1440,11 @@ _PAGE_HTML = """<!doctype html>
   function api(sub) {
     return fetch(BASE + "/" + sub, { headers: { "X-Telegram-Init-Data": initData } })
       .then(function (r) {
-        if (!r.ok) throw new Error(r.status === 401 ? "Not authorized" : ("Error " + r.status));
+        if (!r.ok) {
+          throw new Error(r.status === 401
+            ? "Session expired — close and reopen the app from the ☰ menu button."
+            : ("Error " + r.status));
+        }
         return r.json();
       });
   }
@@ -1608,8 +1612,11 @@ _PAGE_HTML = """<!doctype html>
         }
       })
       .catch(function (e) {
+        // Clear the "Loading…" state so the user isn't stuck staring at it.
+        document.getElementById("biz").textContent = "Kashia";
         document.getElementById("period").textContent = "";
-        msg.innerHTML = '<span class="err">' + (e.message || "Could not load") + '</span>';
+        msg.innerHTML = '<span class="err">' + (e.message || "Could not load") +
+          '</span>';
       });
     loadCharts();
   }

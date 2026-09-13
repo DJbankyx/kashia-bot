@@ -27,7 +27,11 @@ from urllib.parse import parse_qsl
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAX_AGE_SECONDS = 3600  # 1 hour (plan decision #4)
+# 24h. The HMAC signature is the real authenticity gate; auth_date is only a
+# replay guard. 1h was too aggressive — reopening the Mini App later in the day
+# (stale cached launch/initData) failed auth → the app stuck on "Loading…".
+# 24h is the common, practical window for a day-to-day Mini App.
+DEFAULT_MAX_AGE_SECONDS = 86400
 
 
 def validate_init_data(init_data: str, bot_token: str,
