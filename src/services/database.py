@@ -29,6 +29,19 @@ logger.setLevel(logging.INFO)
 RETENTION_DAYS = 2190  # 6 years (365 * 6) — Nigeria FIRS/tax minimum
 
 
+def _money_expr(value):
+    """A kobo-precise, DynamoDB-safe numeric for update expressions / ADD.
+
+    boto3 rejects a Python float in an ExpressionAttributeValue — it needs an
+    int or a Decimal. Returns an int when the (2dp-rounded) amount is whole,
+    else a Decimal. Money only (not quantity)."""
+    from utils.money import money_round, to_money
+    r = money_round(value)
+    if isinstance(r, int):
+        return r
+    return to_money(r)  # Decimal, already 2dp
+
+
 def _is_deleted(item) -> bool:
     """True if a row has been soft-deleted (archived)."""
     return bool(item.get("deleted")) if isinstance(item, dict) else False
@@ -229,11 +242,15 @@ class Database:
                          discount_type=None, tax_amount=None, tax_percent=None,
                          tax_type=None):
         """Save a new transaction with rich parsed data"""
+        from utils.money import money_round
+        from utils.quantity import to_qty, qty_is_whole
         transaction_id = generate_id()
         item = {
             'phone_number': phone_number,
             'transaction_id': transaction_id,
-            'amount': int(amount),
+            # MONEY is kobo-precise (2dp) — money_round returns int when whole,
+            # else a 2dp float that _sanitize_for_dynamo stores as Decimal.
+            'amount': money_round(amount),
             'type': tx_type,  # "income" or "expense"
             'description': description,
             'category': category,
@@ -257,22 +274,18 @@ class Database:
         if color:
             item['color'] = color
         if quantity:
-            # Extract numeric part (handles "12 pieces", "1 dozen", etc.)
-            if isinstance(quantity, (int, float)):
-                item['quantity'] = int(quantity)
-            else:
-                qty_match = re.match(r'^([\d.]+)', str(quantity))
-                if qty_match:
-                    item['quantity'] = int(float(qty_match.group(1)))
-                else:
-                    item['quantity'] = str(quantity)
+            # QUANTITY may be fractional (0.5 kg) — keep it decimal-safe (int
+            # when whole so it displays "5", float when fractional). This is the
+            # storage boundary for a tx's quantity; truncating here made a 0.5
+            # sale read back as 0 in accounting._qty_of.
+            q = to_qty(quantity, default=0.0)
+            if q > 0:
+                item['quantity'] = int(q) if qty_is_whole(q) else q
+            elif not isinstance(quantity, (int, float)):
+                item['quantity'] = str(quantity)  # preserve a non-numeric label
         if unit_cost:
-            if isinstance(unit_cost, (int, float)):
-                item['unit_cost'] = int(unit_cost)
-            else:
-                uc_match = re.match(r'^([\d.]+)', str(unit_cost))
-                if uc_match:
-                    item['unit_cost'] = int(float(uc_match.group(1)))
+            # unit_cost is MONEY — kobo-precise.
+            item['unit_cost'] = money_round(unit_cost)
         if payment_method:
             item['payment_method'] = payment_method
         if payment_status:
@@ -281,17 +294,17 @@ class Database:
             item['extra_details'] = extra_details
         if tags:
             item['tags'] = tags
-        # Discount & Tax fields
+        # Discount & Tax fields (money → kobo-precise; percents stay float)
         if subtotal:
-            item['subtotal'] = int(subtotal)
+            item['subtotal'] = money_round(subtotal)
         if discount_amount:
-            item['discount_amount'] = int(discount_amount)
+            item['discount_amount'] = money_round(discount_amount)
         if discount_percent:
             item['discount_percent'] = float(discount_percent)
         if discount_type:
             item['discount_type'] = discount_type
         if tax_amount:
-            item['tax_amount'] = int(tax_amount)
+            item['tax_amount'] = money_round(tax_amount)
         if tax_percent:
             item['tax_percent'] = float(tax_percent)
         if tax_type:
@@ -1047,7 +1060,8 @@ class Database:
     def update_contact_totals(self, phone_number, contact_name, amount, tx_type):
         """Update a contact's total paid/received after a transaction.
         Also saves name and type if contact doesn't exist yet."""
-        amount = int(amount)  # Ensure no floats
+        from utils.money import money_round
+        amount = money_round(amount)  # kobo-precise (int if whole, else 2dp)
         contact_id = contact_name.strip().lower().replace(" ", "_")
         # Money OUT (you paid them) vs money IN (they paid you).
         #   sale                 → customer
@@ -1123,7 +1137,9 @@ class Database:
                     '#t': 'type'
                 },
                 ExpressionAttributeValues={
-                    ':amount': int(amount),
+                    # boto3 needs Decimal (not float) for a numeric expression
+                    # value; to_money returns a 2dp-safe Decimal for the ADD.
+                    ':amount': _money_expr(amount),
                     ':one': 1,
                     ':zero': 0,
                     ':date': datetime.now().strftime('%Y-%m-%d'),
@@ -1173,7 +1189,7 @@ class Database:
                 f"last_transaction_date = :date"
             )
             expr_values = {
-                ':amount': int(amount),
+                ':amount': _money_expr(amount),   # kobo-precise, DynamoDB-safe
                 ':zero': 0,
                 ':name': contact_name.strip(),
                 ':ctype': new_ctype,
@@ -1206,10 +1222,15 @@ class Database:
         contact_id = contact_name.strip().lower().replace(' ', '_')
         field = 'debt_owed_to_me' if debt_type == 'owed_to_me' else 'debt_i_owe'
         try:
-            # Get current debt first
+            # Get current debt first. Money is kobo-precise: keep the arithmetic
+            # in Decimal, floor at 0, store 2dp.
+            from utils.money import to_money
             contact = self.get_contact_by_name(phone_number, contact_name)
-            current_debt = int(contact.get(field, 0)) if contact else 0
-            new_debt = max(0, current_debt - int(amount))
+            current_debt = to_money(contact.get(field, 0)) if contact else to_money(0)
+            new_debt_dec = current_debt - to_money(amount)
+            if new_debt_dec < 0:
+                new_debt_dec = to_money(0)
+            new_debt = _money_expr(new_debt_dec)
 
             self.contacts.update_item(
                 Key={'phone_number': phone_number, 'contact_id': contact_id},
@@ -1228,9 +1249,10 @@ class Database:
     def get_all_debtors(self, phone_number):
         """Get all contacts who owe the user money"""
         contacts = self.get_contacts(phone_number, limit=100)
+        from utils.money import money_round
         debtors = []
         for c in contacts:
-            debt = int(c.get('debt_owed_to_me', 0))
+            debt = money_round(c.get('debt_owed_to_me', 0))   # kobo-precise
             if debt > 0:
                 debtors.append({
                     'name': c.get('name', c.get('contact_id', 'Unknown')),
@@ -1247,9 +1269,10 @@ class Database:
     def get_all_creditors(self, phone_number):
         """Get all contacts the user owes money to"""
         contacts = self.get_contacts(phone_number, limit=100)
+        from utils.money import money_round
         creditors = []
         for c in contacts:
-            debt = int(c.get('debt_i_owe', 0))
+            debt = money_round(c.get('debt_i_owe', 0))   # kobo-precise
             if debt > 0:
                 creditors.append({
                     'name': c.get('name', c.get('contact_id', 'Unknown')),
