@@ -265,9 +265,10 @@ class TransactionHandler:
             f"",
         ]
 
+        from utils.money import money_round
         for i, item in enumerate(items, 1):
             item_name = item.get("item_name", item.get("description", f"Item {i}"))
-            item_amount = int(item.get("total_amount", 0) or 0)
+            item_amount = money_round(item.get("total_amount", 0) or 0)   # kobo-precise
             item_qty = item.get("quantity", "")
             item_unit_cost = item.get("unit_cost")
 
@@ -323,9 +324,10 @@ class TransactionHandler:
         saved_count = 0
         total = 0
 
+        from utils.money import money_round
         for item in items:
             item_name = item.get("item_name", item.get("description", "Item"))
-            item_amount = int(item.get("total_amount", 0) or 0)
+            item_amount = money_round(item.get("total_amount", 0) or 0)   # kobo-precise
             item_qty = item.get("quantity", "")
             item_category = item.get("category", "Sales & Income")
             item_vendor = item.get("vendor_or_customer", vendor) or vendor
@@ -794,9 +796,11 @@ class TransactionHandler:
 
                         # Stamp the production cost used as this sale's COGS.
                         if tx_id:
+                            # COGS is money (kobo-precise); qty may be fractional.
+                            from utils.money import to_money, money_round
                             self.db.update_transaction(phone_number, tx_id, {
-                                "cost_used_total": int(product_cost) * qty,
-                                "cost_unit": int(product_cost),
+                                "cost_used_total": money_round(to_money(product_cost) * to_money(qty)),
+                                "cost_unit": money_round(product_cost),
                                 "cost_source": "recipe",
                             })
 
@@ -842,19 +846,19 @@ class TransactionHandler:
             # ── For PURCHASES: update inventory (add stock + save cost) ──
             _purchase_unit_warning = None
             if tx_data["type"] == "purchase":
+                from utils.money import to_money, money_round
                 qty = self._parse_qty(tx_data.get("quantity", "1"))
-                unit_cost = int(tx_data.get("unit_cost") or 0)
+                unit_cost = money_round(tx_data.get("unit_cost") or 0)
                 # R2b — strict cost for weighted-average: a purchase can NEVER be
                 # cost-less. The amount paid IS the money spent on the goods, so
                 # if no explicit unit_cost was captured (e.g. a total-only entry,
                 # or a WhatsApp AI parse that didn't isolate a per-unit price),
-                # derive it from amount ÷ qty. This guarantees update_stock always
-                # gets a valid cost to fold into the running weighted average —
-                # without blocking the flow or unwinding a mid-save.
+                # derive it from amount ÷ qty. Divide in Decimal (NOT //) so a
+                # sub-naira per-unit cost survives, then round to kobo.
                 if unit_cost <= 0:
-                    amt = int(tx_data.get("amount") or 0)
+                    amt = to_money(tx_data.get("amount") or 0)
                     if amt > 0 and qty > 0:
-                        unit_cost = amt // qty
+                        unit_cost = money_round(amt / to_money(qty))
                         tx_data["unit_cost"] = unit_cost
                 desc = tx_data.get("description", "")
                 brand = tx_data.get("brand", "")
@@ -1058,11 +1062,13 @@ class TransactionHandler:
                     quantity_str=qty_str, variant=variant)
 
             # purchase — add stock + fold cost into the weighted average.
-            unit_cost = int(tx_data.get("unit_cost") or 0)
+            from utils.money import to_money, money_round
+            unit_cost = money_round(tx_data.get("unit_cost") or 0)
             if unit_cost <= 0:
-                amt = int(tx_data.get("amount") or 0)
+                amt = to_money(tx_data.get("amount") or 0)
                 if amt > 0 and qty > 0:
-                    unit_cost = amt // qty
+                    # Decimal divide (not //) so sub-naira per-unit cost survives.
+                    unit_cost = money_round(amt / to_money(qty))
                     tx_data["unit_cost"] = unit_cost
             stock_result = cat.update_stock(
                 phone_number, search_name, qty, unit_cost, qty_str, variant=variant)
@@ -1135,9 +1141,10 @@ class TransactionHandler:
             acct = Accounting(self.db, self.session)
             total, unit, source = acct.resolve_sale_cost_now(phone_number, tx_data)
             if total and total > 0:
+                from utils.money import money_round
                 self.db.update_transaction(phone_number, tx_id, {
-                    "cost_used_total": int(total),
-                    "cost_unit": int(unit),
+                    "cost_used_total": money_round(total),   # kobo-precise
+                    "cost_unit": money_round(unit),
                     "cost_source": source,
                 })
         except Exception as e:
@@ -1168,7 +1175,8 @@ class TransactionHandler:
         try:
             if not tx_id:
                 return {"ok": False, "error": "no transaction id"}
-            new_unit_cost = int(new_unit_cost or 0)
+            from utils.money import to_money, money_round
+            new_unit_cost = money_round(new_unit_cost or 0)   # kobo-precise
             if new_unit_cost <= 0:
                 return {"ok": False, "error": "enter a valid cost greater than 0"}
 
@@ -1191,18 +1199,19 @@ class TransactionHandler:
 
             qty = self._parse_qty(tx.get("quantity", 1) or 1) or 1
             extra = dict(tx.get("extra_details") or {})
-            old_total = int(extra.get("cost_used_total")
-                            or tx.get("cost_used_total") or 0)
-            new_total = new_unit_cost * qty
+            old_total = money_round(extra.get("cost_used_total")
+                                    or tx.get("cost_used_total") or 0)
+            # total = unit × qty, precise then rounded to kobo (qty may be fractional).
+            new_total = money_round(to_money(new_unit_cost) * to_money(qty))
             corrected_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
             updates = {
-                "cost_used_total": int(new_total),
-                "cost_unit": int(new_unit_cost),
+                "cost_used_total": new_total,
+                "cost_unit": new_unit_cost,
                 "cost_source": "corrected",
                 "cost_corrected_at": corrected_at,
-                "cost_corrected_from": int(old_total),
-                "landing_cost": int(new_total),  # keep the visible field in sync
+                "cost_corrected_from": old_total,
+                "landing_cost": new_total,  # keep the visible field in sync
             }
             # CRITICAL: the accounting reader checks extra_details.cost_used_total
             # FIRST (web-saved + return rows nest the stamp there), then the
@@ -1210,11 +1219,11 @@ class TransactionHandler:
             # stale NESTED stamp would shadow our correction. When the sale
             # carries an extra_details stamp, rewrite the whole extra_details too.
             if extra.get("cost_used_total") not in (None, ""):
-                extra["cost_used_total"] = int(new_total)
-                extra["cost_unit"] = int(new_unit_cost)
+                extra["cost_used_total"] = new_total
+                extra["cost_unit"] = new_unit_cost
                 extra["cost_source"] = "corrected"
                 extra["cost_corrected_at"] = corrected_at
-                extra["cost_corrected_from"] = int(old_total)
+                extra["cost_corrected_from"] = old_total
                 updates["extra_details"] = extra
 
             self.db.update_transaction(phone_number, tx_id, updates)
@@ -1283,7 +1292,8 @@ class TransactionHandler:
             tx_type = tx_data.get("type")
             if tx_type not in ("sale", "purchase", "expense"):
                 return {"ok": False, "error": "invalid type"}
-            amount = int(tx_data.get("amount") or 0)
+            from utils.money import money_round
+            amount = money_round(tx_data.get("amount") or 0)   # kobo-precise
             if amount <= 0:
                 return {"ok": False, "error": "amount must be greater than 0"}
             description = (tx_data.get("description") or "Item").strip()
@@ -1513,15 +1523,17 @@ class TransactionHandler:
             # into a drifted blended average.
             orig_cost_unit = 0
             if orig_type == "sale":
-                orig_cost_total = int(orig_extra.get("cost_used_total")
-                                      or original.get("cost_used_total") or 0)
-                orig_cost_unit = int(orig_extra.get("cost_unit")
-                                     or original.get("cost_unit") or 0)
+                from utils.money import to_money, money_round
+                orig_cost_total = money_round(orig_extra.get("cost_used_total")
+                                              or original.get("cost_used_total") or 0)
+                orig_cost_unit = money_round(orig_extra.get("cost_unit")
+                                             or original.get("cost_unit") or 0)
                 orig_cost_src = (orig_extra.get("cost_source")
                                  or original.get("cost_source") or "")
                 if orig_cost_total > 0:
+                    # Pro-rate the returned COGS in precise money, round to kobo.
                     ret_cost_total = (orig_cost_total if not is_partial
-                                      else int(round(orig_cost_total * qty / orig_qty)))
+                                      else money_round(to_money(orig_cost_total) * to_money(qty) / to_money(orig_qty)))
                     extra["cost_used_total"] = ret_cost_total
                     if orig_cost_unit > 0:
                         extra["cost_unit"] = orig_cost_unit
@@ -1714,7 +1726,7 @@ class TransactionHandler:
             # full amount as the unit price. Now the qty is persisted correctly.
             result = self.db.save_transaction(
                 phone_number,
-                int(amount),
+                amount,   # save_transaction money_rounds (kobo-precise)
                 tx_type,
                 description,
                 tx_data["category"],
@@ -1740,7 +1752,7 @@ class TransactionHandler:
             if vendor:
                 try:
                     self.db.update_contact_totals(
-                        phone_number, vendor, int(amount), tx_type)
+                        phone_number, vendor, amount, tx_type)   # kobo-precise inside
                 except Exception as e:
                     logger.warning(f"credit save: update_contact_totals failed: {e}")
 
@@ -2138,8 +2150,9 @@ class TransactionHandler:
             # Still decrement inventory even when skipping landing cost
             self._decrement_stock_on_sale(phone_number, desc, qty, context)
 
-            # Save last_sale_price for auto-suggest next time
-            sale_unit_price = int(amount) // qty if qty > 0 else int(amount)
+            # Save last_sale_price for auto-suggest next time (money, precise).
+            from utils.money import to_money, money_round
+            sale_unit_price = money_round(to_money(amount) / to_money(qty)) if qty > 0 else money_round(amount)
             self._save_last_sale_price(phone_number, desc, sale_unit_price, context.get("lc_variant", ""))
 
             self.session.reset(phone_number)
@@ -2160,9 +2173,10 @@ class TransactionHandler:
                 [{"id": "lc_skip", "title": "⏭️ Skip"}]
             )]
 
-        # ── Use saved cost from catalog ──
+        # ── Use saved cost from catalog ── (money, precise)
+        from utils.money import to_money, money_round
         if text_low == "lc_use_saved" and saved_cost:
-            landing_cost_parsed = int(saved_cost) * qty  # saved_cost is per-unit, calculate total
+            landing_cost_parsed = to_money(saved_cost) * to_money(qty)  # per-unit → total
         else:
             # Parse typed amount
             landing_cost_parsed = parse_amount(text)
@@ -2171,11 +2185,11 @@ class TransactionHandler:
                     "💰 Enter the landing cost (e.g. 50000, 150K, 10M):\n\n"
                     "_Or type *skip* to continue without it._"
                 )]
-            landing_cost = int(landing_cost_parsed)
 
-        # Save landing cost — entered as TOTAL cost for the transaction
-        total_cost = int(landing_cost_parsed)
-        landing_cost_per_unit = total_cost // qty if qty > 0 else total_cost
+        # Save landing cost — entered as TOTAL cost for the transaction. Divide
+        # in Decimal (not //) so a sub-naira per-unit cost survives; round kobo.
+        total_cost = money_round(landing_cost_parsed)
+        landing_cost_per_unit = money_round(to_money(total_cost) / to_money(qty)) if qty > 0 else total_cost
         if tx_id:
             self.db.update_transaction(phone_number, tx_id, {
                 "landing_cost": total_cost,
@@ -2196,12 +2210,15 @@ class TransactionHandler:
         self._decrement_stock_on_sale(phone_number, desc, qty, context)
 
         # Save last_sale_price on the catalog product for auto-suggest next time
-        sale_unit_price = int(amount) // qty if qty > 0 else int(amount)
+        # (money, precise — divide in Decimal so sub-naira unit prices survive).
+        from utils.money import to_money, money_round
+        _amt = to_money(amount)
+        sale_unit_price = money_round(_amt / to_money(qty)) if qty > 0 else money_round(_amt)
         self._save_last_sale_price(phone_number, desc, sale_unit_price, context.get("lc_variant", ""))
 
-        # Calculate and show margin
-        margin = int(amount) - total_cost
-        margin_pct = int(margin / int(amount) * 100) if int(amount) > 0 else 0
+        # Calculate and show margin (money precise; percentage stays int).
+        margin = money_round(_amt - to_money(total_cost))
+        margin_pct = int(to_money(margin) / _amt * 100) if _amt > 0 else 0
 
         self.session.reset(phone_number)
 
