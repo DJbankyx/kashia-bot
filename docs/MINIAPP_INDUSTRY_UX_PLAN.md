@@ -225,3 +225,27 @@ setup nudge) and Stage 5 (owner's remaining mini-app improvement list).
 **Next:** Stage 4 — catalog-first setup nudge (flag uncosted raw materials /
 recipe-less finished goods / missing units, gentle checklist, never blocks
 recording), then Stage 5 (owner's remaining mini-app improvement list).
+
+### 2026-09-22 — Stage 4 shipped (commit `cecbc3a`)
+
+**Catalog-first setup nudge (server health check + dashboard banner). Never blocks.**
+- `miniapp.py` new pure helper `_catalog_health(user, industry)` scans the
+  catalog and counts setup gaps (server-side; app only renders counts):
+  - `no_recipe` — mfg/hybrid finished goods with no recipe (cost can't derive).
+  - `no_cost` — raw materials/supplies/plain-trading products with no buy-cost
+    (variant-tree products excluded; cost lives on leaves).
+  - `no_price` — sellable products with no selling price (margin unknown).
+  - `no_unit` — products with no unit.
+  Returns `{total, complete, issue_count, issues{...}, tips[...]}`. Attached to
+  `/api/summary` as `catalog_health`. Trading skips the recipe check.
+- Mini-app JS: a gentle, dismissable banner at the top of the Dashboard tab
+  (`#catnudge`) listing the tips + an "📦 Open catalog" button (→ catalog tab).
+  `renderCatNudge()` hides it when complete/dismissed/no issues; `dismissNudge()`
+  is session-scoped (reappears next open if still incomplete). No blocking.
+- Unit-tested `_catalog_health` (mfg flags each gap once; trading complete;
+  empty catalog = not-complete/no-issues) → `HEALTH_OK`. `py_compile` +
+  `check_syntax.py` pass. JS + summary field only — no endpoints, no template
+  change; a normal deploy + app reopen picks it up.
+
+**Next:** Stage 5 — owner's remaining mini-app improvement list (collect + fold
+in, per-industry where relevant). Awaiting the owner's list.
