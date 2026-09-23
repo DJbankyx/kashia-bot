@@ -1726,25 +1726,39 @@ _PAGE_HTML = """<!doctype html>
     trading: {
       sale: "Sale", sales: "Sales", purchase: "Purchase", purchases: "Purchases",
       catalog: "Catalog", customers: "Customers", cogs: "Cost of sales",
-      sale_emoji: "\\ud83d\\udcb0", purchase_emoji: "\\ud83d\\udce6"
+      sale_emoji: "\\ud83d\\udcb0", purchase_emoji: "\\ud83d\\udce6",
+      // Record-form inner labels. Trading == the original hardcoded HTML strings
+      // (byte-for-byte), so the control never changes.
+      sell_q: "What did you sell?", buy_q: "What did you buy?",
+      customer_opt: "Customer (optional)", supplier_opt: "Supplier (optional)",
+      pick_hint: "Tap to choose a product"
     },
     manufacturing: {
       sale: "Output sale", sales: "Output sales", purchase: "Raw material",
       purchases: "Raw materials", catalog: "Products & materials",
       customers: "Customers", cogs: "Production cost",
-      sale_emoji: "\\ud83c\\udff7\\ufe0f", purchase_emoji: "\\ud83e\\uddf1"
+      sale_emoji: "\\ud83c\\udff7\\ufe0f", purchase_emoji: "\\ud83e\\uddf1",
+      sell_q: "What finished product did you sell?", buy_q: "What raw material did you buy?",
+      customer_opt: "Buyer (optional)", supplier_opt: "Supplier (optional)",
+      pick_hint: "Tap to choose a product"
     },
     services: {
       sale: "Job / service", sales: "Jobs / services", purchase: "Supply purchase",
       purchases: "Supply purchases", catalog: "Services & supplies",
       customers: "Clients", cogs: "Direct costs",
-      sale_emoji: "\\ud83d\\udcbc", purchase_emoji: "\\ud83d\\udce6"
+      sale_emoji: "\\ud83d\\udcbc", purchase_emoji: "\\ud83d\\udce6",
+      sell_q: "What service did you provide?", buy_q: "What supplies did you buy?",
+      customer_opt: "Client (optional)", supplier_opt: "Supplier (optional)",
+      pick_hint: "Tap to choose a service"
     },
     hybrid: {
       sale: "Sale / service", sales: "Sales / services", purchase: "Purchase",
       purchases: "Purchases", catalog: "Products & supplies",
       customers: "Customers", cogs: "Cost of sales",
-      sale_emoji: "\\ud83d\\udcb0", purchase_emoji: "\\ud83d\\udce6"
+      sale_emoji: "\\ud83d\\udcb0", purchase_emoji: "\\ud83d\\udce6",
+      sell_q: "What did you sell?", buy_q: "What did you buy?",
+      customer_opt: "Customer (optional)", supplier_opt: "Supplier (optional)",
+      pick_hint: "Tap to choose a product / service"
     }
   };
   function t(key) {
@@ -3040,8 +3054,14 @@ _PAGE_HTML = """<!doctype html>
   }
   function recSyncLabels() {
     var t = recTypeVal;
+    // Industry wording (the param name 't' shadows the term helper, so read the
+    // TERMS set directly). Trading's terms equal the original strings → no-op.
+    var _ts = TERMS[APP.industry] || TERMS.trading;
     document.getElementById("rec-desc-label").textContent =
-      t === "sale" ? "What did you sell?" : (t === "purchase" ? "What did you buy?" : "What was it for?");
+      t === "sale" ? _ts.sell_q : (t === "purchase" ? _ts.buy_q : "What was it for?");
+    // Keep the picker placeholder industry-worded while nothing is picked yet.
+    var _pt = document.getElementById("rec-prod-text");
+    if (_pt && !pick.name) _pt.textContent = _ts.pick_hint;
     document.getElementById("rec-amount-label").textContent =
       t === "sale" ? "Amount received (\u20a6)" : (t === "purchase" ? "Amount paid (\u20a6)" : "Amount (\u20a6)");
     // Sale/purchase pick from the catalog; expense is free text.
@@ -3054,7 +3074,7 @@ _PAGE_HTML = """<!doctype html>
     document.getElementById("rec-qty-wrap").style.display = isExpense ? "none" : "";
     document.getElementById("rec-cost-wrap").style.display = (t === "sale") ? "" : "none";
     document.getElementById("rec-who-label").textContent =
-      t === "purchase" ? "Supplier (optional)" : (t === "sale" ? "Customer (optional)" : "Paid to (optional)");
+      t === "purchase" ? _ts.supplier_opt : (t === "sale" ? _ts.customer_opt : "Paid to (optional)");
     // Part payment (deposit + balance) doesn't apply to expenses — hide that chip
     // and fall back to cash if it was selected.
     var partChip = document.querySelector('#rec-pay .chip[data-p="part"]');
