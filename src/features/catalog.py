@@ -1758,10 +1758,11 @@ class CatalogHandler:
         product_key = context.get("cat_product_key", "")
         text_low = text.lower().strip()
 
-        # Parse: "+5", "-3", "set 10", or just "10" (set to)
-        add_match = re.match(r'^\+\s*(\d+)', text)
-        sub_match = re.match(r'^-\s*(\d+)', text)
-        set_match = re.match(r'^(?:set\s+)?(\d+)$', text_low)
+        # Parse: "+5", "-3", "set 10", or just "10" (set to). Stock may be
+        # fractional (0.5 kg) — accept decimals.
+        add_match = re.match(r'^\+\s*([\d.]+)', text)
+        sub_match = re.match(r'^-\s*([\d.]+)', text)
+        set_match = re.match(r'^(?:set\s+)?([\d.]+)$', text_low)
 
         products = self._get_products(phone_number)
         if product_key not in products:
@@ -1770,20 +1771,20 @@ class CatalogHandler:
 
         product = products[product_key]
         name = product.get("name", product_key)
-        current = int(product.get("stock", 0))
+        current = self._as_num(product.get("stock", 0), 0)
 
         if add_match:
-            qty = int(add_match.group(1))
-            product["stock"] = current + qty
-            action_str = f"+{qty}"
+            qty = self._as_num(add_match.group(1), 0)
+            product["stock"] = self._as_num(current + qty, 0)
+            action_str = f"+{self._fmt_qty(qty)}"
         elif sub_match:
-            qty = int(sub_match.group(1))
-            product["stock"] = max(0, current - qty)
-            action_str = f"-{qty}"
+            qty = self._as_num(sub_match.group(1), 0)
+            product["stock"] = self._as_num(max(0, current - qty), 0)
+            action_str = f"-{self._fmt_qty(qty)}"
         elif set_match:
-            qty = int(set_match.group(1))
+            qty = self._as_num(set_match.group(1), 0)
             product["stock"] = qty
-            action_str = f"set to {qty}"
+            action_str = f"set to {self._fmt_qty(qty)}"
         else:
             return [text_response(
                 "📐 Enter stock adjustment:\n\n"
@@ -1793,7 +1794,7 @@ class CatalogHandler:
             )]
 
         self._save_products(phone_number, products)
-        new_stock = int(product["stock"])
+        new_stock = self._fmt_qty(product["stock"])
         self.session.reset(phone_number)
 
         return [
@@ -2698,8 +2699,8 @@ class CatalogHandler:
             path = [x.strip() for x in resolved_variant.split(self._COMBO_SEP) if x.strip()]
             node = self._vt_get_node(tree, path)
             if node is not None:
-                cur = self._as_int(node.get("stock"), 0)
-                node["stock"] = max(0, cur + actual_qty)
+                cur = self._as_num(node.get("stock"), 0)
+                node["stock"] = self._as_num(max(0, cur + actual_qty), 0)
                 # Cost on the leaf. Default weighted-avg on purchase; cost_mode
                 # lets a follow-up user choice override to "new" or "keep".
                 _leaf_prev_cost = self._as_int(node.get("cost"), 0)
@@ -2729,7 +2730,7 @@ class CatalogHandler:
                 return {
                     "matched": True,
                     "product": product.get("name", matched_key),
-                    "new_stock": int(product.get("stock", 0)),
+                    "new_stock": self._as_num(product.get("stock", 0), 0),
                     "variant": resolved_variant,
                     "landing_cost": self._as_int(node.get("cost"), 0),
                     "prev_cost": _leaf_prev_cost,
@@ -2737,20 +2738,21 @@ class CatalogHandler:
                 }
 
         # ── Variant-level stock update (legacy flat combos) ──
+        # Stock may be fractional (0.5 kg) — coerce with _as_num, not int.
         variant_stock = product.get("variant_stock", {})
 
         if resolved_variant and resolved_variant in variant_stock:
             # Update variant stock
-            current_variant = int(variant_stock.get(resolved_variant, 0))
-            new_variant_stock = max(0, current_variant + actual_qty)
+            current_variant = self._as_num(variant_stock.get(resolved_variant, 0), 0)
+            new_variant_stock = self._as_num(max(0, current_variant + actual_qty), 0)
             variant_stock[resolved_variant] = new_variant_stock
             product["variant_stock"] = variant_stock
 
             # Recalculate total stock from all variants
-            product["stock"] = sum(int(v) for v in variant_stock.values())
+            product["stock"] = self._as_num(sum(self._as_num(v, 0) for v in variant_stock.values()), 0)
         elif resolved_variant and actual_qty > 0:
             # New variant being added via purchase — initialize it
-            variant_stock[resolved_variant] = max(0, actual_qty)
+            variant_stock[resolved_variant] = self._as_num(max(0, actual_qty), 0)
             product["variant_stock"] = variant_stock
 
             # Add to variants list if not there
@@ -2760,11 +2762,11 @@ class CatalogHandler:
                 product["variants"] = variants_list
 
             # Recalculate total stock
-            product["stock"] = sum(int(v) for v in variant_stock.values())
+            product["stock"] = self._as_num(sum(self._as_num(v, 0) for v in variant_stock.values()), 0)
         else:
             # No variant specified or no variant_stock exists — update total directly
-            current = int(product.get("stock", 0))
-            new_stock = max(0, current + actual_qty)
+            current = self._as_num(product.get("stock", 0), 0)
+            new_stock = self._as_num(max(0, current + actual_qty), 0)
             product["stock"] = new_stock
 
         # ── Landing cost update (from purchase) ──
@@ -3076,7 +3078,10 @@ class CatalogHandler:
                 norm[k] = product[k]
 
         # Coerce numerics safely (stored values are sometimes strings/Decimals).
-        for num_key in ("stock", "landing_cost", "sale_price", "reorder_level"):
+        # STOCK may be fractional (0.5 kg) → _as_num. MONEY stays integer naira
+        # → _as_int. reorder_level is a count → int.
+        norm["stock"] = self._as_num(norm.get("stock"), 0)
+        for num_key in ("landing_cost", "sale_price", "reorder_level"):
             norm[num_key] = self._as_int(norm.get(num_key), 0)
 
         # If no display name, fall back to the key (slug → Title Case).
@@ -3099,13 +3104,34 @@ class CatalogHandler:
         return norm
 
     def _as_int(self, value, default: int = 0) -> int:
-        """Coerce a possibly-string/Decimal/float value to int, safely."""
+        """Coerce a possibly-string/Decimal/float value to int, safely.
+        Use for MONEY (cost/price) — kept integer naira this phase."""
         try:
             if value is None or value == "":
                 return default
             return int(float(value))
         except (ValueError, TypeError):
             return default
+
+    def _as_num(self, value, default: float = 0.0):
+        """Coerce a value to a decimal-safe QUANTITY/STOCK number.
+
+        Returns an int when the value is whole (so stock displays as "5", not
+        "5.0") and a float when fractional (0.5 kg, 2.5 L). Use for STOCK and
+        quantities — NOT money. Never raises."""
+        try:
+            if value is None or value == "":
+                return default
+            n = float(value)
+        except (ValueError, TypeError):
+            return default
+        return int(n) if n == int(n) else n
+
+    def _fmt_qty(self, value) -> str:
+        """Display a stock/quantity: whole as '5', fractional trimmed ('0.5').
+        Thin wrapper over utils.quantity.fmt_qty (single source of truth)."""
+        from utils.quantity import fmt_qty
+        return fmt_qty(value)
 
     def get_normalized_product(self, phone_number: str, key: str) -> dict:
         """Fetch one product by key and return it in the canonical rich shape."""
@@ -3984,7 +4010,9 @@ class CatalogHandler:
         delta and routing through update_stock, so movement logging + tree
         roll-up resync stay consistent with every other stock change. Returns
         the update_stock result dict."""
-        target = max(0, int(target))
+        # Stock may be fractional (0.5 kg) — use _as_num, not int, so a target
+        # like 2.5 and a fractional current both survive.
+        target = max(0.0, self._as_num(target, 0.0))
         # Current count: leaf if a variant path is given, else product total.
         products = self._get_products(phone_number)
         key = self._find_product_key(products, product_name)
@@ -3996,11 +4024,11 @@ class CatalogHandler:
                 if tree.get("children"):
                     parts = [x.strip() for x in variant.split(self._COMBO_SEP) if x.strip()]
                     node = self._vt_get_node(tree, parts)
-                    current = self._as_int((node or {}).get("stock"), 0)
+                    current = self._as_num((node or {}).get("stock"), 0)
                 else:
-                    current = int(prod.get("variant_stock", {}).get(variant, 0) or 0)
+                    current = self._as_num(prod.get("variant_stock", {}).get(variant, 0), 0)
             else:
-                current = int(prod.get("stock", 0) or 0)
+                current = self._as_num(prod.get("stock", 0), 0)
         delta = target - current
         return self.update_stock(phone_number, product_name, delta,
                                  variant=variant, cost_mode="keep")
@@ -4064,11 +4092,12 @@ class CatalogHandler:
         return out
 
     def _vt_node_total(self, node: dict) -> int:
-        """Roll-up stock for a node: own stock if leaf, else sum of children."""
+        """Roll-up stock for a node: own stock if leaf, else sum of children.
+        Stock may be fractional (0.5 kg) — use _as_num."""
         children = node.get("children") or {}
         if not children:
-            return self._as_int(node.get("stock"), 0)
-        return sum(self._vt_node_total(c) for c in children.values())
+            return self._as_num(node.get("stock"), 0)
+        return self._as_num(sum(self._vt_node_total(c) for c in children.values()), 0)
 
     def _vt_value(self, node: dict) -> tuple:
         """Return (total_stock, total_value_at_cost) for a tree node — leaves
@@ -4076,8 +4105,8 @@ class CatalogHandler:
         product (so the app can show a cost instead of 'no cost set')."""
         children = node.get("children") or {}
         if not children:
-            s = self._as_int(node.get("stock"), 0)
-            c = self._as_int(node.get("cost"), 0)
+            s = self._as_num(node.get("stock"), 0)   # stock may be fractional
+            c = self._as_int(node.get("cost"), 0)     # cost stays int naira
             return s, s * c
         ts = tv = 0
         for ch in children.values():

@@ -2702,14 +2702,26 @@ class TransactionHandler:
             logger.error(f"Inventory update error: {e}")
 
     def _parse_qty(self, quantity_str: str) -> int:
-        """Extract numeric quantity from strings like '5', '10 pairs', '3 cartons'.
-        Returns at least 1 (every transaction involves at least 1 unit).
+        """Extract numeric quantity from strings like '5', '0.5', '2.5 kg',
+        '10 pairs', '3 cartons'.
+
+        Quantity may be FRACTIONAL (0.5 kg of nylon, 2.5 litres) — the old
+        version used `\\d+` + int() which read "0.5" as 0 (then forced 1) and
+        "2.5" as 2, silently truncating manufacturing/services quantities.
+
+        Returns a WHOLE value as an int (so callers that display/store it still
+        show "5", not "5.0") and a FRACTIONAL value as a float ("0.5", "2.5").
+        An empty/blank quantity means "1 unit" (unchanged behaviour). A genuine
+        fraction < 1 is preserved (NOT forced up to 1).
         """
-        if not quantity_str:
+        from utils.quantity import to_qty, qty_is_whole
+        s = "" if quantity_str is None else str(quantity_str).strip()
+        if not s:
             return 1
-        import re
-        match = re.match(r'^(\d+)', str(quantity_str))
-        return int(match.group(1)) if match else 1
+        q = to_qty(s, default=1.0)
+        if q <= 0:
+            return 1  # a 0 / unparseable quantity still means at least 1 unit
+        return int(q) if qty_is_whole(q) else q
 
     def _low_stock_alert(self, phone_number: str, product: dict, path: list, qty: int):
         """Flag a low stock item — stored for the next session greeting or report."""

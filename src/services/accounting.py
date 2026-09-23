@@ -45,16 +45,37 @@ COST_MISSING = "MISSING"                  # no cost known — flag, don't fake
 
 
 def _to_int(v, default=0):
+    """Coerce to int — for MONEY (naira)."""
     try:
         return int(float(v))
     except (TypeError, ValueError):
         return default
 
 
+def _to_num(v, default=0):
+    """Coerce to a decimal-safe QUANTITY/STOCK number: int when whole (units
+    display clean), float when fractional (0.5 kg). For stock/quantity, NOT money."""
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return default
+    return int(n) if n == int(n) else n
+
+
 def _qty_of(tx):
-    """Best-effort integer quantity from a transaction (defaults to 1)."""
-    m = re.match(r"^\s*(\d+)", str(tx.get("quantity", "1")))
-    return int(m.group(1)) if m else 1
+    """Best-effort quantity from a transaction (defaults to 1).
+
+    Quantity may be FRACTIONAL (0.5 kg, 2.5 L). The old version used `\\d+` +
+    int() which read "0.5" as 0 → COGS of a half-unit sale computed to ZERO.
+    Now decimal-safe: returns an int when whole (display stays clean) and a
+    float when fractional. An empty/0/unparseable quantity still means 1 unit.
+    """
+    from utils.quantity import to_qty, qty_is_whole
+    raw = tx.get("quantity", "1")
+    q = to_qty(raw, default=1.0)
+    if q <= 0:
+        return 1
+    return int(q) if qty_is_whole(q) else q
 
 
 def _is_debt_settlement(tx):
@@ -160,7 +181,8 @@ class Accounting:
             # Match the sale-flow convention: a landing_cost_per_unit marker means
             # landing_cost is already the TOTAL; otherwise it's per-unit.
             has_per_unit = extra.get("landing_cost_per_unit") or sale_tx.get("landing_cost_per_unit")
-            total = _to_int(lc) if has_per_unit else _to_int(lc) * qty
+            # qty may be fractional → round the line COGS to int naira.
+            total = _to_int(lc) if has_per_unit else _to_int(_to_int(lc) * qty)
             return total, COST_SALE_LANDING
 
         # 1b) Variant-TREE leaf cost. For a tree product, cost lives on the LEAF
@@ -184,7 +206,7 @@ class Accounting:
                     pkey = cat._find_product_key(products, product.get("name", "")) or ""
                 leaf_c = cat.leaf_cost(sale_tx.get("phone_number", ""), pkey, leaf_path) if pkey else 0
                 if leaf_c and leaf_c > 0:
-                    return leaf_c * qty, COST_WEIGHTED_AVG
+                    return _to_int(leaf_c * qty), COST_WEIGHTED_AVG
             except Exception as e:
                 logger.debug(f"tree leaf cost lookup failed: {e}")
 
@@ -192,7 +214,7 @@ class Accounting:
         if product is not None:
             avg = product_avg_cost(product)
             if avg > 0:
-                return avg * qty, COST_WEIGHTED_AVG
+                return _to_int(avg * qty), COST_WEIGHTED_AVG
 
         # 3) Catalog landing_cost fallback (by name/brand), reusing the exact
         #    lookup the sale flow uses so numbers agree.
@@ -204,7 +226,7 @@ class Accounting:
             search = f"{brand} {desc}".strip() if brand else desc
             cc = cat.get_landing_cost(sale_tx.get("phone_number", ""), search) if search else 0
             if cc and cc > 0:
-                return cc * qty, COST_CATALOG
+                return _to_int(cc * qty), COST_CATALOG
         except Exception as e:
             logger.debug(f"catalog cost lookup failed: {e}")
 
@@ -237,7 +259,9 @@ class Accounting:
             if lc not in (None, "") and _to_int(lc) > 0:
                 total = _to_int(lc)
                 # landing_cost from the sale flow is a TOTAL for the line.
-                return total, (total // qty if qty else total), COST_SALE_LANDING
+                # qty may be fractional → divide (not //) then round the per-unit.
+                unit_cost = _to_int(total / qty) if qty else total
+                return total, unit_cost, COST_SALE_LANDING
 
             products = self._products(phone_number)
             product = self._match_product(products, tx_data) if products else None
@@ -291,7 +315,8 @@ class Accounting:
                     logger.debug(f"resolve_sale_cost catalog lookup failed: {e}")
 
             if unit > 0:
-                return unit * qty, unit, source
+                # qty may be fractional → round the line total to int naira.
+                return _to_int(unit * qty), unit, source
             return 0, 0, COST_MISSING
         except Exception as e:
             logger.warning(f"resolve_sale_cost_now failed: {e}")
@@ -590,24 +615,24 @@ class Accounting:
             base_cost = product_avg_cost(product)
             units = value = 0
             for variant, qty in vstock.items():
-                q = _to_int(qty)
-                c = _to_int(vcosts.get(variant, base_cost))
+                q = _to_num(qty)                    # stock may be fractional
+                c = _to_int(vcosts.get(variant, base_cost))   # cost = int naira
                 units += q
-                value += q * c
-            return units, value
+                value += _to_int(q * c)             # line value rounded to naira
+            return _to_num(units), value
 
         # Base product: stock × weighted-average cost.
-        qty = _to_int(product.get("stock", 0))
+        qty = _to_num(product.get("stock", 0))       # stock may be fractional
         cost = product_avg_cost(product)
-        return qty, qty * cost
+        return qty, _to_int(qty * cost)
 
     def _value_tree(self, node):
         """Recursively value a variant tree: leaves contribute stock × cost."""
         children = node.get("children") or {}
         if not children:
-            q = _to_int(node.get("stock", 0))
-            c = _to_int(node.get("cost", 0))
-            return q, q * c
+            q = _to_num(node.get("stock", 0))    # leaf stock may be fractional
+            c = _to_int(node.get("cost", 0))      # cost = int naira
+            return q, _to_int(q * c)
         units = value = 0
         for child in children.values():
             u, v = self._value_tree(child)
