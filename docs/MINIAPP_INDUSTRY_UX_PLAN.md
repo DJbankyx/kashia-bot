@@ -249,3 +249,32 @@ recording), then Stage 5 (owner's remaining mini-app improvement list).
 
 **Next:** Stage 5 — owner's remaining mini-app improvement list (collect + fold
 in, per-industry where relevant). Awaiting the owner's list.
+
+### 2026-09-23 — Hotfix + loose end (commits `eea547e`, `ad7f7d9`; deployed)
+
+**Hotfix `eea547e` — app 500 "Internal server error" on load.**
+- Cause: Stage 3/4 emoji labels used SINGLE-backslash escapes (`"\ud83d\udc65"`)
+  in the Python source. Python parsed those into lone UTF-16 surrogates, and
+  Lambda's response `.encode("utf-8")` then failed → API Gateway 500. The rest
+  of the file correctly uses DOUBLE-backslash (`"\\ud83d..."`) so the browser
+  reads the JS escape.
+- Fix: switched all 7 of my escapes to double-backslash. Verified the response
+  body encodes to UTF-8 and the source has zero lone surrogates.
+- Lesson: `py_compile`/`check_syntax.py` PASS on lone surrogates (only runtime
+  UTF-8 encode fails). Added a `body.encode("utf-8")` + surrogate-scan step to
+  the standard pre-deploy verification.
+
+**Loose end `ad7f7d9` — add a NEW raw material inline from the web recipe editor.**
+- Was: a fresh mfg account couldn't build a recipe in the web (picker only
+  listed existing raw materials) → forced back to chat. Dead end.
+- Now: the picker always offers "➕ New material…"; picking it reveals a name
+  field. `production.web_add_material` gained `new_material_name` — when set (or
+  the key is unknown), it creates the material in the catalog (tagged
+  raw_material, or overhead) BEFORE adding it to the recipe and restamping the
+  finished cost. Mirrors chat's auto-create. Engine-owned; no JS cost math.
+- Unit-tested: new "Flour" → created as raw_material @ cost, recipe cost stamped,
+  material appears in the picker next time; missing-name guarded. UTF-8 + compile
+  + check_syntax all pass. Deployed (build 20260923171402); `/dev/app` → HTTP 200.
+
+**Still pending (small):** Services "sale = job" wording INSIDE the record sheet's
+inner field labels (tabs/chips already done in Stage 3) — fold into Stage 5.
