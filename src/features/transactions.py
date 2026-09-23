@@ -2591,6 +2591,7 @@ class TransactionHandler:
         e.g. buying in "drums" while the recipe uses "kg" — landing_cost is per primary_unit.
         """
         try:
+            from utils.money import to_money
             user = self.db.get_user(phone_number)
             if not user:
                 return
@@ -2605,7 +2606,9 @@ class TransactionHandler:
             if mat_key in products:
                 stored_cost = products[mat_key].get("landing_cost", 0)
                 if stored_cost:
-                    effective_cost = int(stored_cost)
+                    # Keep kobo precision — a sub-naira material cost
+                    # (electricity ₦0.06/kWh) must not truncate to ₦0 here.
+                    effective_cost = float(to_money(stored_cost))
 
             updated = False
             for key, product in products.items():

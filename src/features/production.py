@@ -17,6 +17,7 @@ from utils.whatsapp_ui import (
     text_response, button_response, list_response, format_amount
 )
 from utils.parser import parse_amount
+from utils.money import to_money, money_round
 
 logger = logging.getLogger(__name__)
 
@@ -717,9 +718,10 @@ class ProductionHandler:
 
             # Update landing cost (production cost per unit — based on good units)
             if cost_per_unit > 0 and good_qty > 0:
-                # Actual cost per good unit (accounts for waste)
-                actual_cost_per_unit = total_cost / good_qty
-                products[product_key]["landing_cost"] = int(actual_cost_per_unit)
+                # Actual cost per good unit (accounts for waste). Kobo-precise —
+                # a sub-naira per-unit cost (e.g. electricity) must survive.
+                actual_cost_per_unit = to_money(total_cost) / to_money(good_qty)
+                products[product_key]["landing_cost"] = money_round(actual_cost_per_unit)
 
         # 3. Save catalog
         catalog["products"] = products
@@ -733,14 +735,14 @@ class ProductionHandler:
         # 4. Save production as a transaction record (type: "production")
         self.db.save_transaction(
             phone_number,
-            int(total_cost) if total_cost > 0 else 0,
+            money_round(total_cost) if total_cost > 0 else 0,
             "production",
             f"Batch {batch_num}: {quantity} × {product_name}" + (f" ({waste} waste)" if waste else ""),
             "Production & Manufacturing",
             sub_category="Production Run",
             quantity=str(good_qty),
             item_name=product_name,
-            unit_cost=int(total_cost / good_qty) if good_qty > 0 and total_cost > 0 else None,
+            unit_cost=money_round(to_money(total_cost) / to_money(good_qty)) if good_qty > 0 and total_cost > 0 else None,
             extra_details={
                 "batch_number": batch_num,
                 "production_quantity": int(quantity),
@@ -1008,7 +1010,7 @@ class ProductionHandler:
                 f"📋 *Current recipe for {product_name}:*\n",
             ]
             for i, mat in enumerate(recipe):
-                cost_str = f" @ ₦{int(mat.get('cost_per_unit', 0)):,}" if mat.get('cost_per_unit') else ""
+                cost_str = f" @ {format_amount(mat.get('cost_per_unit', 0))}" if mat.get('cost_per_unit') else ""
                 lines.append(f"  {i+1}. {mat['quantity']} {mat.get('unit', '')} {mat['material']}{cost_str}")
             lines.append(f"\n_Add, edit, remove, or finish._")
             return [
@@ -1336,7 +1338,7 @@ class ProductionHandler:
             lines = [f"✅ Removed *{removed_name}* from recipe.\n"]
             lines.append(f"📋 *Updated recipe for {product_name}:*\n")
             for i, mat in enumerate(recipe):
-                cost_str = f" @ ₦{int(mat.get('cost_per_unit', 0)):,}" if mat.get('cost_per_unit') else ""
+                cost_str = f" @ {format_amount(mat.get('cost_per_unit', 0))}" if mat.get('cost_per_unit') else ""
                 lines.append(f"  {i+1}. {mat['quantity']} {mat.get('unit', '')} {mat['material']}{cost_str}")
 
             return [
@@ -1391,7 +1393,7 @@ class ProductionHandler:
             unit = mat.get("unit", "")
             # cost is stored as cost_per_unit for materials, rate for overhead
             cost = mat.get("cost_per_unit", mat.get("rate", 0))
-            cost_str = f" @ ₦{int(cost):,}/{unit}" if cost else ""
+            cost_str = f" @ {format_amount(cost)}/{unit}" if cost else ""
             rows.append({
                 "id": f"prod_editmat_{i}",
                 "title": f"✏️ {name}"[:24],
@@ -1434,7 +1436,7 @@ class ProductionHandler:
         self.session.save(phone_number, states.PRODUCTION_RECORDING, context)
 
         cost_label = "Rate" if is_overhead else "Cost"
-        cost_str = f"₦{int(cost):,}/{unit}" if cost else "not set"
+        cost_str = f"{format_amount(cost)}/{unit}" if cost else "not set"
 
         return [button_response(
             f"✏️ *{name}*\n\n"
@@ -1555,7 +1557,7 @@ class ProductionHandler:
         ]
         for i, m in enumerate(recipe):
             cost = m.get("cost_per_unit", m.get("rate", 0))
-            cost_str = f" @ ₦{int(cost):,}" if cost else ""
+            cost_str = f" @ {format_amount(cost)}" if cost else ""
             lines.append(f"  {i+1}. {m['quantity']} {m.get('unit', '')} {m['material']}{cost_str}")
 
         return [
@@ -1650,9 +1652,9 @@ class ProductionHandler:
         for mat_name in updated_materials[:8]:
             mat_key = mat_name.lower().replace(" ", "_")
             mat_product = products.get(mat_key, {})
-            cost = int(mat_product.get("landing_cost", 0))
+            cost = mat_product.get("landing_cost", 0)
             unit = mat_product.get("primary_unit", "unit")
-            lines.append(f"  • {mat_name}: ₦{cost:,}/{unit}")
+            lines.append(f"  • {mat_name}: {format_amount(cost)}/{unit}")
 
         if len(updated_materials) > 8:
             lines.append(f"  _+{len(updated_materials) - 8} more..._")
@@ -1765,7 +1767,9 @@ class ProductionHandler:
         # Recipe presence makes this a manufactured/finished good (Decision A).
         prod["item_type"] = "finished_product"
         # Cost is DERIVED — stamp it so catalog/reports read the recipe cost.
-        prod["landing_cost"] = int(round(self.recipe_unit_cost(recipe)))
+        # Kobo-precise: a recipe of sub-naira materials (electricity ₦0.06/kWh)
+        # must not round to ₦0.
+        prod["landing_cost"] = money_round(self.recipe_unit_cost(recipe))
 
         catalog["products"] = products
         self.db.update_user_field(phone_number, "product_catalog", catalog)
