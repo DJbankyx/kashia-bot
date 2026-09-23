@@ -1720,25 +1720,25 @@ _PAGE_HTML = """<!doctype html>
     trading: {
       sale: "Sale", sales: "Sales", purchase: "Purchase", purchases: "Purchases",
       catalog: "Catalog", customers: "Customers", cogs: "Cost of sales",
-      sale_emoji: "\ud83d\udcb0", purchase_emoji: "\ud83d\udce6"
+      sale_emoji: "\\ud83d\\udcb0", purchase_emoji: "\\ud83d\\udce6"
     },
     manufacturing: {
       sale: "Output sale", sales: "Output sales", purchase: "Raw material",
       purchases: "Raw materials", catalog: "Products & materials",
       customers: "Customers", cogs: "Production cost",
-      sale_emoji: "\ud83c\udff7\ufe0f", purchase_emoji: "\ud83e\uddf1"
+      sale_emoji: "\\ud83c\\udff7\\ufe0f", purchase_emoji: "\\ud83e\\uddf1"
     },
     services: {
       sale: "Job / service", sales: "Jobs / services", purchase: "Supply purchase",
       purchases: "Supply purchases", catalog: "Services & supplies",
       customers: "Clients", cogs: "Direct costs",
-      sale_emoji: "\ud83d\udcbc", purchase_emoji: "\ud83d\udce6"
+      sale_emoji: "\\ud83d\\udcbc", purchase_emoji: "\\ud83d\\udce6"
     },
     hybrid: {
       sale: "Sale / service", sales: "Sales / services", purchase: "Purchase",
       purchases: "Purchases", catalog: "Products & supplies",
       customers: "Customers", cogs: "Cost of sales",
-      sale_emoji: "\ud83d\udcb0", purchase_emoji: "\ud83d\udce6"
+      sale_emoji: "\\ud83d\\udcb0", purchase_emoji: "\\ud83d\\udce6"
     }
   };
   function t(key) {
@@ -1753,8 +1753,8 @@ _PAGE_HTML = """<!doctype html>
     if (_labelsApplied) return;
     _labelsApplied = true;
     // Bottom nav — Customers vs Clients.
-    setText("tab-crm", "\ud83d\udc65 " + t("customers"));
-    setText("tab-cat", "\ud83d\udce6 " + t("catalog"));
+    setText("tab-crm", "\\ud83d\\udc65 " + t("customers"));
+    setText("tab-cat", "\\ud83d\\udce6 " + t("catalog"));
     // Dashboard "Cost of sales" card label.
     var cogsCard = document.querySelector('#cogs') &&
                    document.querySelector('#cogs').parentElement.querySelector('.k');
@@ -1771,7 +1771,7 @@ _PAGE_HTML = """<!doctype html>
     if (rtPur) rtPur.textContent = t("purchase_emoji") + " " + t("purchases");
     // CRM directory tab — Customers vs Clients.
     var crmCust = document.querySelector('#crm-dir-tabs .chip[data-cd="customers"]');
-    if (crmCust) crmCust.textContent = "\ud83d\udc64 " + t("customers");
+    if (crmCust) crmCust.textContent = "\\ud83d\\udc64 " + t("customers");
   }
 
   // ── Catalog-first setup nudge (Stage 4) ─────────────────────────────
