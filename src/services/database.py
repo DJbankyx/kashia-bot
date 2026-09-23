@@ -369,6 +369,19 @@ class Database:
         except Exception as e:
             logger.warning(f"mark_web_submit_recorded failed: {e}")
 
+    def release_web_submit(self, phone_number, submit_id):
+        """Release a previously-claimed submit_id so it can be re-processed.
+        Used when the work AFTER the claim failed (e.g. a Paystack upgrade threw)
+        and we want a retry to be able to proceed instead of being rejected as a
+        duplicate. Best-effort; never raises."""
+        try:
+            self.transactions.delete_item(
+                Key={"phone_number": phone_number,
+                     "transaction_id": f"idem#{submit_id}"}
+            )
+        except Exception as e:
+            logger.warning(f"release_web_submit failed: {e}")
+
     # ==========================================
     # ACCOUNT TRANSFER / RECOVERY
     # ==========================================

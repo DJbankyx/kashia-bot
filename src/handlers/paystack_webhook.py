@@ -13,6 +13,12 @@ def lambda_handler(event, context):
     Paystack sends a POST when payment is successful.
     We verify the signature, extract phone + plan, and upgrade the user.
     """
+    # Tracks whether we've passed signature + parse. If a failure happens AFTER
+    # this (a genuine processing error on a valid, authentic webhook), we return
+    # 500 so Paystack RETRIES — otherwise the user paid but was never upgraded,
+    # silently. Before this point (bad signature / unparseable body) we never
+    # want a retry. The idempotency guard above makes retries safe.
+    verified_and_parsed = False
     try:
         # Verify webhook signature
         from utils.config import get_paystack_secret
@@ -38,6 +44,9 @@ def lambda_handler(event, context):
 
         # Parse event
         payload = json.loads(body)
+        # Past signature + parse: any failure from here is a genuine processing
+        # error on an AUTHENTIC webhook → we want Paystack to retry (return 500).
+        verified_and_parsed = True
         event_type = payload.get("event", "")
 
         if event_type != "charge.success":
@@ -83,8 +92,30 @@ def lambda_handler(event, context):
         tier_mgr = TierManager(database=db)
         whatsapp = WhatsAppClient()
 
+        # ── IDEMPOTENCY GUARD (money-critical) ──
+        # Paystack delivers webhooks at-least-once and RETRIES on timeout/non-2xx.
+        # upgrade_user() EXTENDS subscription_ends additively, so processing the
+        # same charge twice would give the user double the days for one payment.
+        # Atomically CLAIM the Paystack reference (its unique per-charge id) using
+        # the same guard the Mini App uses; if already claimed, this webhook is a
+        # retry/duplicate — acknowledge 200 and do NOT upgrade again.
+        if reference:
+            claimed, _prior = db.claim_web_submit(phone_number, f"paystack#{reference}")
+            if not claimed:
+                logger.info(f"Paystack webhook DUPLICATE ignored: ref={reference} "
+                            f"phone={phone_number}")
+                return response(200, {"status": "duplicate", "reference": reference})
+
         # Perform upgrade (period sets how far subscription_ends is extended).
-        tier_mgr.upgrade_user(phone_number, plan, period=period)
+        # If it throws, RELEASE the idempotency claim so the 500-triggered retry
+        # can re-process (otherwise the retry would be rejected as a duplicate
+        # and the paid user would never get upgraded).
+        try:
+            tier_mgr.upgrade_user(phone_number, plan, period=period)
+        except Exception:
+            if reference:
+                db.release_web_submit(phone_number, f"paystack#{reference}")
+            raise
 
         # Notify the user on their own platform. `phone_number` here is the
         # namespaced user id carried in the payment metadata (bare phone for
@@ -120,6 +151,12 @@ def lambda_handler(event, context):
 
     except Exception as e:
         logger.error(f"Paystack webhook error: {e}")
+        # If we already verified + parsed, this was a real processing failure on
+        # an authentic webhook — return 500 so Paystack retries (the idempotency
+        # guard makes that safe). If we failed before that (bad signature /
+        # unparseable body), a retry would never help — acknowledge 200.
+        if verified_and_parsed:
+            return response(500, {"status": "error", "retry": True})
         return response(200, {"status": "error"})
 
 
