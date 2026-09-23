@@ -134,6 +134,12 @@ def lambda_handler(event, context):
                           f"(billed per {period_word}).\n\n") if renew_on else ""
         except Exception:
             renew_line = ""
+        # NB: do NOT wrap the reference in *bold*/_italic_ — Paystack refs are
+        # full of underscores (kashia_basic_monthly_tg_..._...), and Telegram's
+        # Markdown reads each "_" as an italic delimiter, so an underscore-laden
+        # ref in markup produces "can't parse entities" and the whole message is
+        # rejected (user paid, upgrade happened, but got NO confirmation). Keep
+        # the ref on its own plain line.
         client.send_text(recipient, (
             f"🎉 *Upgrade Successful!*\n\n"
             f"You're now on the *{plan_name}* plan ({period_word}ly).\n\n"
@@ -143,7 +149,7 @@ def lambda_handler(event, context):
             f"✅ PDF financial statements\n\n"
             f"{renew_line}"
             f"Thank you for supporting Kashia! 🙏\n\n"
-            f"_Ref: {reference}_"
+            f"Ref: {reference}"
         ))
 
         logger.info(f"User upgraded: {phone_number} → {plan_name}/{period}")
