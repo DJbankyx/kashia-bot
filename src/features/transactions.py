@@ -3568,9 +3568,26 @@ class TransactionHandler:
                 return self._edit_success(f"✅ Description updated to *{text.strip()}*!")
 
             elif field == "vendor":
-                self.db.update_transaction(phone_number, tx_id, {"vendor": text.strip()})
+                new_vendor = text.strip()
+                # Capture the OLD vendor/type BEFORE the update so we can move the
+                # contact link. Editing the vendor used to ONLY rewrite the tx
+                # string — leaving the old contact stale and never creating the
+                # new one as a supplier/customer. That made the corrected name
+                # vanish from the supplier list AND hid all its transactions
+                # (the contact→tx match is by name substring). Now we reconcile.
+                old_tx = self.db.get_transaction(phone_number, tx_id) or {}
+                old_vendor = (old_tx.get("vendor") or "").strip()
+                tx_type = old_tx.get("type", "purchase")
+                amount = int(float(old_tx.get("amount", 0) or 0))
+
+                self.db.update_transaction(phone_number, tx_id, {"vendor": new_vendor})
+
+                if new_vendor and new_vendor.lower() != old_vendor.lower():
+                    self._reconcile_vendor_rename(
+                        phone_number, old_vendor, new_vendor, tx_type, amount)
+
                 self.session.reset(phone_number)
-                return self._edit_success(f"✅ Vendor updated to *{text.strip()}*!")
+                return self._edit_success(f"✅ Vendor updated to *{new_vendor}*!")
 
             elif field == "date":
                 # Parse multiple date formats
@@ -4158,6 +4175,57 @@ class TransactionHandler:
                 {"id": "menu_report", "title": "📊 Reports"},
             ])
         ]
+
+    def _reconcile_vendor_rename(self, phone_number, old_vendor, new_vendor,
+                                 tx_type, amount):
+        """Move the CRM link when a transaction's vendor/customer is corrected.
+
+        Contacts are a separate store matched to transactions BY NAME. Renaming a
+        transaction's vendor without touching contacts left the old contact stale
+        (still in the supplier list) and never created the new one — so the
+        corrected supplier vanished from the list and its transactions stopped
+        showing. Here we:
+          1. Create/credit the NEW contact (so it appears with the right role +
+             totals, exactly like a normal save would).
+          2. Recompute the OLD contact from its REMAINING transactions; if it has
+             none left, remove it so the wrong name stops appearing.
+        Wrapped in try/except per step — a CRM hiccup must never block the edit.
+        """
+        # 1) Create/credit the new contact (role + totals), like the save path.
+        if new_vendor:
+            try:
+                self.db.update_contact_totals(phone_number, new_vendor, amount, tx_type)
+            except Exception as e:
+                logger.warning(f"vendor rename: credit new contact failed: {e}")
+
+        # 2) Rebuild the OLD contact from what actually remains against its name.
+        if old_vendor:
+            try:
+                remaining = self.db.get_contact_transactions(
+                    phone_number, old_vendor, limit=500) or []
+                if not remaining:
+                    # Nothing references the old name anymore — drop the orphan.
+                    self.db.delete_contact(phone_number, old_vendor)
+                else:
+                    # Recompute totals from the remaining ledger so the old
+                    # contact's numbers stay honest (no fragile decrement math).
+                    paid = received = 0
+                    for t in remaining:
+                        amt = int(float(t.get("amount", 0) or 0))
+                        if t.get("type") in ("purchase", "expense"):
+                            paid += amt
+                        elif t.get("type") in ("sale", "income"):
+                            received += amt
+                    try:
+                        self.db.update_contact_profile(phone_number, old_vendor, {
+                            "total_paid": paid,
+                            "total_received": received,
+                            "transaction_count": len(remaining),
+                        })
+                    except Exception as e:
+                        logger.warning(f"vendor rename: old contact recompute failed: {e}")
+            except Exception as e:
+                logger.warning(f"vendor rename: old contact reconcile failed: {e}")
 
     def _is_payment(self, text_lower: str) -> bool:
         """Check if text looks like a debt payment rather than a new transaction."""

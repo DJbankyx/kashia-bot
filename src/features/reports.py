@@ -71,6 +71,17 @@ class ReportsHandler:
             return self.dashboard(phone_number, "month")
         if button_id.startswith("dash_period_"):
             return self.dashboard(phone_number, button_id[len("dash_period_"):])
+        if button_id.startswith("dash_expcat_"):
+            # Drill into ONE expense category by index (names have spaces/&, so
+            # we stash the ranked list in context and pass an index).
+            try:
+                idx = int(button_id[len("dash_expcat_"):])
+            except ValueError:
+                idx = -1
+            ctx = (self.session.get(phone_number) or {}).get("context", {})
+            period = ctx.get("exp_period", "month")
+            self.session.update_context(phone_number, {"exp_cat_idx": idx})
+            return self._dash_drill(phone_number, "expcat", period)
         if button_id.startswith("dash_drill_"):
             # dash_drill_<what>_<period>
             rest = button_id[len("dash_drill_"):]
@@ -369,6 +380,8 @@ class ReportsHandler:
             "net": net_profit, "net_profit": net_profit,
             "cash_out": cash_out, "net_cash": net_cash,
             "gross_margin": gross_margin, "costed_revenue": costed_rev,
+            "gross_margin_pct": pnl.get("gross_margin_pct", 0),
+            "net_margin_pct": pnl.get("net_margin_pct", 0),
             "uncosted_sales": uncosted,
             "owed_to_me": owed_to_me, "owe_out": owe_out,
             "tx_count": len(txns), "sales_count": len(sales),
@@ -467,8 +480,8 @@ class ReportsHandler:
         cogs_label = {"manufacturing": "Cost of output", "services": "Job costs"}\
             .get(industry, "Cost of sales")
 
-        gm_pct = (int(d["gross_margin"] / d["costed_revenue"] * 100)
-                  if d.get("costed_revenue") else 0)
+        gm_pct = d.get("gross_margin_pct", 0)
+        nm_pct = d.get("net_margin_pct", 0)
         nc = d.get("net_cash", d["net"])
 
         def _signed(v):
@@ -476,20 +489,30 @@ class ReportsHandler:
 
         # ── One clean, sectioned card. The title comes from the list_response
         #    header (not repeated in the body). Sections are visually separated
-        #    and each figure is labelled in plain language so nothing overlaps. ──
+        #    and each figure is labelled in plain language so nothing overlaps.
+        #    Order follows a real P&L: revenue → cost of sales → GROSS PROFIT
+        #    (with gross-margin %) → operating expenses → NET PROFIT (with
+        #    net-profit-margin %). Gross profit and net profit are shown as
+        #    distinct amounts; the % beside each is the margin. ──
         lines = [
             "*💼 Profit & Loss*",
             f"  {rev_label}:  *{format_amount(d['revenue'])}*",
             f"  {cogs_label}:  {format_amount(d['cogs'])}",
-            f"  Expenses:  {format_amount(d['opex'])}",
         ]
-        if d["net"] >= 0:
-            lines.append(f"  ➡️ *Net profit: {_signed(d['net'])}*"
-                         + (f"  ({int(d['net']/d['revenue']*100)}%)" if d["revenue"] > 0 else ""))
-        else:
-            lines.append(f"  ➡️ *Net loss: {_signed(d['net'])}*")
+        # Gross profit line (amount) + gross margin (%) — only when we have a
+        # costed revenue base, otherwise the % would be meaningless.
         if d.get("costed_revenue"):
-            lines.append(f"  Gross margin: {format_amount(d['gross_margin'])} ({gm_pct}%)")
+            lines.append(f"  Gross profit:  {format_amount(d['gross_margin'])}"
+                         f"  _(gross margin {gm_pct}%)_")
+        lines.append(f"  Expenses:  {format_amount(d['opex'])}")
+        # Net profit / loss line (amount) + net profit margin (%).
+        if d["net"] >= 0:
+            net_line = f"  ➡️ *Net profit: {_signed(d['net'])}*"
+        else:
+            net_line = f"  ➡️ *Net loss: {_signed(d['net'])}*"
+        if d["revenue"] > 0:
+            net_line += f"  _(net margin {nm_pct}%)_"
+        lines.append(net_line)
         if d["uncosted_sales"] > 0:
             lines.append(f"  _⚠️ {d['uncosted_sales']} sale(s) missing cost — profit understated._")
 
@@ -592,16 +615,78 @@ class ReportsHandler:
             for t in d["expenses"]:
                 c = t.get("category", "Other") or "Other"
                 cats[c] = cats.get(c, 0) + float(t.get("amount", 0))
-            lines = []
             if not cats:
-                lines.append("_No expenses in this period._")
+                return _drill_card(f"💸 Expense breakdown — {d['label']}",
+                                   ["_No expenses in this period._"])
+            total = sum(cats.values())
+            ranked = sorted(cats.items(), key=lambda x: x[1], reverse=True)
+            lines = ["_Ranked by spend. Tap a category to see the individual "
+                     "expenses in it._", ""]
+            for i, (c, amt) in enumerate(ranked, 1):
+                pct = int(amt / total * 100) if total else 0
+                lines.append(f"  {i}. {c}:  {format_amount(amt)}  ({pct}%)")
+            lines.append(f"\n*Total expenses:  {format_amount(total)}*")
+            # Stash the ranked category names so a tap can drill in by index
+            # (category names contain spaces/&, unsafe to pack into a button id).
+            self.session.update_context(phone_number, {
+                "exp_cats": [c for c, _ in ranked],
+                "exp_period": period,
+            })
+            # One tappable row per category (top 10) → drill into its line items.
+            rows = [{"id": f"dash_expcat_{i}", "title": f"🔎 {c}"[:60]}
+                    for i, (c, _amt) in enumerate(ranked[:10])]
+            rows += [
+                {"id": f"dash_period_{period}", "title": "← Dashboard"},
+                {"id": "menu_home", "title": "☰ Menu"},
+            ]
+            return [list_response(
+                header=f"💸 Expense breakdown — {d['label']}",
+                body="\n".join(lines),
+                button_text="Open",
+                sections=[{"title": "", "rows": rows}],
+                no_paginate=True,
+            )]
+
+        if what == "expcat":
+            # Individual expenses within ONE category (tapped from the breakdown).
+            ctx = (self.session.get(phone_number) or {}).get("context", {})
+            cats_list = ctx.get("exp_cats", [])
+            try:
+                idx = int(self.session.get(phone_number).get("context", {})
+                          .get("exp_cat_idx", -1))
+            except Exception:
+                idx = -1
+            cat = cats_list[idx] if 0 <= idx < len(cats_list) else ""
+            items = [t for t in d["expenses"]
+                     if (t.get("category", "Other") or "Other") == cat]
+            items.sort(key=lambda t: float(t.get("amount", 0) or 0), reverse=True)
+            lines = []
+            if not items:
+                lines.append("_No expenses in this category._")
             else:
-                total = sum(cats.values())
-                for c, amt in sorted(cats.items(), key=lambda x: x[1], reverse=True):
-                    pct = int(amt / total * 100) if total else 0
-                    lines.append(f"  • {c}:  {format_amount(amt)}  ({pct}%)")
-                lines.append(f"\n*Total expenses:  {format_amount(total)}*")
-            return _drill_card(f"💸 Expense breakdown — {d['label']}", lines)
+                cat_total = sum(float(t.get("amount", 0) or 0) for t in items)
+                lines.append(f"*{cat}* — {format_amount(cat_total)} total "
+                             f"· {len(items)} item(s)")
+                lines.append("")
+                for t in items[:self._RECORDS_MAX_ROWS]:
+                    desc = _clean_desc(t)
+                    amt = format_amount(t.get("amount", 0))
+                    vendor = t.get("vendor", "")
+                    vendor = "" if is_bad_vendor(vendor) else vendor
+                    vstr = f" · {vendor}" if vendor else ""
+                    date_s = str(t.get("date", ""))[-5:]
+                    lines.append(f"• {desc}{vstr} — {amt}  _{date_s}_")
+            back = [
+                {"id": f"dash_drill_expenses_{period}", "title": "← Expense breakdown"},
+                {"id": "menu_home", "title": "☰ Menu"},
+            ]
+            return [list_response(
+                header=f"🔎 {cat or 'Expenses'} — {d['label']}",
+                body="\n".join(lines),
+                button_text="Back",
+                sections=[{"title": "", "rows": back}],
+                no_paginate=True,
+            )]
 
         if what == "top":
             import re
@@ -627,12 +712,16 @@ class ReportsHandler:
             def _signed(v):
                 return f"+{format_amount(v)}" if v >= 0 else f"−{format_amount(abs(v))}"
             lines = [
+                f"  Revenue:  {format_amount(d['revenue'])}",
                 f"  Sales (with cost recorded):  {format_amount(d['costed_revenue'])}",
-                f"  Gross margin:  {format_amount(d['gross_margin'])}"
-                + (f"  ({int(d['gross_margin']/d['costed_revenue']*100)}%)"
+                f"  Cost of sales:  {format_amount(d['cogs'])}",
+                f"  Gross profit:  {format_amount(d['gross_margin'])}"
+                + (f"  (gross margin {d.get('gross_margin_pct', 0)}%)"
                    if d['costed_revenue'] else ""),
                 f"  Expenses:  {format_amount(d['opex'])}",
-                f"  ➡️ *{'Net profit' if d['net'] >= 0 else 'Net loss'}:  {_signed(d['net'])}*",
+                f"  ➡️ *{'Net profit' if d['net'] >= 0 else 'Net loss'}:  {_signed(d['net'])}*"
+                + (f"  (net margin {d.get('net_margin_pct', 0)}%)"
+                   if d['revenue'] > 0 else ""),
             ]
             if d["uncosted_sales"] > 0:
                 lines.append(f"\n_⚠️ {d['uncosted_sales']} sale(s) have no cost recorded — "
@@ -770,14 +859,21 @@ class ReportsHandler:
             phone_number, start_date, end_date
         ) or []
 
+        # Debt repayments are stored as sale/expense rows for cash tracking but
+        # must NOT show under Sales/Expenses records (they'd double-count as
+        # revenue/expense). Exclude them so the list matches the P&L + export.
+        from services.accounting import _is_debt_settlement
+
         if tab_type == "sale":
-            filtered = [t for t in all_txns if t.get("type") == "sale"]
+            filtered = [t for t in all_txns
+                        if t.get("type") == "sale" and not _is_debt_settlement(t)]
             emoji, tab_name = "💰", "Sales"
         elif tab_type == "purchase":
             filtered = [t for t in all_txns if t.get("type") == "purchase"]
             emoji, tab_name = "📦", "Purchases"
         else:  # expense
-            filtered = [t for t in all_txns if t.get("type") == "expense"]
+            filtered = [t for t in all_txns
+                        if t.get("type") == "expense" and not _is_debt_settlement(t)]
             emoji, tab_name = "💸", "Expenses"
 
         # Stash the current view so period taps / pick-a-date / export know the

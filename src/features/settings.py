@@ -49,11 +49,29 @@ class SettingsHandler:
         if button_id == "set_industry":
             return self._start_change_industry(phone_number)
 
+        if button_id.startswith("set_ind_"):
+            # Tapping an industry option — was falling through to the default
+            # "Pick an option" message (Change Industry did nothing). Route it to
+            # the handler that actually saves the new industry.
+            return self._finish_change_industry(phone_number, button_id)
+
         if button_id == "set_notify":
             return self._show_notifications(phone_number)
 
         if button_id == "set_bug":
             return self._show_bug_report()
+
+        if button_id == "set_logo":
+            return self._show_logo(phone_number)
+
+        if button_id == "set_transfer":
+            return self._show_transfer(phone_number)
+
+        if button_id == "set_transfer_get":
+            return self._issue_transfer_code(phone_number)
+
+        if button_id == "set_transfer_claim":
+            return self._start_transfer_claim(phone_number)
 
         if button_id == "set_reset":
             from core.pin_guard import requires_pin
@@ -136,6 +154,12 @@ class SettingsHandler:
         if step == "change_industry":
             return self._finish_change_industry(phone_number, text_s)
 
+        if step == "transfer_claim":
+            return self._finish_transfer_claim(phone_number, text_s)
+
+        if step == "bug_report":
+            return self._save_bug_report(phone_number, text_s)
+
         self.session.reset(phone_number)
         return [text_response("Something went wrong. Please try again.")]
 
@@ -147,7 +171,7 @@ class SettingsHandler:
         """How to use Kashia — concise guide."""
         pages = [
             text_response(
-                "📖 *How to Use Kashia* — Part 1 of 3\n\n"
+                "📖 *How to Use Kashia* — Part 1 of 4\n\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
                 "📝 *Recording Transactions*\n\n"
                 "Just type what happened naturally:\n\n"
@@ -162,7 +186,7 @@ class SettingsHandler:
                 "Kashia tracks the debt automatically."
             ),
             text_response(
-                "📖 *How to Use Kashia* — Part 2 of 3\n\n"
+                "📖 *How to Use Kashia* — Part 2 of 4\n\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
                 "📊 *Reports*\n\n"
                 "Tap *Business → Reports* or type:\n"
@@ -170,8 +194,9 @@ class SettingsHandler:
                 "  • _\"today\"_ — today only\n"
                 "  • _\"this week\"_ — last 7 days\n\n"
                 "The report shows:\n"
-                "  💰 Revenue  📦 Purchases  💸 Expenses\n"
-                "  📈 Gross Profit  →  Net Profit\n\n"
+                "  💰 Revenue  −  📦 Cost of goods sold\n"
+                "  =  📊 Gross profit  −  💸 Expenses\n"
+                "  =  📈 Net profit\n\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
                 "💳 *Debt Tracking*\n\n"
                 "  • Tap *Business → Debts & Credits*\n"
@@ -179,7 +204,7 @@ class SettingsHandler:
                 "  • Record payment: _\"Sandra paid me 10K\"_"
             ),
             text_response(
-                "📖 *How to Use Kashia* — Part 3 of 3\n\n"
+                "📖 *How to Use Kashia* — Part 3 of 4\n\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
                 "📦 *Product Catalog*\n\n"
                 "Set up your products once:\n"
@@ -193,6 +218,41 @@ class SettingsHandler:
                 "Sent as PDF via WhatsApp.\n\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
                 "❓ Type *help* at any time to see this menu again."
+            ),
+            text_response(
+                "📖 *How to Use Kashia* — Part 4 of 4\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "💡 *Getting your money right*\n\n"
+                "Kashia sorts your money into 3 buckets. "
+                "Putting things in the right bucket keeps your "
+                "profit honest:\n\n"
+                "📦 *Stock you buy to resell* (or raw materials)\n"
+                "  Record it as a *purchase*. It is NOT an expense — "
+                "it becomes inventory. Its cost only hits profit "
+                "when you actually *sell* it (as \"cost of goods "
+                "sold\").\n\n"
+                "💸 *Running costs* — rent, fuel, data, salaries, "
+                "transport, repairs.\n"
+                "  These are *expenses*. They reduce this period's "
+                "profit.\n\n"
+                "🏗️ *Big things you buy to KEEP and use* — a "
+                "vehicle, a machine, a generator, furniture.\n"
+                "  These are not everyday expenses; they are assets "
+                "you keep for years. For now, record the *cash* you "
+                "paid, but know it isn't a normal running cost — a "
+                "full asset/depreciation view is coming.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "💵 *How cash flow is calculated*\n\n"
+                "*Cash flow = money that actually moved.*\n"
+                "  IN:  cash & transfer sales + deposits you "
+                "received + debts collected.\n"
+                "  OUT: cash you paid for stock, expenses & "
+                "deposits + debts you repaid.\n\n"
+                "Credit doesn't count until it's paid. So a big "
+                "stock purchase shows as cash *out* now, but only "
+                "lowers *profit* later, when the goods sell. That's "
+                "why cash flow and profit can differ — both are "
+                "correct, they answer different questions."
             ),
         ]
         return pages
@@ -514,6 +574,10 @@ class SettingsHandler:
                      "description": "Switch business type"},
                     {"id": "set_password", "title": "🔒 Set / Change PIN",
                      "description": "Protect sensitive actions"},
+                    {"id": "set_logo", "title": "🖼️ Business Logo",
+                     "description": "Shown on invoices & receipts"},
+                    {"id": "set_transfer", "title": "🔁 Transfer / Recover",
+                     "description": "Move your data to a new phone/Telegram"},
                 ]},
                 {"title": "⚙️ Preferences", "rows": [
                     {"id": "set_preferences", "title": "🔔 Notifications & Toggles",
@@ -539,18 +603,143 @@ class SettingsHandler:
     # ─────────────────────────────────────────────────────────
 
     def _show_bug_report(self) -> list:
-        """Give user a way to report bugs."""
+        """Give user a way to report bugs / send feedback — and CAPTURE it."""
+        self.session.save(phone_number, SETTINGS_STATE, {"set_step": "bug_report"})
         return [text_response(
-            "🐛 *Report a Problem*\n\n"
-            "Sorry you're having trouble!\n\n"
-            "Please describe the issue by typing a message here and "
-            "we'll look into it.\n\n"
-            "Or contact support directly:\n"
+            "🐛 *Report a Problem / Send Feedback*\n\n"
+            "Type your message here and I'll log it for the team.\n\n"
+            "Or reach us directly:\n"
             "📧 support@kashia.app\n\n"
             "_Common fixes:_\n"
             "• If the bot is stuck, type *cancel*\n"
             "• If a transaction was wrong, type *undo*\n"
-            "• If the menu disappeared, type *hi*"
+            "• If the menu disappeared, type */menu*"
+        )]
+
+    def _save_bug_report(self, phone_number: str, message: str) -> list:
+        """Persist a user's feedback/bug report so the team can review it."""
+        self.session.reset(phone_number)
+        msg = (message or "").strip()
+        if not msg:
+            return [text_response("No message received. Type */menu* to go back.")]
+        try:
+            # Reuse the feedback table as a lightweight support log.
+            self.db.save_feedback(phone_number, f"[SUPPORT] {msg}", "", "")
+        except Exception as e:
+            logger.warning(f"save_bug_report failed: {e}")
+        return [text_response(
+            "✅ Thanks — your message has been logged and the team will look "
+            "into it.\n\n"
+            "_For anything urgent, email support@kashia.app._\n\n"
+            "Type */menu* to continue."
+        )]
+
+    def _show_logo(self, phone_number: str) -> list:
+        """Explain how to set the business logo shown on invoices & receipts.
+
+        The logo pipeline already exists (a photo sent with no scan caption is
+        stored as logo_s3_key and drawn on every invoice/receipt PDF). It was
+        just undiscoverable — this makes it an explicit, guided action."""
+        user = self.db.get_user(phone_number) or {}
+        has_logo = bool(user.get("logo_s3_key"))
+        status = ("✅ A logo is set — it appears on your invoices & receipts."
+                  if has_logo else
+                  "ℹ️ No logo set yet.")
+        return [text_response(
+            "🖼️ *Business Logo*\n\n"
+            f"{status}\n\n"
+            "*To add or change it:* just send me a *photo* of your logo "
+            "right here (as a normal photo, no caption).\n\n"
+            "_Tip: a clear square image works best. It's placed at the top "
+            "of every invoice and receipt PDF._"
+        )]
+
+    # ─────────────────────────────────────────────────────────
+    # ACCOUNT TRANSFER / RECOVERY
+    # ─────────────────────────────────────────────────────────
+
+    def _show_transfer(self, phone_number: str) -> list:
+        """Explain the two sides of an account move: get a code on the OLD
+        device, enter it on the NEW device."""
+        return [button_response(
+            "🔁 *Transfer / Recover Your Account*\n\n"
+            "Moving to a new phone or Telegram? You can move ALL your data — "
+            "sales, stock, customers, debts — to the new one.\n\n"
+            "*On your OLD/current device:* tap *Get a code* below.\n"
+            "*On the NEW device:* open Kashia there, go to Settings → "
+            "Transfer / Recover → *Enter a code*, and type it in.\n\n"
+            "_A code lasts 30 minutes and works once._",
+            [
+                {"id": "set_transfer_get", "title": "🔑 Get a code (this device)"},
+                {"id": "set_transfer_claim", "title": "📥 Enter a code"},
+            ]
+        )]
+
+    def _issue_transfer_code(self, phone_number: str) -> list:
+        """Generate + show a one-time transfer code for THIS account."""
+        code = self.db.issue_transfer_code(phone_number, ttl_minutes=30)
+        if not code:
+            return [text_response("⚠️ Couldn't create a code right now. Please try again.")]
+        return [text_response(
+            f"🔑 *Your transfer code:*\n\n"
+            f"        *{code}*\n\n"
+            f"On your NEW device, open Kashia → Settings → Transfer / Recover → "
+            f"*Enter a code*, and type this in.\n\n"
+            f"_Valid for 30 minutes. Works once. Don't share it — anyone with "
+            f"this code can claim your data._"
+        )]
+
+    def _start_transfer_claim(self, phone_number: str) -> list:
+        """Ask the NEW device to type the code from the old device."""
+        self.session.save(phone_number, SETTINGS_STATE, {"set_step": "transfer_claim"})
+        return [text_response(
+            "📥 *Enter your transfer code*\n\n"
+            "Type the 6-character code you got on your OLD device.\n\n"
+            "_Type cancel to stop._"
+        )]
+
+    def _finish_transfer_claim(self, phone_number: str, code: str) -> list:
+        """Redeem a transfer code on the NEW device → move the old account here.
+
+        Safety: refuse if THIS account already has real data (so a transfer can't
+        silently overwrite an active account). The code must be valid+unexpired.
+        """
+        self.session.reset(phone_number)
+        old_id = self.db.find_user_by_transfer_code(code)
+        if not old_id:
+            return [text_response(
+                "❌ That code is invalid or has expired. Get a fresh one on your "
+                "old device (Settings → Transfer / Recover → Get a code)."
+            )]
+        if old_id == phone_number:
+            return [text_response("That code belongs to THIS device already — "
+                                  "no transfer needed.")]
+
+        # Guard: don't clobber an already-active account on this new id.
+        me = self.db.get_user(phone_number) or {}
+        if int(me.get("transaction_count", 0) or 0) > 0 or me.get("product_catalog"):
+            return [text_response(
+                "⚠️ This device already has business data. Transferring would "
+                "overwrite it. For safety I stopped.\n\n"
+                "_If you really want to move the other account here, clear this "
+                "one first (Settings → Clear My Data), then enter the code again._"
+            )]
+
+        try:
+            result = self.db.transfer_account(old_id, phone_number)
+            self.db.clear_transfer_code(phone_number)  # code lived on old row; now moved
+            self.db.clear_transfer_code(old_id)
+        except Exception as e:
+            logger.error(f"transfer claim failed: {e}")
+            return [text_response("⚠️ The transfer hit a problem. Nothing was "
+                                  "lost on your old device — please try again.")]
+
+        moved = int(result.get("transactions", 0))
+        return [text_response(
+            f"✅ *Account moved to this device!*\n\n"
+            f"Your data is here now — {moved} transaction(s), plus your catalog, "
+            f"customers and debts.\n\n"
+            f"_Type /menu to see your dashboard._"
         )]
 
     # ─────────────────────────────────────────────────────────

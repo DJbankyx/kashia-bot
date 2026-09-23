@@ -60,12 +60,20 @@ class ReturnsHandler:
 
     def _recent_returnable(self, phone_number: str, limit: int = 40):
         """Recent sales + purchases that still have units left to return.
-        Returns a list of (tx, remaining) newest-first."""
+        Returns a list of (tx, remaining) newest-first.
+
+        Debt repayments are stored as `sale`/`expense` rows for cash tracking,
+        but they are NOT returnable goods movements — they must never appear in
+        the returns picker (the "Sale: Debt repayment from X" rows the user saw).
+        We filter them out with the shared _is_debt_settlement rule."""
+        from services.accounting import _is_debt_settlement
         txns = self.db.get_transactions(phone_number, limit=limit) or []
         tx = self._tx_handler()
         out = []
         for t in txns:
             if t.get("type") not in ("sale", "purchase"):
+                continue
+            if _is_debt_settlement(t):
                 continue
             tx_id = t.get("transaction_id", "")
             orig_qty = self._qty_of(t)
@@ -97,28 +105,36 @@ class ReturnsHandler:
                 "purchase (goods go back, money in)._"
             )]
 
-        rows = []
-        rows.append({"id": "return_noop", "title": "─── Pick what to return ───"})
-        for t, remaining in items[:20]:
+        # Group by direction so a Sale return (goods back + refund) and a
+        # Purchase return (goods back to supplier + money in) are clearly
+        # separated — not mixed in one confusing list.
+        def _row(t, remaining):
             tx_id = t.get("transaction_id", "")
-            kind = "🧾 Sale" if t.get("type") == "sale" else "📦 Purchase"
             name = (t.get("item_name") or t.get("description") or "Item").strip()
             amt = format_amount(t.get("amount", 0))
             date = str(t.get("date", ""))[:10]
-            title = f"{kind}: {name} · {amt}"
+            title = f"{name} · {amt}"
             if remaining > 1:
                 title += f" ({remaining} left)"
-            rows.append({
-                "id": f"{_PICK}{tx_id}"[:60],
-                "title": title[:60],
-                "description": date,
-            })
+            return {"id": f"{_PICK}{tx_id}"[:60], "title": title[:60], "description": date}
+
+        sales = [(t, r) for (t, r) in items[:30] if t.get("type") == "sale"]
+        purchases = [(t, r) for (t, r) in items[:30] if t.get("type") == "purchase"]
+
+        sections = []
+        if sales:
+            sections.append({"title": "🧾 Sales (goods came back → refund the customer)",
+                             "rows": [_row(t, r) for (t, r) in sales[:15]]})
+        if purchases:
+            sections.append({"title": "📦 Purchases (goods go back → money in from supplier)",
+                             "rows": [_row(t, r) for (t, r) in purchases[:15]]})
 
         return [list_response(
             header="↩️ Record a Return",
-            body="Tap the original sale or purchase you're reversing.",
+            body="Tap the original you're reversing. Sales and purchases are "
+                 "listed separately.",
             button_text="Pick",
-            sections=[{"title": "", "rows": rows}],
+            sections=sections,
             no_paginate=True,
         )]
 

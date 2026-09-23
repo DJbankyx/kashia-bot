@@ -125,7 +125,11 @@ class BaseIndustry:
             if owed > 0:
                 pulse += f"\n🔴 Owed to you: {format_amount(owed)}"
 
-            return f"{greet}! 👋\n{pulse}"
+            # Discoverability footer: users kept "losing" the menu. Remind them
+            # of the two always-available ways back (type /menu, or the "/"
+            # command list). Telegram-only (this branch is already TG-gated).
+            return (f"{greet}! 👋\n{pulse}\n\n"
+                    f"_Tip: type /menu (or tap “/”) any time to come back here._")
         except Exception:
             # Any hiccup → the plain menu (home page must never break).
             return static

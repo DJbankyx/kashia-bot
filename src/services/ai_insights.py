@@ -98,6 +98,17 @@ class AIInsights:
         if costed:
             worst = sorted(costed, key=lambda m: m.get("margin_pct", 0))[0]
 
+        # Top operating-expense categories (where the money went) so the AI can
+        # call out the biggest cost drivers. Built from the P&L's opex rows so
+        # it excludes stock purchases + debt repayments (same discipline as opex).
+        exp_cats = {}
+        for t in pnl.get("opex_txns", []) or []:
+            c = (t.get("category") or "Other").strip() or "Other"
+            exp_cats[c] = exp_cats.get(c, 0) + int(float(t.get("amount", 0) or 0))
+        top_expenses = [{"category": c, "amount": a}
+                        for c, a in sorted(exp_cats.items(),
+                                           key=lambda x: x[1], reverse=True)[:5]]
+
         return {
             "business": biz,
             "industry": industry,
@@ -122,6 +133,7 @@ class AIInsights:
                               if worst else None),
             "trend": [(lbl, int(v)) for lbl, v in trend],
             "crm_signals": crm_signals[:3],
+            "top_expenses": top_expenses,
         }
 
     # ── 2) deterministic fallback (no AI) ───────────────────────────────
@@ -146,6 +158,11 @@ class AIInsights:
             wp = f["worst_product"]
             lines.append(f"• Thin margin on *{wp['name']}* ({wp['margin_pct']}%) — "
                          f"consider your pricing or cost there.")
+        top_exp = f.get("top_expenses", [])
+        if top_exp and top_exp[0].get("amount", 0) > 0:
+            te = top_exp[0]
+            lines.append(f"• Biggest expense: *{te['category']}* at "
+                         f"{_money(te['amount'])}. Watch this cost driver.")
         if f.get("uncosted_sales", 0) > 0:
             lines.append(f"• {f['uncosted_sales']} sale(s) have no cost recorded — "
                          f"profit may be overstated. Add the cost for accuracy.")

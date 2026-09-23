@@ -274,9 +274,35 @@ def inv_builder_keyboard(has_items: bool) -> list:
         rows.append([{"text": "📝 Note", "callback_data": _icb("note")},
                      {"text": "📅 Due date", "callback_data": _icb("due")}])
         rows.append([{"text": "✅ Generate & Send", "callback_data": _icb("generate")}])
-        rows.append([{"text": "🗑️ Remove last item", "callback_data": _icb("rmlast")}])
+        rows.append([{"text": "✏️ Edit a line", "callback_data": _icb("editline")},
+                     {"text": "🗑️ Remove last item", "callback_data": _icb("rmlast")}])
     rows.append([{"text": "❌ Cancel", "callback_data": _icb("cancel")}])
     return rows
+
+
+def inv_lines_keyboard(items) -> list:
+    """One button per invoice line so the user can edit/remove a specific line
+    (fixes 'pick from past sales grabs all the details' — now each pulled line
+    is adjustable)."""
+    kb = []
+    for i, it in enumerate(items or []):
+        desc = (it.get("description", "") or "item")[:28]
+        qty = it.get("quantity", 1)
+        amt = it.get("amount", 0)
+        kb.append([{"text": f"{desc} · {qty} × → edit",
+                    "callback_data": _icb("editln", str(i))}])
+    kb.append([{"text": "⬅️ Back", "callback_data": _icb("back")}])
+    return kb
+
+
+def inv_line_edit_keyboard(index: int) -> list:
+    """Edit actions for one invoice line: change qty, change price, remove."""
+    return [
+        [{"text": "🔢 Change quantity", "callback_data": _icb("lnqty", str(index))},
+         {"text": "💰 Change price", "callback_data": _icb("lnprice", str(index))}],
+        [{"text": "🗑️ Remove this line", "callback_data": _icb("lnrm", str(index))}],
+        [{"text": "⬅️ Back", "callback_data": _icb("back")}],
+    ]
 
 
 def inv_due_keyboard() -> list:
@@ -286,6 +312,7 @@ def inv_due_keyboard() -> list:
          {"text": "7 days", "callback_data": _icb("dueset", "7")}],
         [{"text": "14 days", "callback_data": _icb("dueset", "14")},
          {"text": "30 days", "callback_data": _icb("dueset", "30")}],
+        [{"text": "📅 Custom date", "callback_data": _icb("duecustom")}],
         [{"text": "⬅️ Back", "callback_data": _icb("back")}],
     ]
 

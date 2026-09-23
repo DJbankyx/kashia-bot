@@ -19,8 +19,7 @@ class ReportGenerator:
     def generate_daily(self, phone_number):
         """Generate today's report"""
         today = datetime.now().strftime('%Y-%m-%d')
-        transactions = self.db.get_transactions_by_period(phone_number, today, today)
-        return self._build_report(transactions, "Today")
+        return self._build_report(phone_number, today, today, "Today")
 
     def generate_weekly(self, phone_number):
         """Generate this week's report (Monday to today)"""
@@ -28,8 +27,7 @@ class ReportGenerator:
         monday = now - timedelta(days=now.weekday())
         start_date = monday.strftime('%Y-%m-%d')
         end_date = now.strftime('%Y-%m-%d')
-        transactions = self.db.get_transactions_by_period(phone_number, start_date, end_date)
-        return self._build_report(transactions, "This Week")
+        return self._build_report(phone_number, start_date, end_date, "This Week")
 
     def generate_monthly(self, phone_number):
         """Generate this month's report"""
@@ -37,14 +35,12 @@ class ReportGenerator:
         start_date = now.strftime('%Y-%m-01')
         end_date = now.strftime('%Y-%m-%d')
         period_label = now.strftime('%B %Y')  # e.g., "June 2026"
-        transactions = self.db.get_transactions_by_period(phone_number, start_date, end_date)
-        return self._build_report(transactions, period_label)
+        return self._build_report(phone_number, start_date, end_date, period_label)
 
     def generate_custom(self, phone_number, start_date, end_date):
         """Generate report for a custom date range"""
-        transactions = self.db.get_transactions_by_period(phone_number, start_date, end_date)
         label = f"{start_date} to {end_date}"
-        return self._build_report(transactions, label)
+        return self._build_report(phone_number, start_date, end_date, label)
 
     def generate_category_breakdown(self, phone_number, period="month"):
         """
@@ -74,17 +70,25 @@ class ReportGenerator:
         if not transactions:
             return f"📊 No transactions for *{label}*."
 
-        # Separate income and expense categories
+        # Separate income and OPERATING-expense categories. Stock purchases and
+        # cost-of-goods inputs are NOT operating expenses (they're inventory /
+        # COGS) and must not be lumped into the expense breakdown. Debt
+        # repayments are cash/receivable events, not income or expense.
+        from services.accounting import COGS_CATEGORIES, _is_debt_settlement
+
         income_cats = {}
         expense_cats = {}
 
         for tx in transactions:
-            amount = int(tx.get('amount', 0))
+            amount = int(float(tx.get('amount', 0) or 0))
             category = tx.get('category', 'Other')
+            ttype = tx.get('type')
 
-            if tx.get('type') in ('income', 'sale'):
+            if _is_debt_settlement(tx):
+                continue
+            if ttype in ('income', 'sale'):
                 income_cats[category] = income_cats.get(category, 0) + amount
-            else:
+            elif ttype == 'expense' and category not in COGS_CATEGORIES:
                 expense_cats[category] = expense_cats.get(category, 0) + amount
 
         # Build report
@@ -143,14 +147,22 @@ class ReportGenerator:
             phone_number, last_month_start, last_month_end
         )
 
-        # Calculate totals
-        this_income = sum(int(tx.get('amount', 0)) for tx in this_month_txns if tx.get('type') in ('income', 'sale'))
-        this_expense = sum(int(tx.get('amount', 0)) for tx in this_month_txns if tx.get('type') in ('expense', 'purchase'))
-        this_profit = this_income - this_expense
+        # Calculate totals via the shared Accounting engine (accrual, COGS-aware)
+        # so the comparison matches the dashboard/daily report. Income here means
+        # net REVENUE; expenses means OPERATING expenses (not stock purchases);
+        # profit means NET profit (revenue - COGS - opex).
+        from services.accounting import Accounting
+        acct = Accounting(self.db)
+        this_pnl = acct.period_pnl(phone_number, this_month_start, this_month_end)
+        last_pnl = acct.period_pnl(phone_number, last_month_start, last_month_end)
 
-        last_income = sum(int(tx.get('amount', 0)) for tx in last_month_txns if tx.get('type') in ('income', 'sale'))
-        last_expense = sum(int(tx.get('amount', 0)) for tx in last_month_txns if tx.get('type') in ('expense', 'purchase'))
-        last_profit = last_income - last_expense
+        this_income = this_pnl["revenue"]
+        this_expense = this_pnl["opex"]
+        this_profit = this_pnl["net_profit"]
+
+        last_income = last_pnl["revenue"]
+        last_expense = last_pnl["opex"]
+        last_profit = last_pnl["net_profit"]
 
         # Calculate changes
         income_change = self._calc_change(last_income, this_income)
@@ -159,15 +171,15 @@ class ReportGenerator:
 
         result = "📊 *Month-over-Month Comparison*\n\n"
 
-        result += f"💰 *Income:*\n"
+        result += f"💰 *Revenue:*\n"
         result += f"  Last month: ₦{last_income:,}\n"
         result += f"  This month: ₦{this_income:,} {income_change}\n\n"
 
-        result += f"💸 *Expenses:*\n"
+        result += f"💸 *Operating expenses:*\n"
         result += f"  Last month: ₦{last_expense:,}\n"
         result += f"  This month: ₦{this_expense:,} {expense_change}\n\n"
 
-        result += f"📈 *Profit:*\n"
+        result += f"📈 *Net profit:*\n"
         result += f"  Last month: ₦{last_profit:,}\n"
         result += f"  This month: ₦{this_profit:,} {profit_change}\n"
 
@@ -177,50 +189,80 @@ class ReportGenerator:
     # HELPER METHODS
     # ==========================================
 
-    def _build_report(self, transactions, period_label):
+    def _build_report(self, phone_number, start_date, end_date, period_label):
         """
-        Build a standard report from a list of transactions.
+        Build a standard report for a period.
+
+        Delegates ALL figures to the shared Accounting engine so the daily /
+        weekly / monthly text report can NEVER disagree with the dashboard or
+        the Mini App (they all read period_pnl / period_cashflow). The old
+        code here computed profit = income - (expense + purchase), which lumped
+        every stock PURCHASE into "expenses" and never computed COGS — so buying
+        inventory showed a fake "Loss". That bug is gone: purchases are inventory
+        (a cash event), not a P&L expense; COGS is the cost of goods SOLD.
 
         Returns:
-            Formatted WhatsApp text
+            Formatted WhatsApp / Telegram text
         """
-        if not transactions:
+        from services.accounting import Accounting
+
+        acct = Accounting(self.db)
+        pnl = acct.period_pnl(phone_number, start_date, end_date, period_label)
+        cf = acct.period_cashflow(phone_number, start_date, end_date, period_label)
+
+        if pnl.get("tx_count", 0) == 0:
             return f"📊 No transactions recorded for *{period_label}* yet."
 
-        # Calculate totals
-        # Support both v1 naming (income/expense) and v2 naming (sale/purchase/expense)
-        income = sum(int(tx.get('amount', 0)) for tx in transactions
-                     if tx.get('type') in ('income', 'sale'))
-        expenses = sum(int(tx.get('amount', 0)) for tx in transactions
-                       if tx.get('type') in ('expense', 'purchase'))
-        profit = income - expenses
+        revenue = pnl["revenue"]
+        cogs = pnl["cogs"]
+        gross_profit = pnl["gross_profit"]
+        opex = pnl["opex"]
+        net_profit = pnl["net_profit"]
+        net_pct = pnl.get("net_margin_pct", 0)
 
-        # Category breakdown (expenses + purchases)
-        categories = {}
-        for tx in transactions:
-            if tx.get('type') in ('expense', 'purchase'):
-                cat = tx.get('category', 'Other')
-                categories[cat] = categories.get(cat, 0) + int(tx.get('amount', 0))
-
-        sorted_cats = sorted(categories.items(), key=lambda x: x[1], reverse=True)
-
-        # Format
-        profit_emoji = "📈" if profit >= 0 else "📉"
-        profit_label = "Profit" if profit >= 0 else "Loss"
+        profit_emoji = "📈" if net_profit >= 0 else "📉"
+        profit_label = "Net profit" if net_profit >= 0 else "Net loss"
 
         report = f"📊 *{period_label} Report*\n\n"
-        report += f"💰 Income: ₦{income:,}\n"
-        report += f"💸 Expenses: ₦{expenses:,}\n"
-        report += f"{profit_emoji} {profit_label}: ₦{abs(profit):,}\n\n"
+        report += f"💰 Revenue: ₦{revenue:,}\n"
+        report += f"📦 Cost of goods sold: ₦{cogs:,}\n"
+        report += f"📊 Gross profit: ₦{gross_profit:,}"
+        if pnl.get("costed_revenue"):
+            report += f" ({pnl.get('gross_margin_pct', 0)}%)"
+        report += "\n"
+        report += f"💸 Operating expenses: ₦{opex:,}\n"
+        report += f"{profit_emoji} {profit_label}: ₦{abs(net_profit):,}"
+        if revenue:
+            report += f" ({net_pct}%)"
+        report += "\n\n"
 
+        # Cash view (money actually in vs out — purchases show here, correctly)
+        report += f"💵 Cash in: ₦{cf['cash_in']:,}\n"
+        report += f"💳 Cash out: ₦{cf['cash_out']:,}\n"
+        net_cash = cf["net_cash"]
+        cash_emoji = "🟢" if net_cash >= 0 else "🔴"
+        report += f"{cash_emoji} Net cash flow: ₦{net_cash:,}\n"
+
+        # Operating-expense breakdown (opex only — NOT stock purchases/COGS)
+        categories = {}
+        for tx in pnl.get("opex_txns", []):
+            cat = tx.get('category', 'Other')
+            categories[cat] = categories.get(cat, 0) + int(float(tx.get('amount', 0) or 0))
+        sorted_cats = sorted(categories.items(), key=lambda x: x[1], reverse=True)
         if sorted_cats:
-            report += "📋 *Top Expenses:*\n"
+            report += "\n📋 *Top Expenses:*\n"
             for i, (cat, amount) in enumerate(sorted_cats[:5], 1):
                 emoji = self._get_category_emoji(cat)
-                pct = int((amount / expenses * 100)) if expenses > 0 else 0
+                pct = int((amount / opex * 100)) if opex > 0 else 0
                 report += f"  {i}. {emoji} {cat}: ₦{amount:,} ({pct}%)\n"
 
-        report += f"\n📝 Total transactions: {len(transactions)}"
+        # Honest integrity flag: sales with no known cost inflate net profit.
+        uncosted = pnl.get("uncosted_count", 0)
+        if uncosted:
+            report += (f"\n⚠️ {uncosted} sale(s) missing a cost — profit above "
+                       f"may be overstated until you set their cost.")
+
+        report += f"\n📝 Total transactions: {pnl.get('tx_count', 0)}"
 
         return report
 

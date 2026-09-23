@@ -246,6 +246,52 @@ class TGInvoice:
             self._show_builder(phone_number, inv)
             return []
 
+        if action == "editline":
+            items = inv.get("items", [])
+            if not items:
+                self._show_builder(phone_number, inv)
+                return []
+            self._render(phone_number, inv, "✏️ Tap the line you want to change:",
+                         tg_ui.inv_lines_keyboard(items))
+            return []
+
+        if action == "editln":
+            idx = int(value or 0)
+            items = inv.get("items", [])
+            if 0 <= idx < len(items):
+                it = items[idx]
+                self._render(
+                    phone_number, inv,
+                    f"✏️ *{it.get('description','item')}*\n"
+                    f"Qty {it.get('quantity',1)} × {format_amount(it.get('unit_cost',0))} "
+                    f"= {format_amount(it.get('amount',0))}\n\nWhat do you want to change?",
+                    tg_ui.inv_line_edit_keyboard(idx))
+            else:
+                self._show_builder(phone_number, inv)
+            return []
+
+        if action == "lnqty":
+            inv["step"] = "await_line_qty"
+            inv["edit_line_idx"] = int(value or 0)
+            self._save(phone_number, inv)
+            self._render(phone_number, inv, "🔢 Type the new quantity:", [])
+            return []
+
+        if action == "lnprice":
+            inv["step"] = "await_line_price"
+            inv["edit_line_idx"] = int(value or 0)
+            self._save(phone_number, inv)
+            self._render(phone_number, inv, "💰 Type the new price per unit:", [])
+            return []
+
+        if action == "lnrm":
+            idx = int(value or 0)
+            items = inv.get("items", [])
+            if 0 <= idx < len(items):
+                items.pop(idx)
+            self._show_builder(phone_number, inv)
+            return []
+
         if action == "back":
             self._show_builder(phone_number, inv)
             return []
@@ -276,6 +322,14 @@ class TGInvoice:
             prompt = ("📅 How long is this quote valid?" if inv.get("kind") == "quote"
                       else "📅 When is payment due?")
             self._render(phone_number, inv, prompt, tg_ui.inv_due_keyboard())
+            return []
+
+        if action == "duecustom":
+            inv["step"] = "await_due_date"
+            self._save(phone_number, inv)
+            self._render(phone_number, inv,
+                         "📅 Type the exact date (e.g. *25/12/2026* or "
+                         "*2026-12-25*):", [])
             return []
 
         if action == "dueset":
@@ -339,7 +393,57 @@ class TGInvoice:
             self._show_builder(phone_number, inv)
             return []
 
+        if step == "await_due_date":
+            d = self._parse_date(t)
+            if not d:
+                self._render(phone_number, inv,
+                             "❌ Couldn't read that date. Try *25/12/2026* or "
+                             "*2026-12-25*:", [])
+                return []
+            inv["due_label"] = d.strftime("%d %b %Y")
+            inv["due_date"] = d.strftime("%Y-%m-%d")
+            self._show_builder(phone_number, inv)
+            return []
+
+        if step in ("await_line_qty", "await_line_price"):
+            idx = int(inv.get("edit_line_idx", -1))
+            items = inv.get("items", [])
+            if not (0 <= idx < len(items)):
+                self._show_builder(phone_number, inv)
+                return []
+            it = items[idx]
+            if step == "await_line_qty":
+                digits = "".join(c for c in t if c.isdigit())
+                if not digits:
+                    self._render(phone_number, inv, "🔢 Type a valid quantity:", [])
+                    return []
+                it["quantity"] = max(1, int(digits))
+            else:
+                from utils.parser import parse_amount
+                price = parse_amount(t)
+                if not price:
+                    self._render(phone_number, inv, "💰 Type a valid price:", [])
+                    return []
+                it["unit_cost"] = int(price)
+            # Recompute the line amount from qty × unit price.
+            it["amount"] = int(it.get("quantity", 1)) * int(it.get("unit_cost", 0))
+            inv.pop("edit_line_idx", None)
+            self._show_builder(phone_number, inv)
+            return []
+
         return []
+
+    def _parse_date(self, text: str):
+        """Parse a user-typed date in common formats. Returns a datetime or None."""
+        from datetime import datetime
+        t = (text or "").strip()
+        for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%y",
+                    "%d %b %Y", "%d %B %Y", "%m/%d/%Y"):
+            try:
+                return datetime.strptime(t, fmt)
+            except ValueError:
+                continue
+        return None
 
     def _parse_pct_or_amount(self, text: str, base: int):
         """Parse '10%' (percent of subtotal) or a flat amount ('5000'/'5k').

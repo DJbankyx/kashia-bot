@@ -523,6 +523,21 @@ def _product_write(event, user_id: str):
 
     # ── CRUD (direct dict mutation → save; matches the chat data shape) ──
     if action == "delete":
+        # Financial-safety gate: deletion must be explicitly confirmed. The
+        # client uses a two-tap confirm and sends confirm:true; a malformed or
+        # replayed partial request without it will NOT delete anything.
+        if not data.get("confirm"):
+            held = 0
+            try:
+                held = int(float(prod.get("stock", 0) or 0))
+            except (TypeError, ValueError):
+                held = 0
+            return _json(409, {
+                "error": "confirm required",
+                "needs_confirm": True,
+                "name": name,
+                "stock": held,
+            })
         del products[key]
         cat._save_products(user_id, products)
         return _json(200, {"ok": True, "deleted": key})
@@ -727,10 +742,15 @@ def _contacts(event, user_id: str):
     # Customers = anyone who has bought (customer/both, or has received-total).
     customers = [p for p in people
                  if p["type"] in ("customer", "both") or p["total_received"] > 0]
-    suppliers = [p for p in people
-                 if p["type"] in ("supplier", "expense_payee", "both") or p["total_paid"] > 0]
+    # SUPPLIERS = only real goods suppliers. Expense payees (landlord, PHCN,
+    # fuel station) are NOT suppliers — they get their own bucket so the
+    # supplier directory isn't polluted with every expense payee (the reported
+    # "all expenses tagged as suppliers" bug).
+    suppliers = [p for p in people if p["type"] in ("supplier", "both")]
+    expense_payees = [p for p in people if p["type"] == "expense_payee"]
     customers.sort(key=lambda p: p["total_received"], reverse=True)
     suppliers.sort(key=lambda p: p["total_paid"], reverse=True)
+    expense_payees.sort(key=lambda p: p["total_paid"], reverse=True)
 
     return _json(200, {
         "owed_to_me": owed_to_me,
@@ -740,7 +760,8 @@ def _contacts(event, user_id: str):
         "debtors": debtors,       # people who owe ME (collect)
         "creditors": creditors,   # people I owe (repay)
         "customers": customers,   # full customer directory (with details)
-        "suppliers": suppliers,   # full supplier directory
+        "suppliers": suppliers,   # real goods suppliers only
+        "expense_payees": expense_payees,  # landlords/utilities/etc — not suppliers
     })
 
 
@@ -770,9 +791,16 @@ def _records(event, user_id: str):
 
     start, end, label = _resolve_range(qs, period)
 
+    from services.accounting import _is_debt_settlement
+
     db = Database()
     all_txns = db.get_transactions_by_period(user_id, start, end) or []
-    rows = [t for t in all_txns if t.get("type") == tx_type]
+    # Exclude debt repayments/collections — they're recorded as sale/expense
+    # rows for cash tracking but must NOT appear under Sales/Expenses records
+    # (they'd double-count as revenue/expense). This matches the export filter
+    # (handle_filtered_export) so the list and the Excel/PDF now agree.
+    rows = [t for t in all_txns
+            if t.get("type") == tx_type and not _is_debt_settlement(t)]
     # Newest first.
     rows.sort(key=lambda t: t.get("created_at", t.get("date", "")), reverse=True)
 
@@ -1127,13 +1155,13 @@ _PAGE_HTML = """<!doctype html>
     </div>
 
     <div class="seclabel" id="periodlabel">This period</div>
-    <div class="card"><div class="k">Net profit</div><div class="v" id="net">—</div></div>
+    <div class="card"><div class="k">Net profit <span class="sub" id="netpct"></span></div><div class="v" id="net">—</div></div>
     <div class="row">
       <div class="card"><div class="k">Revenue</div><div class="v" id="rev">—</div></div>
       <div class="card"><div class="k">Cost of sales</div><div class="v" id="cogs">—</div></div>
     </div>
     <div class="row">
-      <div class="card"><div class="k">Gross margin</div><div class="v" id="gm">—</div></div>
+      <div class="card"><div class="k">Gross profit <span class="sub" id="gmpct"></span></div><div class="v" id="gp">—</div></div>
       <div class="card"><div class="k">Expenses</div><div class="v" id="opex">—</div></div>
     </div>
     <div class="card"><div class="k">Cash in - out</div><div class="v" id="cash">—</div></div>
@@ -1144,7 +1172,7 @@ _PAGE_HTML = """<!doctype html>
       <div class="card"><div class="k">You owe</div><div class="v neg" id="iowe">—</div><div class="sub" id="iowebreak"></div></div>
     </div>
     <div class="row">
-      <div class="card"><div class="k">Inventory value</div><div class="v" id="invval">—</div></div>
+      <div class="card tappable" onclick="showTab('cat')"><div class="k">Inventory value ›</div><div class="v" id="invval">—</div></div>
       <div class="card"><div class="k">Net position</div><div class="v" id="netpos">—</div></div>
     </div>
     <div class="card hidden" id="chartTop">
@@ -1159,7 +1187,7 @@ _PAGE_HTML = """<!doctype html>
   <div id="view-cat" class="hidden">
     <div class="row">
       <div class="card"><div class="k">Products</div><div class="v" id="cat-count">—</div></div>
-      <div class="card"><div class="k">Total stock</div><div class="v" id="cat-units">—</div></div>
+      <div class="card tappable" onclick="focusCatalogList()"><div class="k">Total stock ›</div><div class="v" id="cat-units">—</div></div>
     </div>
     <div class="card"><div class="k">Stock value (at cost)</div><div class="v" id="cat-value">—</div></div>
     <div class="card hidden" id="cat-lowcard"><div class="k">Low stock</div><div class="v neg" id="cat-low">—</div></div>
@@ -1198,6 +1226,7 @@ _PAGE_HTML = """<!doctype html>
     <div class="chips" id="crm-dir-tabs">
       <div class="chip active" data-cd="customers" onclick="crmSetDir('customers')">👤 Customers</div>
       <div class="chip" data-cd="suppliers" onclick="crmSetDir('suppliers')">🏭 Suppliers</div>
+      <div class="chip" data-cd="expenses" onclick="crmSetDir('expenses')">🧾 Expenses</div>
     </div>
     <input class="search" id="crmsearch" placeholder="Search people..." oninput="renderCrm()">
     <div id="crmlists"><div class="muted">Loading...</div></div>
@@ -1466,23 +1495,25 @@ _PAGE_HTML = """<!doctype html>
   // ── Shared "specific period" options — used by both Dashboard + Records ──
   // Produces a list of {val, label} for ANY quarter/month/year (not just current).
   function buildPeriodOptions() {
+    // A TRIMMED, dynamic set — the old grid (8 quarters + 3 years + 12 months
+    // = 23 chips) looked cluttered. Keep it tidy: the 4 quarters of THIS year,
+    // the last 6 months, and 2 years. Still fully dynamic (built from today),
+    // and the 📅 Pick date control covers anything outside this set.
     var now = new Date();
     var yNow = now.getFullYear();
     var MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
     var opts = [];
-    [yNow, yNow - 1].forEach(function (y) {
-      for (var q = 1; q <= 4; q++) {
-        opts.push({val: "period=quarter&y=" + y + "&q=" + q, label: "Q" + q + " " + y});
-      }
-    });
-    [yNow, yNow - 1, yNow - 2].forEach(function (y) {
-      opts.push({val: "period=year&y=" + y, label: "Year " + y});
-    });
-    for (var i = 0; i < 12; i++) {
+    for (var q = 1; q <= 4; q++) {
+      opts.push({val: "period=quarter&y=" + yNow + "&q=" + q, label: "Q" + q + " " + yNow});
+    }
+    for (var i = 0; i < 6; i++) {
       var d = new Date(yNow, now.getMonth() - i, 1);
       opts.push({val: "period=month&y=" + d.getFullYear() + "&m=" + (d.getMonth() + 1),
                  label: MON[d.getMonth()] + " " + d.getFullYear()});
     }
+    [yNow, yNow - 1].forEach(function (y) {
+      opts.push({val: "period=year&y=" + y, label: "Year " + y});
+    });
     return opts;
   }
   // Toggle an expanded list of specific-period chips below the main chips row.
@@ -1587,9 +1618,15 @@ _PAGE_HTML = """<!doctype html>
         var pl = document.getElementById("periodlabel");
         if (pl) pl.textContent = (d.period_label ? (d.period_label + " · this period") : "This period");
         setSigned("net", d.pnl.net_profit);
+        // Net profit margin % as a subtitle on the Net profit card.
+        var npEl = document.getElementById("netpct");
+        if (npEl) npEl.textContent = (d.pnl.revenue > 0) ? ("· net margin " + (d.pnl.net_margin_pct || 0) + "%") : "";
         document.getElementById("rev").textContent = naira(d.pnl.revenue);
         document.getElementById("cogs").textContent = naira(d.pnl.cogs);
-        document.getElementById("gm").textContent = (d.pnl.gross_margin_pct || 0) + "%";
+        // Gross PROFIT amount + gross margin % subtitle (was showing only the %).
+        document.getElementById("gp").textContent = naira(d.pnl.gross_profit);
+        var gpEl = document.getElementById("gmpct");
+        if (gpEl) gpEl.textContent = "· margin " + (d.pnl.gross_margin_pct || 0) + "%";
         document.getElementById("opex").textContent = naira(d.pnl.opex);
         setSigned("cash", d.cash.net);
         document.getElementById("owed").textContent = naira(d.debt.owed_to_me);
@@ -1653,6 +1690,17 @@ _PAGE_HTML = """<!doctype html>
   // ── Catalog tab (Inventory merged in): totals up top, then products grouped
   // by category, searchable. Every product is tappable — non-variant opens the
   // edit sheet (stock/price/cost), variant opens the read-only tree viewer.
+  // Tapping the "Total stock" tile brings the per-product stock list into view
+  // (the detail the user asked to "see" when tapping total stock).
+  window.focusCatalogList = function () {
+    var groups = document.getElementById("catgroups");
+    if (groups && groups.scrollIntoView) {
+      groups.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    var s = document.getElementById("catsearch");
+    if (s) s.focus();
+  };
+
   window.renderCatalog = function () {
     if (!invData) return;
     var q = (document.getElementById("catsearch").value || "").toLowerCase().trim();
@@ -1765,7 +1813,9 @@ _PAGE_HTML = """<!doctype html>
     ib.textContent = (sup > 0 && exp > 0)
       ? ("Suppliers " + naira(sup) + " - Expenses " + naira(exp)) : "";
 
-    var list = (crmDir === "suppliers" ? crmData.suppliers : crmData.customers) || [];
+    var list = (crmDir === "suppliers" ? crmData.suppliers
+                : crmDir === "expenses" ? crmData.expense_payees
+                : crmData.customers) || [];
     list = list.filter(function (c) {
       return !q || (c.name || "").toLowerCase().indexOf(q) >= 0;
     });
@@ -2041,8 +2091,19 @@ _PAGE_HTML = """<!doctype html>
       headers: { "X-Telegram-Init-Data": initData, "Content-Type": "application/json" },
       body: JSON.stringify(body)
     }).then(function (r) {
-      return r.json().then(function (j) {
-        if (!r.ok || !j.ok) throw new Error((j && j.error) || ("Error " + r.status));
+      // Read as text first so a NON-JSON error body (e.g. an API Gateway
+      // "Missing Authentication Token" 403, or an HTML 5xx) doesn't blow up
+      // r.json() with an opaque browser "Load failed". Give a real message.
+      return r.text().then(function (t) {
+        var j = null;
+        try { j = t ? JSON.parse(t) : null; } catch (e) { j = null; }
+        if (!r.ok || !(j && j.ok)) {
+          if (j && j.error) throw new Error(j.error);
+          if (r.status === 401 || r.status === 403)
+            throw new Error("Session expired — close and reopen from the ☰ Menu button.");
+          throw new Error("Couldn't reach the server (error " + r.status +
+                          "). Please try again in a moment.");
+        }
         return j;
       });
     });
@@ -2262,7 +2323,7 @@ _PAGE_HTML = """<!doctype html>
     btn.removeAttribute("data-confirm");
     btn.textContent = "\\ud83d\\uddd1\\ufe0f Delete product";
     if (err) err.textContent = "";
-    apiPost("api/product", { action: "delete", key: key })
+    apiPost("api/product", { action: "delete", key: key, confirm: true })
       .then(function () {
         invData = (invData || []).filter(function (p) { return p.key !== key; });
         closeSheet();

@@ -580,6 +580,17 @@ class TGFastEntry:
 
     def _set_quantity(self, phone_number: str, fx: dict, n: int) -> list:
         fx["quantity"] = int(n)
+        # Single-field edit of quantity: recompute the amount from the existing
+        # per-unit price (if any) and go STRAIGHT back to confirm — don't drag
+        # the user through price/payment/who again.
+        if fx.get("editing_one") == "qty":
+            uc = fx.get("unit_cost")
+            if uc and not fx.get("mixed_price"):
+                fx["amount"] = int(uc) * int(n)
+                return self._after_edit_return(phone_number, fx)
+            # No per-unit price on file (or mixed) → we must re-ask the price,
+            # but keep the edit marker so price then returns to confirm.
+            return self._go_to_price(phone_number, fx)
         # 2F: if this item has registered unit conversions (e.g. 1 bag = 20
         # pieces), ask WHICH unit this quantity is in, then convert on save.
         units = self._item_units(phone_number, fx)
@@ -593,6 +604,70 @@ class TGFastEntry:
             return []
         # No conversions → straight to price (existing behaviour).
         return self._go_to_price(phone_number, fx)
+
+    def _stock_available(self, phone_number: str, fx: dict):
+        """Best-effort available stock for the current item — the chosen LEAF's
+        stock when a variant is drilled, else the product-level stock. Returns an
+        int, or None if we can't tell (no catalog item / lookup failed) so the
+        caller can skip the warning rather than guess."""
+        key = fx.get("product_key")
+        if not key:
+            return None
+        try:
+            vlabel = fx.get("variant_label", "")
+            if vlabel:
+                return int(self.catalog.leaf_stock(phone_number, key, vlabel) or 0)
+            p = self.catalog.get_normalized_product(phone_number, key)
+            if not p or not p.get("name"):
+                return None
+            return int(p.get("stock") or 0)
+        except Exception as e:
+            logger.warning(f"tg_fastentry: stock_available failed: {e}")
+            return None
+
+    def _registered_cost(self, phone_number: str, fx: dict) -> int:
+        """The cost already on file for this item — the chosen LEAF's cost when a
+        variant is drilled, else the product-level landing_cost. 0 if none/unknown.
+        Used to offer a one-tap 'use the registered cost' on a purchase."""
+        key = fx.get("product_key")
+        if not key:
+            return 0
+        try:
+            vlabel = fx.get("variant_label", "")
+            if vlabel:
+                lc = int(self.catalog.leaf_cost(phone_number, key, vlabel) or 0)
+                if lc:
+                    return lc
+            p = self.catalog.get_normalized_product(phone_number, key)
+            return int((p or {}).get("landing_cost") or 0)
+        except Exception as e:
+            logger.warning(f"tg_fastentry: registered_cost failed: {e}")
+            return 0
+
+    def _oversell_warning(self, phone_number: str, fx: dict) -> str:
+        """A warning line when a SALE quantity exceeds available stock. Does NOT
+        block the sale (the owner may be selling incoming stock) — it just flags
+        it so an accidental over-count is visible. Empty when fine/unknown."""
+        if fx.get("tx_type") != "sale" or not self._uses_quantity(fx):
+            return ""
+        avail = self._stock_available(phone_number, fx)
+        if avail is None:
+            return ""
+        try:
+            qty = int(fx.get("quantity", 0) or 0)
+        except (TypeError, ValueError):
+            return ""
+        if qty > avail:
+            unit = ""
+            try:
+                p = self.catalog.get_normalized_product(phone_number, fx.get("product_key", ""))
+                unit = (p or {}).get("primary_unit") or ""
+            except Exception:
+                unit = ""
+            us = f" {unit}" if unit else ""
+            return (f"⚠️ You're selling {qty}{us} but only {avail}{us} in stock "
+                    f"— stock will show 0. Check the quantity or record a purchase first.")
+        return ""
 
     def _item_hint(self, phone_number: str, fx: dict) -> str:
         """A short hint line for the sale/purchase card: what we already know
@@ -630,6 +705,18 @@ class TGFastEntry:
                     cost = leaf_cost
             except Exception as e:
                 logger.warning(f"tg_fastentry: leaf_cost lookup failed: {e}")
+            # Stock also lives on the chosen leaf, not the product roll-up. Show
+            # the stock of the exact variant the owner drilled into (e.g. 0 for
+            # Highlander/2022) instead of the whole product's total (e.g. 70).
+            try:
+                stock = int(self.catalog.leaf_stock(
+                    phone_number, fx.get("product_key", ""), vlabel) or 0)
+            except Exception as e:
+                logger.warning(f"tg_fastentry: leaf_stock lookup failed: {e}")
+        # When a specific leaf is chosen we ALWAYS show its stock (even 0), so
+        # the owner sees the true stock of that exact variant. Product-level
+        # hints keep the old behaviour of hiding a 0.
+        show_zero_stock = bool(vlabel)
         if tt == "sale":
             if sale_price:
                 bits.append(f"💰 usual price {format_amount(sale_price)}{'/'+unit if unit else ''}")
@@ -637,7 +724,7 @@ class TGFastEntry:
                 bits.append(f"🏷️ cost {format_amount(cost)}")
             if sale_price and cost:
                 bits.append(f"📈 margin {format_amount(sale_price - cost)}")
-            if stock:
+            if stock or show_zero_stock:
                 bits.append(f"📦 {stock}{' '+unit if unit else ''} in stock")
             # Nudge when we have no pricing on file — so the owner knows WHY
             # there's no SP/CP/margin hint and how to fix it, rather than seeing
@@ -647,7 +734,7 @@ class TGFastEntry:
         else:  # purchase / expense
             if cost:
                 bits.append(f"🏷️ last cost {format_amount(cost)}{'/'+unit if unit else ''}")
-            if stock:
+            if stock or show_zero_stock:
                 bits.append(f"📦 {stock}{' '+unit if unit else ''} in stock")
             if not cost:
                 bits.append("💡 no cost on file yet — this purchase will set it")
@@ -679,13 +766,31 @@ class TGFastEntry:
         multi = n > 1
         hint = self._item_hint(phone_number, fx)
         hint_line = f"\n{hint}" if hint else ""
+        # Oversell flag (sales only) — surfaces an accidental over-count without
+        # blocking (the owner may be selling stock that's on the way).
+        warn = self._oversell_warning(phone_number, fx)
+        warn_line = f"\n{warn}" if warn else ""
+        presets = self._price_presets(phone_number, fx)
+        # PURCHASE: offer the cost already on file as a one-tap option (parity
+        # with the sale flow's "Use ₦X" cost button). Prepend it so it's the
+        # first, most prominent preset, and tell the owner they can tap it.
+        reg_cost_line = ""
+        if fx.get("tx_type") == "purchase":
+            try:
+                from utils.whatsapp_ui import format_amount as _fa
+            except Exception:
+                def _fa(x): return f"₦{int(x):,}"
+            reg_cost = self._registered_cost(phone_number, fx)
+            if reg_cost:
+                presets = [reg_cost] + [p for p in (presets or []) if int(p) != reg_cost]
+                reg_cost_line = (f"\n_💡 Tap {_fa(reg_cost)} to reuse the cost "
+                                 f"already on file._")
         if unit:
-            text = f"{self._header(fx)}\n📦 {fx['product_name']} {qty_disp}{hint_line}\n\nPrice per {unit}?"
+            text = f"{self._header(fx)}\n📦 {fx['product_name']} {qty_disp}{hint_line}{warn_line}{reg_cost_line}\n\nPrice per {unit}?"
         else:
-            text = f"{self._header(fx)}\n📦 {fx['product_name']} ×{n:,}{hint_line}\n\nPrice each?"
+            text = f"{self._header(fx)}\n📦 {fx['product_name']} ×{n:,}{hint_line}{warn_line}{reg_cost_line}\n\nPrice each?"
         if multi:
             text += "\n_Different prices? Tap “Enter total instead”._"
-        presets = self._price_presets(phone_number, fx)
         self._render(phone_number, fx, text,
                      tg_ui.amount_keyboard(presets=presets or None, include_total=multi))
         return []
@@ -702,6 +807,12 @@ class TGFastEntry:
         else:
             fx["unit_cost"] = None
             fx["amount"] = int(value)
+
+        # Single-field edit of price/qty → straight back to confirm.
+        edited = self._after_edit_return(phone_number, fx)
+        if edited is not None:
+            return edited
+
         fx["step"] = "payment"
 
         if fx.get("tx_type") == "sale":
@@ -721,6 +832,12 @@ class TGFastEntry:
         fx["amount"] = int(total)
         fx["unit_cost"] = int(total // qty) if qty > 0 else int(total)
         fx["mixed_price"] = True
+
+        # Single-field edit of price/total → straight back to confirm.
+        edited = self._after_edit_return(phone_number, fx)
+        if edited is not None:
+            return edited
+
         fx["step"] = "payment"
         if fx.get("tx_type") == "sale":
             text = f"{self._header(fx)}\n{self._summary_line(fx)}\n\nHow were you paid?"
@@ -756,10 +873,17 @@ class TGFastEntry:
 
         # If the counterparty was pre-set (CRM "record to X"), skip the who-step.
         if fx.get("vendor_preset") and fx.get("vendor"):
+            fx.pop("editing_one", None)
             return self._show_confirm(phone_number, fx)
 
         if method == "credit":
             return self._ask_customer(phone_number, fx, required=True)
+
+        # Single-field edit of PAYMENT to cash/transfer: if we already have a
+        # counterparty, don't re-ask Who — bounce straight to confirm.
+        if fx.get("editing_one") == "pay" and fx.get("vendor"):
+            fx.pop("editing_one", None)
+            return self._show_confirm(phone_number, fx)
 
         # cash / transfer → still OFFER a name (feeds the CRM), but it's optional
         # here (Walk-in / Skip is fine). This keeps every path boxed and avoids
@@ -780,6 +904,8 @@ class TGFastEntry:
     def _show_confirm(self, phone_number: str, fx: dict) -> list:
         """The single in-place confirm card (Option B)."""
         fx["step"] = "confirm"
+        # Reaching confirm always ends any single-field edit.
+        fx.pop("editing_one", None)
         lines = [
             f"{self._header(fx)}",
             "",
@@ -791,8 +917,14 @@ class TGFastEntry:
             lines.append(f"   ({fx['quantity']} × {format_amount(fx['unit_cost'])} each)")
         lines.append(f"💳 {self._pay_label(fx)}")
         if fx.get("vendor"):
-            who = "Customer" if fx.get("tx_type") == "sale" else "Supplier"
+            _tt = fx.get("tx_type")
+            who = {"sale": "Customer", "purchase": "Supplier"}.get(_tt, "Paid to")
             lines.append(f"👤 {who}: {fx['vendor']}")
+        # Oversell flag on the confirm card too — last chance to catch an
+        # accidental over-count before saving. Never blocks the save.
+        warn = self._oversell_warning(phone_number, fx)
+        if warn:
+            lines.append(warn)
         lines += ["", "_Save this?_"]
         self._render(phone_number, fx, "\n".join(lines), tg_ui.confirm_keyboard())
         return []
@@ -827,20 +959,46 @@ class TGFastEntry:
 
     # ── step: who? (customer / supplier) ─────────────────────────────────
 
-    def _recent_contacts(self, phone_number: str) -> list:
-        """(contact_id, name) of recent/known contacts for quick tap."""
+    def _recent_contacts(self, phone_number: str, tx_type: str = "") -> list:
+        """(contact_id, name) of recent/known contacts for quick tap, PREFERRING
+        the ones that fit this transaction. Suggesting customers while recording
+        an expense (the reported bug) is confusing — so for a purchase/expense we
+        surface suppliers / expense-payees first, and for a sale customers first.
+        Falls back to everyone if the preferred set is thin."""
         try:
-            contacts = self.db.get_contacts(phone_number, limit=20) or []
-            out = []
-            for c in contacts:
-                name = c.get("name") or ""
-                cid = c.get("contact_id") or name.lower().replace(" ", "_")
-                if name:
-                    out.append((cid, name))
-            return out
+            contacts = self.db.get_contacts(phone_number, limit=40) or []
         except Exception as e:
             logger.warning(f"tg_fastentry: contacts read failed: {e}")
             return []
+
+        # Which stored roles fit this transaction's "Who?"
+        if tx_type == "sale":
+            prefer = {"customer", "client", "both"}
+        elif tx_type == "purchase":
+            prefer = {"supplier", "both"}
+        elif tx_type == "expense":
+            prefer = {"expense_payee", "supplier", "both"}
+        else:
+            prefer = set()
+
+        preferred, others = [], []
+        for c in contacts:
+            name = c.get("name") or ""
+            if not name:
+                continue
+            cid = c.get("contact_id") or name.lower().replace(" ", "_")
+            role = (c.get("type") or "").lower().strip()
+            if prefer and role in prefer:
+                preferred.append((cid, name))
+            else:
+                others.append((cid, name))
+
+        # Prefer role-matched contacts; top up with others so the user always
+        # has some quick taps (and can still type any name).
+        result = preferred[:10]
+        if len(result) < 6:
+            result += others[: (6 - len(result))]
+        return result
 
     def _ask_customer(self, phone_number: str, fx: dict, required: bool = True) -> list:
         """Boxed 'Who?' step.
@@ -853,18 +1011,21 @@ class TGFastEntry:
         fx["step"] = "who"
         fx["who_required"] = bool(required)
         self._save_fx(phone_number, fx)
-        recent = self._recent_contacts(phone_number)
         tt = fx.get("tx_type")
+        recent = self._recent_contacts(phone_number, tt)
         if tt == "purchase":
-            q = "👤 Who did you buy from?"
+            q = "👤 Who did you buy from? _(supplier)_"
+            who_word = "supplier"
         elif tt == "expense":
-            q = "👤 Who did you pay?"
+            q = "👤 Who did you pay? _(e.g. landlord, PHCN, fuel station)_"
+            who_word = "payee"
         else:
-            q = "👤 Who did you sell to?"
+            q = "👤 Who did you sell to? _(customer)_"
+            who_word = "customer"
         if required:
-            note = "_Needed to track the debt. Tap a name, type one, or choose Walk-in._"
+            note = f"_Needed to track the debt. Tap a name, type one, or choose Walk-in._"
         else:
-            note = "_Optional — tap a name to track this customer, or Skip._"
+            note = f"_Optional — tap a name to track this {who_word}, or Skip._"
         text = f"{self._header(fx)}\n{self._summary_line(fx)}\n\n{q}\n{note}"
         self._render(phone_number, fx, text, tg_ui.customer_keyboard(recent=recent))
         return []
@@ -962,7 +1123,8 @@ class TGFastEntry:
             fields.append(("price", "💰 Amount"))
         fields.append(("pay", "💳 Payment"))
         # Who — customer/supplier
-        who_label = "🏪 Supplier" if tt in ("purchase", "expense") else "👤 Customer"
+        who_label = {"purchase": "🏪 Supplier", "expense": "🧾 Paid to"}\
+            .get(tt, "👤 Customer")
         fields.append(("who", who_label))
 
         lines = [
@@ -971,7 +1133,7 @@ class TGFastEntry:
             f"💳 {self._pay_label(fx)}",
         ]
         if fx.get("vendor"):
-            who = "Customer" if tt == "sale" else "Supplier"
+            who = {"sale": "Customer", "purchase": "Supplier"}.get(tt, "Paid to")
             lines.append(f"👤 {who}: {fx['vendor']}")
         lines += ["", "_What do you want to change?_"]
         self._render(phone_number, fx, "\n".join(lines),
@@ -980,10 +1142,19 @@ class TGFastEntry:
 
     def _edit_field(self, phone_number: str, fx: dict, field: str) -> list:
         """Jump to the step for the chosen field. After the user re-enters that
-        value the flow continues forward as normal and returns to confirm."""
+        ONE value, the flow returns STRAIGHT to the confirm card — it does NOT
+        replay the rest of the tray. `editing_one` is the marker the forward
+        steps check to know they should bounce back to confirm instead of
+        advancing (fixes 'editing one thing makes me redo the whole sale')."""
+        # Re-picking the item genuinely invalidates qty/price/variant, so that
+        # one restarts the flow. Everything else edits in place.
         if field == "item":
-            # Re-pick the item / re-type the expense description.
+            fx.pop("editing_one", None)
+            self._save_fx(phone_number, fx)
             return self._restart_item(phone_number, fx)
+
+        fx["editing_one"] = field
+        self._save_fx(phone_number, fx)
 
         if field == "qty":
             fx["step"] = "quantity"
@@ -1029,7 +1200,17 @@ class TGFastEntry:
             return self._ask_customer(phone_number, fx, required=required)
 
         # Unknown field → just go back to confirm.
+        fx.pop("editing_one", None)
         return self._show_confirm(phone_number, fx)
+
+    def _after_edit_return(self, phone_number: str, fx: dict) -> list:
+        """If we're editing a single field, clear the marker and bounce back to
+        the confirm card. Returns None when NOT in single-field edit mode so the
+        caller continues its normal forward flow."""
+        if fx.get("editing_one"):
+            fx.pop("editing_one", None)
+            return self._show_confirm(phone_number, fx)
+        return None
 
     def _restart_item(self, phone_number: str, fx: dict) -> list:
         """Edit → go back to the item picker (fresh choices, same message)."""

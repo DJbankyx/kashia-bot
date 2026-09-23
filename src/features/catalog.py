@@ -239,6 +239,16 @@ class CatalogHandler:
             return self._handle_product_picked(phone_number, button_id[12:], "set_cost", {})
         if button_id.startswith("cat_setunit_"):
             return self._handle_product_picked(phone_number, button_id[12:], "set_unit", {})
+        if button_id.startswith("cat_setconv_"):
+            # Per-product "Set Conversion" from the product card.
+            return self._handle_product_picked(phone_number, button_id[12:], "set_conversion", {})
+        if button_id.startswith("cat_writeoff_"):
+            # Damaged/impaired/expired stock write-off.
+            return self._start_writeoff(phone_number, button_id[13:])
+        if button_id.startswith("cat_prodrecipe_"):
+            # Per-product "Recipe / BOM" from the product card → hand to the
+            # production recipe flow (router forwards this marker).
+            return [{"type": "__START_RECIPE_SETUP__"}]
         if button_id.startswith("cat_setvar_"):
             return self.variants_menu(phone_number, button_id[11:])
         # ── NESTED variant TREE (option 1). The current node PATH lives in the
@@ -260,10 +270,16 @@ class CatalogHandler:
             return self._vt_start_set(phone_number, button_id[10:], "stock")
         if button_id.startswith("cat_vtcost_"):
             return self._vt_start_set(phone_number, button_id[11:], "cost")
+        if button_id.startswith("cat_vtunit_"):
+            return self._vt_start_set(phone_number, button_id[11:], "unit")
         if button_id.startswith("cat_vtren_"):
             return self._vt_start_rename(phone_number, button_id[10:])
+        if button_id.startswith("cat_vtdelok_"):
+            # Confirmed delete — actually removes the branch/leaf.
+            return self._vt_delete_current(phone_number, button_id[12:])
         if button_id.startswith("cat_vtdel_"):
-            return self._vt_delete_current(phone_number, button_id[10:])
+            # First tap only asks — financial data must never delete on one tap.
+            return self._vt_confirm_delete(phone_number, button_id[10:])
         if button_id.startswith("cat_vttotals_"):
             return self._vt_totals(phone_number, button_id[13:])
         if button_id.startswith("cat_setprice_"):
@@ -499,8 +515,14 @@ class CatalogHandler:
         if step == "vt_set_cost":
             return self._vt_handle_set(phone_number, text_s, context, "cost")
 
+        if step == "vt_set_unit":
+            return self._vt_handle_set(phone_number, text_s, context, "unit")
+
         if step == "adding_products":
             return self._handle_add_products(phone_number, text_s, context)
+
+        if step == "writeoff_qty":
+            return self._handle_writeoff(phone_number, text_s, context)
 
         if step == "setting_cost":
             return self._handle_set_cost(phone_number, text_s, context)
@@ -1429,6 +1451,89 @@ class CatalogHandler:
     # ADD PRODUCT
     # ─────────────────────────────────────────────────────────
 
+    def _start_writeoff(self, phone_number: str, product_key: str) -> list:
+        """Begin a damaged/impaired/expired stock write-off for a product."""
+        p = self.get_normalized_product(phone_number, product_key)
+        if not p.get("name"):
+            return [text_response("❓ Product not found.")]
+        unit = p.get("primary_unit") or "unit"
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+            "cat_step": "writeoff_qty",
+            "cat_product_key": product_key,
+        })
+        return [text_response(
+            f"🗑️ *Write off — {p['name']}*\n\n"
+            f"In stock: *{p['stock']} {unit}*\n\n"
+            f"How many are damaged / expired / lost? Type the quantity.\n\n"
+            f"_This reduces your stock and records the loss (at cost) so your "
+            f"profit is accurate. Type cancel to stop._"
+        )]
+
+    def _handle_writeoff(self, phone_number: str, text: str, context: dict) -> list:
+        """Apply a write-off: reduce stock AND record the loss as an expense at
+        cost (so inventory + P&L both stay correct)."""
+        product_key = context.get("cat_product_key", "")
+        digits = "".join(c for c in text if c.isdigit())
+        qty = int(digits) if digits else 0
+        if qty <= 0:
+            return [text_response("Please type a valid quantity (e.g. 3).")]
+        p = self.get_normalized_product(phone_number, product_key)
+        if not p.get("name"):
+            self.session.reset(phone_number)
+            return [text_response("❓ Product not found.")]
+        name = p["name"]
+        available = int(p.get("stock", 0) or 0)
+        if qty > available:
+            qty = available  # can't write off more than you hold
+        unit = p.get("primary_unit") or "unit"
+        unit_cost = int(p.get("landing_cost", 0) or 0)
+        loss_value = unit_cost * qty
+
+        # 1) Reduce stock (negative delta) + log the movement reason.
+        try:
+            self.update_stock(phone_number, name, -qty, quantity_str=str(qty),
+                              cost_mode="keep")
+            self.record_stock_movement(phone_number, product_key, -qty,
+                                       reason="write-off (damaged/impaired)")
+        except Exception as e:
+            logger.error(f"writeoff stock update failed: {e}")
+            self.session.reset(phone_number)
+            return [text_response("⚠️ Couldn't update stock. Please try again.")]
+
+        # 2) Record the loss as an expense at cost so the P&L reflects it. Only
+        #    when we actually know a cost (never fake a zero — mirrors the COGS
+        #    discipline). Category "Goods & Stock" keeps it as a COGS-type loss.
+        recorded_loss = False
+        if loss_value > 0:
+            try:
+                self.db.save_transaction(
+                    phone_number, int(loss_value), "expense",
+                    f"Stock write-off: {qty} {unit} {name} (damaged/impaired)",
+                    "Goods & Stock",
+                    vendor="", payment_method="none",
+                    extra_details={"write_off": True, "product": name, "qty": qty})
+                recorded_loss = True
+            except Exception as e:
+                logger.warning(f"writeoff loss record failed: {e}")
+
+        self.session.reset(phone_number)
+        lines = [
+            f"🗑️ *Wrote off {qty} {unit} of {name}.*",
+            f"📦 New stock: *{max(0, available - qty)} {unit}*",
+        ]
+        if recorded_loss:
+            lines.append(f"📉 Loss recorded: *{format_amount(loss_value)}* "
+                         f"(at cost) — reflected in your reports.")
+        else:
+            lines.append("_No cost on file for this item, so no money loss was "
+                         "recorded — set its cost to track write-off losses._")
+        return [text_response("\n".join(lines)),
+                button_response("What's next?", [
+                    {"id": f"cat_view_{product_key}", "title": "📦 Product"},
+                    {"id": "cat_stock", "title": "📊 View Stock"},
+                    {"id": "menu_home", "title": "☰ Menu"},
+                ])]
+
     def _start_add_product(self, phone_number: str) -> list:
         """Start adding products."""
         self.session.save(phone_number, states.CATALOG_ADD_DATA, {
@@ -1445,12 +1550,41 @@ class CatalogHandler:
             ]
         )]
 
+    # Menu-label / command phrases that must NEVER become products. When the
+    # user is in add-products mode and taps (or types) a menu label like
+    # "Set Recipe", "Add More", "Menu" etc., it used to be saved as a literal
+    # product (the "Set Recipe / Water / Juice became products" bug). We reject
+    # these so a stray label can't pollute the catalog.
+    _RESERVED_PRODUCT_NAMES = {
+        "set recipe", "recipe", "set recipes", "edit recipe",
+        "add more", "add product", "add products", "done", "cancel",
+        "menu", "back", "home", "skip", "set price", "set cost", "set unit",
+        "set stock", "adjust stock", "view stock", "stock", "settings",
+        "dashboard", "report", "reports", "help", "conversions",
+        "set conversion", "production", "record production",
+    }
+
     def _handle_add_products(self, phone_number: str, text: str, context: dict) -> list:
         """Add one or multiple products."""
-        items = [item.strip().title() for item in text.split(",") if item.strip()]
+        raw_items = [item.strip() for item in text.split(",") if item.strip()]
+        # Drop anything that is a menu label / command word so it can't be
+        # saved as a product. Keep the rejected ones to explain what happened.
+        items = []
+        rejected = []
+        for it in raw_items:
+            if it.lower().strip() in self._RESERVED_PRODUCT_NAMES:
+                rejected.append(it)
+            else:
+                items.append(it.title())
 
         if not items:
-            return [text_response("Please type at least one product name:")]
+            msg = "Please type at least one product name:"
+            if rejected:
+                msg = (f"⚠️ *{', '.join(rejected)}* looks like a menu option, not "
+                       f"a product — I didn't add it.\n\n"
+                       f"Type a real product name (e.g. _Bottled Water 50cl_), "
+                       f"or tap a menu button.")
+            return [text_response(msg)]
 
         products = self._get_products(phone_number)
         added = []
@@ -1473,6 +1607,9 @@ class CatalogHandler:
         self._save_products(phone_number, products)
 
         lines = []
+        if rejected:
+            lines.append(f"⚠️ Skipped *{', '.join(rejected)}* (that's a menu option, "
+                         f"not a product).")
         if added:
             lines.append(f"✅ Added *{len(added)}* product{'s' if len(added) != 1 else ''}: {', '.join(added)}")
         if already_exists:
@@ -3388,10 +3525,22 @@ class CatalogHandler:
             buttons.append({"id": f"cat_setcost_{k}", "title": "🏷️ Set Cost"})
         if not is_service:
             buttons.append({"id": f"cat_setunit_{k}", "title": "📏 Set Unit"})
+            # Manufacturing/hybrid: a finished product needs a RECIPE (bill of
+            # materials) and often unit CONVERSIONS — surface both right on the
+            # product card so they're not buried under the Production menu. These
+            # start the existing flows (which confirm the product).
+            if self._industry(phone_number) in ("manufacturing", "hybrid") \
+                    and p.get("item_type") not in ("raw_material", "supply", "overhead"):
+                buttons.append({"id": f"cat_prodrecipe_{k}", "title": "📋 Recipe / BOM"})
+            buttons.append({"id": f"cat_setconv_{k}", "title": "📦 Set Conversion"})
         buttons.append({"id": f"cat_setcat_{k}", "title": "🗂️ Category"})
         if not is_service:
             buttons.append({"id": f"cat_reorder_{k}", "title": "🔔 Reorder level"})
             buttons.append({"id": f"cat_history_{k}", "title": "🧾 History"})
+            if not has_tree:
+                # Damaged / impaired / expired stock — write it off (reduces
+                # stock AND records the loss). Tree products write off per leaf.
+                buttons.append({"id": f"cat_writeoff_{k}", "title": "🗑️ Write off (damaged)"})
         buttons.append({"id": f"cat_rename_{k}", "title": "✏️ Rename"})
         buttons.append({"id": f"cat_delete_{k}", "title": "🗑️ Delete"})
         buttons.append({"id": "menu_catalog", "title": "← Catalog"})
@@ -3875,6 +4024,32 @@ class CatalogHandler:
         except Exception:
             return 0
 
+    def leaf_stock(self, phone_number: str, product_key: str, leaf_path: str) -> int:
+        """Public: stock AT a variant-tree path. leaf_path is e.g.
+        'Highlander / 2022'. Returns the roll-up total at that node (own stock if
+        it's a leaf, else the sum of its descendants). Returns the product-wide
+        total if the product isn't a tree, and 0 if the path isn't found.
+
+        This exists so the recording hint can show the stock of the LEAF the user
+        actually drilled into (e.g. 0 for Highlander/2022) instead of the whole
+        product's roll-up (e.g. 70) — the display bug it fixes."""
+        try:
+            prod = self._get_products(phone_number).get(product_key)
+            if not isinstance(prod, dict):
+                return 0
+            tree = prod.get("variant_tree") or {}
+            if not tree.get("children"):
+                return self._as_int(prod.get("stock"), 0)
+            parts = [p.strip() for p in str(leaf_path).split(self._COMBO_SEP) if p.strip()]
+            if not parts:
+                return self._vt_node_total(tree)
+            node = self._vt_get_node(tree, parts)
+            if node is None:
+                return 0
+            return self._vt_node_total(node)
+        except Exception:
+            return 0
+
     def _vt_all_values(self, node: dict) -> list:
         """All variant VALUE names anywhere in the tree (every child key at every
         depth), so a product is searchable by any of its sub-variant names
@@ -3961,7 +4136,12 @@ class CatalogHandler:
         name = p["name"]
         crumb = " › ".join([name] + path)
         children = node.get("children") or {}
-        unit = p.get("primary_unit") or "unit"
+        # A leaf may carry its OWN unit label (e.g. one variant sold in "bags",
+        # another in "cartons"). This is a display label only — stock counts stay
+        # plain numbers — so it never affects COGS/conversion math. Falls back to
+        # the product's primary unit.
+        node_unit = (node.get("unit") or "").strip()
+        unit = node_unit or p.get("primary_unit") or "unit"
         total = self._vt_node_total(node) if children else self._as_int(node.get("stock"), 0)
 
         lines = [f"🎚️ *{crumb}*"]
@@ -3972,8 +4152,10 @@ class CatalogHandler:
             lines.append(f"📐 Stock: *{self._as_int(node.get('stock'),0)} {unit}*")
             if self._as_int(node.get("cost"), 0):
                 lines.append(f"🏷️ Cost: {format_amount(self._as_int(node.get('cost'),0))}")
+            if node_unit:
+                lines.append(f"📏 Unit: *{node_unit}* (this variant)")
             lines.append("_This is a leaf. Add a sub-variant to split it further,_\n"
-                         "_or set its stock/cost._")
+                         "_or set its stock/cost/unit._")
 
         rows = []
         child_vals = list(children.keys())
@@ -3987,6 +4169,7 @@ class CatalogHandler:
         if self._vt_is_leaf(node) and path:
             rows.append({"id": f"cat_vtstk_{product_key}", "title": "📐 Set stock"})
             rows.append({"id": f"cat_vtcost_{product_key}", "title": "🏷️ Set cost"})
+            rows.append({"id": f"cat_vtunit_{product_key}", "title": "📏 Set unit (this variant)"})
         if children:
             rows.append({"id": f"cat_vttotals_{product_key}", "title": "📊 Totals"})
         if path:
@@ -4105,20 +4288,32 @@ class CatalogHandler:
         self.session.save(phone_number, states.CATALOG_ADD_DATA, {
             "cat_step": f"vt_set_{field}", "cat_vt_key": product_key,
             "cat_vt_path": list(path)})
-        label = "stock quantity" if field == "stock" else "cost (e.g. 5000, 150K)"
         crumb = " › ".join(path) if path else "this variant"
-        return [text_response(f"{'📐' if field=='stock' else '🏷️'} *{crumb}* — type the {label}:")]
+        if field == "stock":
+            return [text_response(f"📐 *{crumb}* — type the stock quantity:")]
+        if field == "unit":
+            return [text_response(f"📏 *{crumb}* — type the unit for THIS variant "
+                                  f"(e.g. bag, carton, litre):\n\n"
+                                  f"_Label only — it doesn't change the counts._")]
+        return [text_response(f"🏷️ *{crumb}* — type the cost (e.g. 5000, 150K):")]
 
     def _vt_handle_set(self, phone_number: str, text: str, context: dict, field: str) -> list:
         key = context.get("cat_vt_key", "")
         path = list(context.get("cat_vt_path", []))
-        if field == "cost":
+        if field == "unit":
+            # A per-variant display-unit label (no math impact).
+            val = (text or "").strip()
+            if not val:
+                return [text_response("Please type a unit (e.g. bag, carton).")]
+        elif field == "cost":
             val = parse_amount(text)
+            if val is None:
+                return [text_response("Please type a valid number.")]
         else:
             digits = "".join(c for c in text if c.isdigit())
             val = int(digits) if digits else None
-        if val is None:
-            return [text_response("Please type a valid number.")]
+            if val is None:
+                return [text_response("Please type a valid number.")]
         products = self._get_products(phone_number)
         prod = products.get(key)
         if not isinstance(prod, dict):
@@ -4141,6 +4336,8 @@ class CatalogHandler:
                 prod["stock_movements"] = moves[-100:]
             except Exception:
                 pass
+        elif field == "unit":
+            node["unit"] = str(val).strip()
         else:
             node["cost"] = int(val)
         prod["variant_tree"] = root
@@ -4182,6 +4379,49 @@ class CatalogHandler:
             self._save_products(phone_number, products)
             path = path[:-1] + [new_name]
         return self._vt_node_view(phone_number, key, path)
+
+    def _vt_confirm_delete(self, phone_number: str, product_key: str) -> list:
+        """Ask before deleting a variant branch/leaf. This is a financial app —
+        deleting a branch wipes every sub-variant under it AND their stock, so we
+        never delete on a single tap. Mirrors the product-delete confirm flow."""
+        key, path = self._vt_ctx(phone_number)
+        if not path:
+            return self._vt_node_view(phone_number, product_key, path)
+        products = self._get_products(phone_number)
+        prod = products.get(product_key)
+        if not isinstance(prod, dict):
+            return [text_response("❓ Product not found.")]
+        root = self._vt_root(prod)
+        node = self._vt_get_node(root, path)
+        p = self.get_normalized_product(phone_number, product_key)
+        unit = p.get("primary_unit") or "unit"
+        crumb = " › ".join([p["name"]] + path)
+        this_total = self._vt_node_total(node) if node else 0
+
+        # Count descendant leaves so the user knows the blast radius.
+        def _count_leaves(n):
+            children = (n or {}).get("children") or {}
+            if not children:
+                return 1
+            return sum(_count_leaves(c) for c in children.values())
+        leaves = _count_leaves(node)
+
+        warn = [f"⚠️ Delete *{crumb}*?", ""]
+        if leaves > 1:
+            warn.append(f"This removes *{leaves} sub-variants* under it and "
+                        f"their *{this_total} {unit}* of stock.")
+        else:
+            warn.append(f"Stock here: *{this_total} {unit}*.")
+        warn.append("")
+        warn.append("_This cannot be undone._")
+
+        return [button_response(
+            "\n".join(warn),
+            [
+                {"id": f"cat_vtdelok_{product_key}", "title": "🗑️ Yes, delete"},
+                {"id": f"cat_view_{product_key}", "title": "← Keep it"},
+            ]
+        )]
 
     def _vt_delete_current(self, phone_number: str, product_key: str) -> list:
         key, path = self._vt_ctx(phone_number)

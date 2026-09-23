@@ -369,6 +369,60 @@ class Database:
         except Exception as e:
             logger.warning(f"mark_web_submit_recorded failed: {e}")
 
+    # ==========================================
+    # ACCOUNT TRANSFER / RECOVERY
+    # ==========================================
+
+    def issue_transfer_code(self, phone_number, ttl_minutes=30):
+        """Generate a one-time transfer code for THIS account, valid for
+        ttl_minutes. Stored on the user row so a new device can claim the data.
+        Returns the code (uppercase), or None on error."""
+        import random
+        import string
+        try:
+            code = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+            exp = int(time.time()) + ttl_minutes * 60
+            self.users.update_item(
+                Key={'phone_number': phone_number},
+                UpdateExpression="SET transfer_code = :c, transfer_code_exp = :e",
+                ExpressionAttributeValues={':c': code, ':e': exp},
+            )
+            return code
+        except Exception as e:
+            logger.error(f"issue_transfer_code failed: {e}")
+            return None
+
+    def find_user_by_transfer_code(self, code):
+        """Find the account id (phone_number) that issued this transfer code, if
+        the code is valid AND unexpired. Returns the old id or None. A scan is
+        fine here — transfers are rare and manual."""
+        if not code:
+            return None
+        code = code.strip().upper()
+        try:
+            resp = self.users.scan(
+                FilterExpression=Attr('transfer_code').eq(code),
+            )
+            items = resp.get('Items', [])
+            now = int(time.time())
+            for it in items:
+                if int(it.get('transfer_code_exp', 0) or 0) >= now:
+                    return it.get('phone_number')
+            return None
+        except Exception as e:
+            logger.error(f"find_user_by_transfer_code failed: {e}")
+            return None
+
+    def clear_transfer_code(self, phone_number):
+        """Remove a used/expired transfer code so it can't be reused."""
+        try:
+            self.users.update_item(
+                Key={'phone_number': phone_number},
+                UpdateExpression="REMOVE transfer_code, transfer_code_exp",
+            )
+        except Exception as e:
+            logger.warning(f"clear_transfer_code failed: {e}")
+
     def get_transactions(self, phone_number, limit=20):
         """Get recent transactions for a user (newest first)"""
         try:
@@ -457,6 +511,71 @@ class Database:
         except Exception as e:
             logger.error(f"Error archiving rows for {phone_number}: {e}")
             return 0
+
+    def _copy_rows(self, table, old_id, new_id, sort_key):
+        """Copy every row for old_id to new_id (re-keying phone_number), then
+        delete the old rows. Used by transfer_account. Returns count moved."""
+        try:
+            resp = table.query(KeyConditionExpression=Key('phone_number').eq(old_id))
+            items = resp.get('Items', [])
+            while 'LastEvaluatedKey' in resp:
+                resp = table.query(
+                    KeyConditionExpression=Key('phone_number').eq(old_id),
+                    ExclusiveStartKey=resp['LastEvaluatedKey'])
+                items.extend(resp.get('Items', []))
+            moved = 0
+            with table.batch_writer() as batch:
+                for it in items:
+                    new_it = dict(it)
+                    new_it['phone_number'] = new_id
+                    batch.put_item(Item=new_it)
+                    moved += 1
+            # Delete the old rows only after the copies are written.
+            with table.batch_writer() as batch:
+                for it in items:
+                    batch.delete_item(Key={'phone_number': old_id, sort_key: it[sort_key]})
+            return moved
+        except Exception as e:
+            logger.error(f"_copy_rows({old_id}->{new_id}): {e}")
+            return 0
+
+    def transfer_account(self, old_id, new_id):
+        """Move a user's ENTIRE account from old_id to new_id (e.g. lost phone /
+        new Telegram). Re-keys every table by phone_number:
+          users (incl. product_catalog) + sessions single-key rows,
+          transactions/contacts/ml-feedback/merchant-memory multi-key rows.
+        The new_id must NOT already have a user row (caller enforces). Returns a
+        dict of per-table counts. Best-effort per table; never raises."""
+        result = {}
+        # Single-key tables: read the old row, write under new key, delete old.
+        for label, table in (("users", self.users), ("sessions", self.sessions)):
+            try:
+                item = table.get_item(Key={'phone_number': old_id}).get('Item')
+                if item:
+                    new_item = dict(item)
+                    new_item['phone_number'] = new_id
+                    table.put_item(Item=new_item)
+                    table.delete_item(Key={'phone_number': old_id})
+                    result[label] = 1
+                else:
+                    result[label] = 0
+            except Exception as e:
+                logger.error(f"transfer_account {label} {old_id}->{new_id}: {e}")
+                result[label] = 0
+        # Multi-key tables (phone_number + sort key).
+        for label, table, sk in (
+            ("transactions", self.transactions, "transaction_id"),
+            ("contacts", self.contacts, "contact_id"),
+            ("ml-feedback", self.feedback, "feedback_id"),
+            ("merchant-memory", self.merchants, "vendor_normalized"),
+        ):
+            try:
+                result[label] = self._copy_rows(table, old_id, new_id, sk)
+            except Exception as e:
+                logger.error(f"transfer_account {label} {old_id}->{new_id}: {e}")
+                result[label] = 0
+        logger.info(f"transfer_account {old_id}->{new_id}: {result}")
+        return result
 
     def archive_all_transactions(self, phone_number):
         """Soft-delete (archive) all of a user's transactions. Recoverable."""

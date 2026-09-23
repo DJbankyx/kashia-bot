@@ -361,6 +361,10 @@ class ExportService:
         """
         url = self.upload_to_s3(filepath, filename)
         if not url:
+            # Upload failed (S3 permission / bucket / network). Log a clear
+            # marker so CloudWatch shows WHICH half of delivery broke.
+            logger.error(f"deliver_file: S3 upload failed for {filename} "
+                         f"(bucket={BUCKET_NAME})")
             return False, None
 
         client, recipient = resolve_client(phone_number, whatsapp_fallback=self.whatsapp)
@@ -368,6 +372,9 @@ class ExportService:
             client = self.whatsapp
             recipient = phone_number
         success = client.send_document(recipient, url, filename, caption)
+        if not success:
+            logger.error(f"deliver_file: send_document failed for {filename} "
+                         f"(client={type(client).__name__})")
 
         try:
             os.remove(filepath)
