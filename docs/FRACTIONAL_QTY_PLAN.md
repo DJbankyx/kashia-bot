@@ -77,3 +77,40 @@ Money (cost/price/amount) stays integer naira; only QUANTITY and STOCK change._
 - Never force qty up to 1 when a valid fraction < 1 is given (that was the old
   `_parse_qty` min-1 behaviour that hid the truncation).
 - Compile + check_syntax + UTF-8/surrogate scan each step; small commits.
+
+---
+
+## SHIPPED — 2026-09-23 (commits `3a28a8b` engine, `708c4d9` mini-app)
+
+Quantity + stock are now decimal-safe end-to-end; money stays integer naira.
+
+- **utils/quantity.py** (new): `to_qty` (parse '0.5'/'2.5 kg', bool-guarded),
+  `fmt_qty` (whole→'2', fractional trimmed→'0.5'/'2.5'), `qty_is_whole`.
+- **transactions._parse_qty**: decimal-aware — int when whole (display clean),
+  float when fractional; empty/0/unparseable → 1.
+- **accounting**: `_qty_of` decimal-aware (FIX: a 0.5-unit sale used to compute
+  COGS = 0; now correct). Added `_to_num`; COGS line totals wrapped in `_to_int`
+  (round to naira); `resolve_sale_cost_now` unit = total/qty (not //);
+  `_value_product`/`_value_tree` units fractional, value int.
+- **catalog**: `_as_num` + `_fmt_qty`; stock storage/rollup/normalize float-safe
+  (`update_stock`, `set_stock_exact`, `_vt_node_total`, `_vt_value`,
+  `normalize_product`, chat stock-adjust). Cost/price stay `_as_int`.
+- **mini-app**: qty/stock inputs `inputmode=decimal step=any`; `saveRecord` qty
+  `parseFloat`; `bump` keeps a fractional base; `_product_write` stock actions
+  parse numeric; `_row_from_product` keeps fractional stock (incl. tree rollup).
+
+**Verified:** QTY_OK, ACCT_OK (0.5×40 COGS=20, 3×40=120, inv 0.5 units=₦20),
+E2E_OK (purchase +0.5→0.5, +0.25→0.75, sale −0.5→0.25, set-exact 2.5; whole
+stays int(3); low-stock 0.25≤1 True), MINI_OK 200 (UTF-8 clean). py_compile +
+check_syntax pass on all 5 files.
+
+**Known limits (by design, this phase):**
+- MONEY stays whole naira. Sub-naira per-unit costs (e.g. electricity ₦/kWh)
+  round to naira until the separate **money-precision (kobo/Decimal) phase** —
+  owner needs it next (electricity recipe).
+- CHAT/WhatsApp catalog display builders still `int(stock)` — cosmetic only
+  ("0" shown for 0.5 in chat menus); no data loss, no crash. WhatsApp not a
+  priority; mini-app displays fractional stock correctly.
+
+**Deploy:** `cd ~/projects/kashia-bot && ./deploy.sh dev` (owner). No template
+change → JS refresh after deploy + reopen from ☰ Menu button.

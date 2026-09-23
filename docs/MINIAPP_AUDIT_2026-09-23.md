@@ -17,8 +17,14 @@ the running list of what to fix/add. Ordered by priority within each section._
 
 ---
 
+## ✅ RESOLVED 2026-09-23 — P1 fractional quantity (commits 3a28a8b + 708c4d9)
+Quantity + stock are now decimal-safe end-to-end (engine + mini-app); money
+stays integer naira. See docs/FRACTIONAL_QTY_PLAN.md. The COGS=0-on-a-0.5-sale
+bug is fixed. NEXT PHASE (owner): money-precision (kobo/Decimal) for sub-naira
+per-unit costs like electricity.
+
 ## P1 — Correctness (can produce WRONG numbers) — do first
-1. **Fractional quantities are truncated on sale/purchase/stock.** `saveRecord`
+1. ~~**Fractional quantities are truncated on sale/purchase/stock.**~~ DONE (see above). `saveRecord`
    uses `parseInt(rec-qty)` then `Math.max(1,…)`, so 0.5 kg → 1 whole unit;
    `saveSheet`/`bump`/`set_stock` also `parseInt` stock+cost, and cost like
    ₦12.50 → 12. Recipe qty is already `parseFloat` (correct) — make sales/
