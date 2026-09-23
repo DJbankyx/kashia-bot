@@ -1430,20 +1430,33 @@ _PAGE_HTML = """<!doctype html>
         <label>Add material / cost</label>
         <select id="rc-mat" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--line)" onchange="rcMatChanged()"></select>
       </div>
-      <!-- New-material name (shown only when "New material…" is picked). -->
+      <!-- New-material fields (shown only when "New material…" is picked). -->
       <div class="field hidden" id="rc-newname-wrap">
         <label>New material name</label>
-        <input id="rc-newname" placeholder="e.g. Flour">
+        <input id="rc-newname" placeholder="e.g. Nylon, Electricity" oninput="document.getElementById('rc-err').textContent=''">
+      </div>
+      <!-- Raw material (stock-tracked) vs Overhead (rate x usage, no stock). -->
+      <div class="field hidden" id="rc-type-wrap">
+        <label>What kind of input?</label>
+        <div class="chips" id="rc-type">
+          <div class="chip active" data-mt="material" onclick="rcSetMatType('material')">🧱 Raw material</div>
+          <div class="chip" data-mt="overhead" onclick="rcSetMatType('overhead')">⚡ Overhead</div>
+        </div>
+        <div class="sub2" id="rc-type-hint" style="margin-top:6px">Raw material is stock-tracked (e.g. nylon). Overhead is a rate × usage with no stock (e.g. electricity, labour time).</div>
       </div>
       <div class="row">
         <div class="field" style="flex:1">
           <label>Quantity per unit</label>
-          <input id="rc-qty" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 2">
+          <input id="rc-qty" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 0.5">
         </div>
         <div class="field" style="flex:1">
-          <label id="rc-cost-label">Cost per (optional)</label>
-          <input id="rc-cost" type="number" inputmode="numeric" min="0" placeholder="uses catalog cost">
+          <label id="rc-unit-label">Unit</label>
+          <input id="rc-unit" placeholder="e.g. kg, litre, kW, sec">
         </div>
+      </div>
+      <div class="field">
+        <label id="rc-cost-label">Cost per unit (optional)</label>
+        <input id="rc-cost" type="number" inputmode="numeric" min="0" placeholder="uses catalog cost">
       </div>
       <div class="sheeterr" id="rc-err"></div>
       <button class="btn save" id="rc-add" style="width:100%" onclick="recipeAddMaterial()">➕ Add to recipe</button>
@@ -2806,6 +2819,9 @@ _PAGE_HTML = """<!doctype html>
     document.getElementById("rc-err").textContent = "";
     document.getElementById("rc-qty").value = "";
     document.getElementById("rc-cost").value = "";
+    document.getElementById("rc-unit").value = "";
+    document.getElementById("rc-newname").value = "";
+    rcNewMatType = "material";
     document.getElementById("rc-list").innerHTML = '<div class="muted">Loading…</div>';
     document.getElementById("recipeOverlay").classList.remove("hidden");
     loadRecipe();
@@ -2883,15 +2899,48 @@ _PAGE_HTML = """<!doctype html>
     if (!avail.length) sel.value = "__new__";
     rcMatChanged();
   }
-  // Toggle the new-material name field + adjust the cost label/placeholder.
+  // Material type chosen for a NEW recipe input (raw material vs overhead).
+  var rcNewMatType = "material";
+  window.rcSetMatType = function (mt) {
+    rcNewMatType = mt;
+    var chips = document.querySelectorAll("#rc-type .chip");
+    for (var i = 0; i < chips.length; i++) {
+      chips[i].classList.toggle("active", chips[i].getAttribute("data-mt") === mt);
+    }
+    document.getElementById("rc-type-hint").textContent = (mt === "overhead")
+      ? "Overhead: a rate × usage with no stock (e.g. electricity in kW, labour in minutes)."
+      : "Raw material: stock-tracked and deducted on production (e.g. nylon in kg).";
+    // Cost label follows the type: overhead is a rate.
+    document.getElementById("rc-cost-label").textContent =
+      (mt === "overhead") ? "Rate per unit (optional)" : "Cost per unit (optional)";
+  };
+  // React to picker change: show the new-material fields (name + type + unit)
+  // only for "New material…". For an existing catalog material, its unit/type
+  // come from the catalog, so pre-fill unit and hide the editable extras.
   window.rcMatChanged = function () {
     var sel = document.getElementById("rc-mat");
     var isNew = sel.value === "__new__";
+    var opt = sel.options[sel.selectedIndex];
     document.getElementById("rc-newname-wrap").classList.toggle("hidden", !isNew);
+    document.getElementById("rc-type-wrap").classList.toggle("hidden", !isNew);
+    document.getElementById("rc-err").textContent = "";
+    var unitInput = document.getElementById("rc-unit");
     var costInput = document.getElementById("rc-cost");
-    // For an existing material we can fall back to its catalog cost; a brand-new
-    // one has none yet, so guide the user to enter it.
-    costInput.placeholder = isNew ? "enter buy-cost" : "uses catalog cost";
+    if (isNew) {
+      rcSetMatType("material");
+      unitInput.value = "";
+      unitInput.readOnly = false;
+      costInput.placeholder = "enter buy-cost";
+    } else {
+      // Existing material: unit + type are fixed by the catalog row.
+      var u = opt ? (opt.getAttribute("data-unit") || "") : "";
+      unitInput.value = u;
+      unitInput.readOnly = true;   // can't change a catalog material's unit here
+      var isOh = opt && opt.getAttribute("data-type") === "overhead";
+      document.getElementById("rc-cost-label").textContent =
+        isOh ? "Rate per unit (optional)" : "Cost per unit (optional)";
+      costInput.placeholder = "uses catalog cost";
+    }
   };
   window.recipeAddMaterial = function () {
     var sel = document.getElementById("rc-mat");
@@ -2904,14 +2953,21 @@ _PAGE_HTML = """<!doctype html>
     var qtyRaw = document.getElementById("rc-qty").value;
     var qty = qtyRaw === "" ? null : parseFloat(qtyRaw);
     if (qty === null || !(qty > 0)) { err.textContent = "Enter a quantity per unit."; return; }
+    var unitVal = (document.getElementById("rc-unit").value || "").trim();
+    if (isNew && !unitVal) { err.textContent = "Enter a unit (e.g. kg, litre, kW, sec)."; return; }
     var costRaw = document.getElementById("rc-cost").value;
     var opt = sel.options[sel.selectedIndex];
+    // Type: for a new material the user picks it (raw material / overhead); for
+    // an existing one it's fixed by the catalog row.
+    var matType = isNew
+      ? rcNewMatType
+      : ((opt && opt.getAttribute("data-type") === "overhead") ? "overhead" : "material");
     var body = {
       action: "add_material", key: recipeKey,
       material_key: isNew ? "" : matKey,
       quantity: qty,
-      unit: (isNew || !opt) ? "" : (opt.getAttribute("data-unit") || ""),
-      mat_type: (!isNew && opt && opt.getAttribute("data-type") === "overhead") ? "overhead" : "material"
+      unit: unitVal,
+      mat_type: matType
     };
     if (isNew) body.new_material_name = newName;
     if (costRaw !== "") body.cost_per_unit = Math.max(0, parseInt(costRaw, 10) || 0);
@@ -2922,6 +2978,7 @@ _PAGE_HTML = """<!doctype html>
         document.getElementById("rc-qty").value = "";
         document.getElementById("rc-cost").value = "";
         document.getElementById("rc-newname").value = "";
+        document.getElementById("rc-unit").value = "";
         renderRecipe(d);   // re-lists materials (the new one now appears) + resets picker
         btn.disabled = false;
         if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
