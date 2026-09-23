@@ -1670,3 +1670,186 @@ class ProductionHandler:
                 ]
             )
         ]
+
+    # ─────────────────────────────────────────────────────────
+    # WEB / PROGRAMMATIC RECIPE API (Stage 2 — mini app)
+    #
+    # Pure, session-free entry points so the mini app can view + edit a recipe
+    # WITHOUT reimplementing any cost math in JavaScript. The per-unit cost
+    # formula here is the single source of truth used to stamp a finished
+    # product's landing_cost; chat production uses the same formula (materials
+    # qty x cost_per_unit + overhead qty x rate, per unit of output).
+    # ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def recipe_unit_cost(recipe: list) -> float:
+        """Cost to make ONE unit of the finished product from its recipe.
+
+        recipe = [{material, quantity, unit, type: "material"|"overhead",
+                   cost_per_unit? , rate?}, ...]
+        Materials use cost_per_unit; overhead entries use rate (falling back to
+        cost_per_unit for legacy rows). This mirrors the chat production maths
+        (per unit of output), so web and chat never disagree.
+        """
+        total = 0.0
+        for mat in (recipe or []):
+            try:
+                qty = float(mat.get("quantity", 0) or 0)
+            except (TypeError, ValueError):
+                qty = 0.0
+            if str(mat.get("type", "material")) == "overhead":
+                rate = mat.get("rate", mat.get("cost_per_unit", 0))
+            else:
+                rate = mat.get("cost_per_unit", 0)
+            try:
+                rate = float(rate or 0)
+            except (TypeError, ValueError):
+                rate = 0.0
+            total += qty * rate
+        return total
+
+    def get_recipe(self, phone_number: str, product_key: str) -> dict:
+        """Return a product's recipe + rolled-up per-unit cost for the web.
+
+        Shape: {ok, product_key, product_name, item_type, unit_cost,
+                materials: [...], available_materials: [{key,name,unit,cost}]}
+        available_materials lists catalog raw_material/supply/overhead rows the
+        web picker can add (so the user never free-types a material name).
+        """
+        user = self.db.get_user(phone_number) or {}
+        catalog = user.get("product_catalog", {}) or {}
+        products = catalog.get("products", {}) or {}
+        prod = products.get(product_key)
+        if not isinstance(prod, dict):
+            return {"ok": False, "error": "product not found"}
+        recipe = prod.get("recipe", []) or []
+
+        # Candidate materials to add: raw_material / supply / overhead entries.
+        avail = []
+        for k, p in products.items():
+            if k == product_key or not isinstance(p, dict):
+                continue
+            it = p.get("item_type", "")
+            if it in ("raw_material", "supply", "overhead"):
+                avail.append({
+                    "key": k,
+                    "name": p.get("name") or k,
+                    "unit": p.get("primary_unit") or "",
+                    "cost": float(p.get("landing_cost", 0) or 0),
+                    "item_type": it,
+                })
+        avail.sort(key=lambda m: (m["name"] or "").lower())
+
+        return {
+            "ok": True,
+            "product_key": product_key,
+            "product_name": prod.get("name") or product_key,
+            "item_type": prod.get("item_type", ""),
+            "unit_cost": self.recipe_unit_cost(recipe),
+            "materials": recipe,
+            "available_materials": avail,
+        }
+
+    def _save_recipe(self, phone_number: str, product_key: str,
+                     recipe: list) -> dict:
+        """Persist a recipe list, tag the product finished, restamp its
+        landing_cost from recipe_unit_cost, and return the fresh get_recipe."""
+        user = self.db.get_user(phone_number) or {}
+        catalog = user.get("product_catalog", {}) or {}
+        products = catalog.get("products", {}) or {}
+        prod = products.get(product_key)
+        if not isinstance(prod, dict):
+            return {"ok": False, "error": "product not found"}
+
+        prod["recipe"] = recipe
+        # Recipe presence makes this a manufactured/finished good (Decision A).
+        prod["item_type"] = "finished_product"
+        # Cost is DERIVED — stamp it so catalog/reports read the recipe cost.
+        prod["landing_cost"] = int(round(self.recipe_unit_cost(recipe)))
+
+        catalog["products"] = products
+        self.db.update_user_field(phone_number, "product_catalog", catalog)
+        return self.get_recipe(phone_number, product_key)
+
+    def web_add_material(self, phone_number: str, product_key: str,
+                         material_key: str, quantity, unit: str = "",
+                         cost_per_unit=None, mat_type: str = "material") -> dict:
+        """Add (or update, by material name) one recipe line, then restamp cost.
+
+        Reuses the catalog material's landing_cost when cost_per_unit is not
+        given, matching the chat auto-fill behaviour.
+        """
+        user = self.db.get_user(phone_number) or {}
+        catalog = user.get("product_catalog", {}) or {}
+        products = catalog.get("products", {}) or {}
+        prod = products.get(product_key)
+        if not isinstance(prod, dict):
+            return {"ok": False, "error": "product not found"}
+
+        mat_product = products.get(material_key)
+        if not isinstance(mat_product, dict):
+            return {"ok": False, "error": "material not found in catalog"}
+        material_name = mat_product.get("name") or material_key
+
+        try:
+            qty = float(quantity)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "quantity must be a number"}
+        if qty <= 0:
+            return {"ok": False, "error": "quantity must be greater than 0"}
+
+        if mat_type not in ("material", "overhead"):
+            mat_type = "overhead" if mat_product.get("item_type") == "overhead" else "material"
+        if not unit:
+            unit = mat_product.get("primary_unit") or "units"
+
+        # Cost: explicit value, else the material's catalog landing_cost.
+        if cost_per_unit in (None, ""):
+            cost_value = float(mat_product.get("landing_cost", 0) or 0)
+        else:
+            try:
+                cost_value = float(cost_per_unit)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "cost must be a number"}
+
+        entry = {
+            "material": material_name,
+            "quantity": qty,
+            "unit": unit,
+            "type": mat_type,
+        }
+        if mat_type == "overhead":
+            entry["rate"] = cost_value
+        else:
+            entry["cost_per_unit"] = cost_value
+
+        recipe = prod.get("recipe", []) or []
+        replaced = False
+        for i, existing in enumerate(recipe):
+            if str(existing.get("material", "")).lower() == material_name.lower():
+                recipe[i] = entry
+                replaced = True
+                break
+        if not replaced:
+            recipe.append(entry)
+
+        return self._save_recipe(phone_number, product_key, recipe)
+
+    def web_remove_material(self, phone_number: str, product_key: str,
+                            index) -> dict:
+        """Remove the recipe line at the given 0-based index, then restamp."""
+        user = self.db.get_user(phone_number) or {}
+        catalog = user.get("product_catalog", {}) or {}
+        products = catalog.get("products", {}) or {}
+        prod = products.get(product_key)
+        if not isinstance(prod, dict):
+            return {"ok": False, "error": "product not found"}
+        recipe = prod.get("recipe", []) or []
+        try:
+            idx = int(index)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "index must be a number"}
+        if idx < 0 or idx >= len(recipe):
+            return {"ok": False, "error": "no recipe line at that position"}
+        recipe.pop(idx)
+        return self._save_recipe(phone_number, product_key, recipe)

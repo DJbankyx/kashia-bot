@@ -239,8 +239,13 @@ def lambda_handler(event, context):
         # ── Writes (CRM: record a debt payment / collection) ──
         if method == "POST" and path.endswith("/app/api/debt-payment"):
             return _debt_payment_write(event, user_id)
+        # ── Writes (Stage 2: recipe/BOM add/remove material) ──
+        if method == "POST" and path.endswith("/app/api/recipe"):
+            return _recipe_write(event, user_id)
 
         # ── Reads ──
+        if method == "GET" and path.endswith("/app/api/recipe"):
+            return _recipe_read(event, user_id)
         if method == "GET" and path.endswith("/app/api/summary"):
             return _summary(event, user_id)
         if method == "GET" and path.endswith("/app/api/inventory"):
@@ -644,6 +649,65 @@ def _product_write(event, user_id: str):
     if not ok:
         return _json(500, {"error": "write failed"})
     return _echo(key)
+
+
+def _recipe_read(event, user_id: str):
+    """Stage 2 — return a finished product's recipe + rolled-up per-unit cost.
+
+    Query: ?key=<product_key>. Reuses ProductionHandler.get_recipe (the engine),
+    so the web never recomputes cost. Read-only."""
+    from services.database import Database
+    from features.production import ProductionHandler
+
+    params = event.get("queryStringParameters") or {}
+    key = str((params.get("key") or "")).strip()
+    if not key:
+        return _json(400, {"error": "product key required"})
+    prod = ProductionHandler(None, Database())
+    res = prod.get_recipe(user_id, key)
+    if not res.get("ok"):
+        return _json(404, res)
+    return _json(200, res)
+
+
+def _recipe_write(event, user_id: str):
+    """Stage 2 — add or remove a recipe material, then restamp finished cost.
+
+    Body: {action: "add_material"|"remove_material", key: <product_key>, ...}
+      add_material:    {material_key, quantity, unit?, cost_per_unit?, mat_type?}
+      remove_material: {index}
+    All cost math lives in ProductionHandler (engine); no JS/forked math. The
+    response echoes the fresh recipe + unit_cost so the UI reflects truth."""
+    from services.database import Database
+    from features.production import ProductionHandler
+
+    data = _parse_body(event)
+    action = str(data.get("action", "")).strip()
+    key = str(data.get("key", "")).strip()
+    if not key:
+        return _json(400, {"error": "product key required"})
+    if action not in ("add_material", "remove_material"):
+        return _json(400, {"error": "bad request"})
+
+    prod = ProductionHandler(None, Database())
+    if action == "add_material":
+        res = prod.web_add_material(
+            user_id, key,
+            material_key=str(data.get("material_key", "")).strip(),
+            quantity=data.get("quantity"),
+            unit=str(data.get("unit", "") or "").strip(),
+            cost_per_unit=data.get("cost_per_unit"),
+            mat_type=str(data.get("mat_type", "material") or "material").strip(),
+        )
+    else:  # remove_material
+        res = prod.web_remove_material(user_id, key, data.get("index"))
+
+    if not res.get("ok"):
+        # 404 for missing product/material, 400 for bad values.
+        err = str(res.get("error", ""))
+        code = 404 if "not found" in err else 400
+        return _json(code, res)
+    return _json(200, res)
 
 
 def _transaction_write(event, user_id: str):
@@ -1263,6 +1327,39 @@ _PAGE_HTML = """<!doctype html>
     </div>
   </div>
 
+  <!-- Recipe / BOM editor (Stage 2 — mfg/hybrid finished goods) -->
+  <div id="recipeOverlay" class="overlay hidden">
+    <div class="sheet" style="max-height:88vh;overflow-y:auto">
+      <h2 id="rc-title">Recipe</h2>
+      <div class="sub2">What goes into one unit. Cost is calculated from this.</div>
+      <div class="card" style="margin:10px 0">
+        <div class="k">Cost per unit (from recipe)</div>
+        <div class="v" id="rc-unitcost">—</div>
+      </div>
+      <div id="rc-list"><div class="muted">Loading…</div></div>
+      <!-- Add-material mini form -->
+      <div class="field" style="margin-top:12px">
+        <label>Add material / cost</label>
+        <select id="rc-mat" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--line)"></select>
+      </div>
+      <div class="row">
+        <div class="field" style="flex:1">
+          <label>Quantity per unit</label>
+          <input id="rc-qty" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 2">
+        </div>
+        <div class="field" style="flex:1">
+          <label>Cost per (optional)</label>
+          <input id="rc-cost" type="number" inputmode="numeric" min="0" placeholder="uses catalog cost">
+        </div>
+      </div>
+      <div class="sheeterr" id="rc-err"></div>
+      <button class="btn save" id="rc-add" style="width:100%" onclick="recipeAddMaterial()">➕ Add to recipe</button>
+      <div class="actions" style="margin-top:10px">
+        <button class="btn cancel" onclick="closeRecipe()">Done</button>
+      </div>
+    </div>
+  </div>
+
   <div id="view-crm" class="hidden">
     <div class="row">
       <div class="card"><div class="k">Owed to you</div><div class="v pos" id="crm-owed">—</div></div>
@@ -1375,6 +1472,7 @@ _PAGE_HTML = """<!doctype html>
         <label>Cost (from recipe)</label>
         <div id="sh-recipe-cost" class="readonly-val" style="padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--card2,#f5f5f7)"></div>
         <div class="sub2" id="sh-recipe-hint" style="margin-top:6px"></div>
+        <button class="btn save" id="sh-recipe-btn" style="width:100%;margin-top:8px" onclick="openRecipe()">📋 Set / edit recipe</button>
       </div>
       <div class="row">
         <div class="field" style="flex:1">
@@ -2486,6 +2584,132 @@ _PAGE_HTML = """<!doctype html>
         err.textContent = e.message || "Could not add product";
       });
   };
+
+  // ── Recipe / BOM editor (Stage 2) ──
+  // Cost is engine-owned: we only display unit_cost from the server and POST
+  // add/remove material ops. No cost math in JS.
+  var recipeKey = null;   // product_key whose recipe is open
+  window.openRecipe = function () {
+    if (!editing) return;
+    recipeKey = editing.key;
+    document.getElementById("rc-title").textContent = "Recipe · " + (editing.name || "");
+    document.getElementById("rc-err").textContent = "";
+    document.getElementById("rc-qty").value = "";
+    document.getElementById("rc-cost").value = "";
+    document.getElementById("rc-list").innerHTML = '<div class="muted">Loading…</div>';
+    document.getElementById("recipeOverlay").classList.remove("hidden");
+    loadRecipe();
+  };
+  window.closeRecipe = function () {
+    document.getElementById("recipeOverlay").classList.add("hidden");
+    recipeKey = null;
+    // Refresh the catalog + the edit sheet's recipe-cost readout.
+    invLoaded = false; loadInventory();
+  };
+  function loadRecipe() {
+    api("api/recipe?key=" + encodeURIComponent(recipeKey))
+      .then(renderRecipe)
+      .catch(function (e) {
+        document.getElementById("rc-list").innerHTML =
+          '<div class="muted">' + escapeHtml(e.message || "Could not load recipe") + '</div>';
+      });
+  }
+  function renderRecipe(d) {
+    document.getElementById("rc-unitcost").textContent =
+      d.unit_cost ? naira(d.unit_cost) : "Not costed yet";
+    // Keep the edit sheet's recipe-cost line in sync if it's still open.
+    var shCost = document.getElementById("sh-recipe-cost");
+    if (shCost && editing && editing.key === d.product_key) {
+      shCost.textContent = d.unit_cost ? naira(d.unit_cost) : "Not set yet";
+      editing.cost = d.unit_cost || 0;
+      editing.has_recipe = (d.materials || []).length > 0;
+    }
+    // Material lines with a remove button.
+    var list = document.getElementById("rc-list");
+    var mats = d.materials || [];
+    list.innerHTML = "";
+    if (!mats.length) {
+      list.innerHTML = '<div class="muted">No materials yet. Add the first one below.</div>';
+    } else {
+      mats.forEach(function (m, i) {
+        var isOh = (m.type === "overhead");
+        var per = isOh ? (m.rate || 0) : (m.cost_per_unit || 0);
+        var row = document.createElement("div");
+        row.className = "item";
+        row.innerHTML =
+          '<div><div class="name">' + (isOh ? "⚡ " : "🧱 ") + escapeHtml(m.material || "") +
+          '</div><div class="meta">' + escapeHtml(String(m.quantity || 0)) + " " +
+          escapeHtml(m.unit || "") + (per ? (" @ " + naira(per)) : "") + '</div></div>';
+        var rm = document.createElement("button");
+        rm.className = "btn cancel";
+        rm.style.cssText = "padding:6px 10px;color:var(--neg)";
+        rm.textContent = "Remove";
+        rm.onclick = function () { recipeRemoveMaterial(i); };
+        row.appendChild(rm);
+        list.appendChild(row);
+      });
+    }
+    // Populate the material picker from catalog raw materials / supplies.
+    var sel = document.getElementById("rc-mat");
+    var avail = d.available_materials || [];
+    sel.innerHTML = "";
+    if (!avail.length) {
+      var o = document.createElement("option");
+      o.value = ""; o.textContent = "No raw materials in catalog — add one first";
+      sel.appendChild(o);
+      document.getElementById("rc-add").disabled = true;
+    } else {
+      document.getElementById("rc-add").disabled = false;
+      avail.forEach(function (m) {
+        var o = document.createElement("option");
+        o.value = m.key;
+        o.setAttribute("data-unit", m.unit || "");
+        o.setAttribute("data-type", m.item_type || "material");
+        o.textContent = m.name + (m.unit ? (" (" + m.unit + ")") : "") +
+          (m.cost ? (" · " + naira(m.cost)) : "");
+        sel.appendChild(o);
+      });
+    }
+  }
+  window.recipeAddMaterial = function () {
+    var sel = document.getElementById("rc-mat");
+    var matKey = sel.value;
+    var err = document.getElementById("rc-err");
+    if (!matKey) { err.textContent = "Pick a material."; return; }
+    var qtyRaw = document.getElementById("rc-qty").value;
+    var qty = qtyRaw === "" ? null : parseFloat(qtyRaw);
+    if (qty === null || !(qty > 0)) { err.textContent = "Enter a quantity per unit."; return; }
+    var costRaw = document.getElementById("rc-cost").value;
+    var opt = sel.options[sel.selectedIndex];
+    var body = {
+      action: "add_material", key: recipeKey, material_key: matKey,
+      quantity: qty,
+      unit: opt ? (opt.getAttribute("data-unit") || "") : "",
+      mat_type: (opt && opt.getAttribute("data-type") === "overhead") ? "overhead" : "material"
+    };
+    if (costRaw !== "") body.cost_per_unit = Math.max(0, parseInt(costRaw, 10) || 0);
+    var btn = document.getElementById("rc-add");
+    btn.disabled = true; err.textContent = "";
+    apiPost("api/recipe", body)
+      .then(function (d) {
+        document.getElementById("rc-qty").value = "";
+        document.getElementById("rc-cost").value = "";
+        renderRecipe(d);
+        btn.disabled = false;
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        err.textContent = e.message || "Could not add material";
+      });
+  };
+  function recipeRemoveMaterial(index) {
+    var err = document.getElementById("rc-err");
+    err.textContent = "";
+    apiPost("api/recipe", { action: "remove_material", key: recipeKey, index: index })
+      .then(renderRecipe)
+      .catch(function (e) { err.textContent = e.message || "Could not remove material"; });
+  }
 
   // ── Record a transaction (M6b) ──
   var recTypeVal = "sale", recPayVal = "cash", recSubmitId = null;
