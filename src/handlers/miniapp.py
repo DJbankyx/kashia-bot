@@ -3246,6 +3246,11 @@ _PAGE_HTML = """<!doctype html>
       if (pick.variant) body.variant = pick.variant;
     }
     if (recTypeVal === "sale" && cost > 0) body.landing_cost = cost;
+    // P2: a Services business's sale is a job/service, not a stocked product —
+    // tell the engine so it stamps sale_kind="service" (matches the chat flow).
+    // Only pure Services auto-tags; Hybrid genuinely sells products too, so it
+    // stays a product sale unless/until a service/product split is added there.
+    if (recTypeVal === "sale" && isServices()) body.is_service_job = true;
     var btn = document.getElementById("rec-save");
     btn.disabled = true;
     apiPost("api/transaction", body)
