@@ -198,3 +198,30 @@ manual check (Trading control + the industry being changed) before moving on.
 **Next:** Stage 3 — industry-aware labels/fields across the app (Services "job",
 Manufacturing "output", hide stock/qty where N/A); then Stage 4 (catalog-first
 setup nudge) and Stage 5 (owner's remaining mini-app improvement list).
+
+### 2026-09-22 — Stage 3 shipped (commit `d895316`)
+
+**Industry-aware labels across the mini app (JS-only; no endpoints/template).**
+- Added a JS `TERMS` map (trading/manufacturing/services/hybrid) mirroring the
+  chat-side industry TERMS, plus a `t(key)` helper and `applyIndustryLabels()`
+  (idempotent), called once in `loadSummary` after `APP.industry` is known.
+- Relabelled surfaces (only these; Trading's strings equal the HTML → no-op for
+  the control):
+  - Bottom nav: 📦 Catalog → e.g. "Products & materials" (mfg) / "Services &
+    supplies" (svc); 👥 Customers → "Clients" (services).
+  - Dashboard: "Cost of sales" card → "Production cost" (mfg) / "Direct costs"
+    (svc).
+  - Record sheet chips: Sale/Purchase → "Output sale"/"Raw material" (mfg),
+    "Job / service"/"Supply purchase" (svc), etc. Expense stays "Expense".
+  - Records tab: Sales/Purchases tabs + the "Total …" label follow the same
+    wording (read TERMS directly inside `recSetType` since its `t` param shadows
+    the helper).
+  - CRM directory: Customers tab → "Clients" (services).
+- Confirmed the click handlers (`recType`, `recSetType`) only toggle the active
+  class — they do NOT overwrite chip text, so labels persist after tab switches.
+- No money math touched; all data identical across industries. `py_compile` +
+  `check_syntax.py` pass. JS-only → a normal deploy + app reopen picks it up.
+
+**Next:** Stage 4 — catalog-first setup nudge (flag uncosted raw materials /
+recipe-less finished goods / missing units, gentle checklist, never blocks
+recording), then Stage 5 (owner's remaining mini-app improvement list).
