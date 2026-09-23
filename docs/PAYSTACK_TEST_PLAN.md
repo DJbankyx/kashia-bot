@@ -68,3 +68,45 @@ PaystackWebhookUrl output)._
   the same tier (harmless). No double-charge risk (Paystack charges once).
 - Plan amounts: Basic ₦3,000 (300000 kobo), Pro ₦6,000 (600000 kobo) — in
   services/paystack.py PLANS.
+
+---
+
+## Re-test after pricing redesign — 2026-09-23 (commits `ee36588`, `5d5040b`)
+
+Ran a live TEST-mode payment on `tg:1072412276` (Basic / Monthly). The redesign
+WORKS — the webhook fired, charged ₦3,500 (350000 kobo), and upgraded the user
+(`ends 2026-10-23`). But the real payment surfaced 3 issues (all fixed):
+
+1. **No success message to the user.** Webhook log:
+   `Telegram sendMessage ... can't parse entities ... byte offset 311`.
+   The success text ended with `_Ref: kashia_basic_monthly_tg_..._` — the ref is
+   full of underscores and Telegram Markdown reads each `_` as an italic toggle,
+   so the message was rejected. Upgrade succeeded; only the confirmation failed.
+   **Fix (`ee36588`):** ref printed on a plain line, no markup.
+
+2. **Idempotency guard silently disabled.** Webhook log:
+   `claim_web_submit error: AccessDeniedException ... dynamodb:PutItem on
+   kashia-transactions-dev`. The guard added in `58e9b43` writes to the
+   TransactionsTable, but PaystackWebhookFunction only had CRUD on UsersTable →
+   the double-charge protection never actually ran. **Fix (`ee36588`):** granted
+   TransactionsTable CRUD in template.yaml (→ deploy required).
+
+3. **Amount ₦3,654.83 vs ₦3,500 on the receipt** — NOT a bug. That's Paystack's
+   own fee (₦154.83) shown to the payer; we send exactly 350000 kobo.
+
+4. **Usage screen "showed the old way".** After paying, Settings → Usage &
+   Limits still showed only bare limits with no subscription info. **Fix
+   (`5d5040b`):** paid tiers now lead with period + renewal date + days-left
+   (grace/expired variants too), via `subscription_status`. Free unchanged.
+
+### Test C (14-day trial) — now verifiable via `verify_trial.py`
+```
+python verify_trial.py <user_id>                       # read-only status
+python verify_trial.py <user_id> --simulate-days 20    # dry-run post-trial (restores)
+python verify_trial.py <user_id> --simulate-days 20 --commit   # persist backdate
+```
+
+### Still to verify after deploy
+- New payment → success message now arrives in the bot.
+- Duplicate webhook (replay) → rejected as `duplicate` (guard now has IAM).
+- Usage screen shows the subscription window for the paid account.
