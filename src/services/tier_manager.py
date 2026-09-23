@@ -298,6 +298,37 @@ class TierManager:
         inv_display = f"{invoices_used}/{'∞' if max_inv >= 999999 else max_inv}"
 
         result = f"📊 *Your Usage ({tier_name} Plan)*\n\n"
+
+        # For a PAID tier, lead with the live subscription window (period +
+        # renewal date + days left) so an upgraded user actually SEES their
+        # subscription — the Usage screen used to show only bare limits, which
+        # read like nothing had changed after paying. Reuses subscription_status
+        # (already the single source of truth); no new date math here.
+        if tier != 'free':
+            try:
+                sub = self.subscription_status(phone_number)
+                period = str(sub.get('period') or 'monthly').capitalize()
+                state = sub.get('state')
+                ends = sub.get('ends')
+                days_left = sub.get('days_left')
+                if state == 'grandfathered' or not ends:
+                    result += f"⭐ Subscription: *{period}* — active\n"
+                else:
+                    ends_str = str(ends)[:10]
+                    if state == 'active':
+                        left = f" ({days_left} day{'s' if days_left != 1 else ''} left)" \
+                               if isinstance(days_left, int) else ""
+                        result += f"⭐ *{period}* — renews {ends_str}{left}\n"
+                    elif state == 'grace':
+                        result += (f"⚠️ *{period}* — expired {ends_str}; in grace period. "
+                                   f"Type *UPGRADE* to renew.\n")
+                    else:  # expired
+                        result += (f"⚠️ *{period}* — expired {ends_str}. "
+                                   f"Type *UPGRADE* to renew.\n")
+                result += "\n"
+            except Exception:
+                pass  # never let subscription display break the usage screen
+
         result += f"📝 Transactions: {tx_display}\n"
         result += f"📎 Exports: {ex_display}\n"
         result += f"📄 Invoices: {inv_display}\n"
