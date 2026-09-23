@@ -1433,7 +1433,8 @@ class CatalogHandler:
             if not amount:
                 return [text_response("Enter cost per unit (e.g. 5000, 25K, 1.2M):")]
 
-            prod["landing_cost"] = int(amount)
+            from utils.money import money_round
+            prod["landing_cost"] = money_round(amount)   # kobo-precise
             self._save_products(phone_number, products)
             self.session.reset(phone_number)
             return [
@@ -1641,7 +1642,8 @@ class CatalogHandler:
 
         products = self._get_products(phone_number)
         if product_key in products:
-            products[product_key]["landing_cost"] = int(amount)
+            from utils.money import money_round
+            products[product_key]["landing_cost"] = money_round(amount)   # kobo-precise
             self._save_products(phone_number, products)
             name = products[product_key].get("name", product_key)
 
@@ -1885,7 +1887,8 @@ class CatalogHandler:
                 from utils.parser import parse_amount
                 cost = parse_amount(cost_text)
                 if cost:
-                    return self._save_variant_cost(phone_number, product_key, variant_name, int(cost))
+                    from utils.money import money_round
+                    return self._save_variant_cost(phone_number, product_key, variant_name, money_round(cost))
                 # Have variant but bad cost
                 context["cat_variant_name"] = variant_name
                 self.session.save(phone_number, states.CATALOG_ADD_DATA, context)
@@ -1910,9 +1913,10 @@ class CatalogHandler:
                 f"Or type *done* to finish."
             )]
 
-        return self._save_variant_cost(phone_number, product_key, variant_name, int(cost))
+        from utils.money import money_round
+        return self._save_variant_cost(phone_number, product_key, variant_name, money_round(cost))
 
-    def _save_variant_cost(self, phone_number: str, product_key: str, variant_name: str, cost: int) -> list:
+    def _save_variant_cost(self, phone_number: str, product_key: str, variant_name: str, cost=0) -> list:
         """Save a variant-specific cost to the product."""
         products = self._get_products(phone_number)
         if product_key not in products:
@@ -2703,17 +2707,22 @@ class CatalogHandler:
                 node["stock"] = self._as_num(max(0, cur + actual_qty), 0)
                 # Cost on the leaf. Default weighted-avg on purchase; cost_mode
                 # lets a follow-up user choice override to "new" or "keep".
-                _leaf_prev_cost = self._as_int(node.get("cost"), 0)
+                # Leaf COST is money (kobo-precise); leaf STOCK is quantity.
+                from utils.money import to_money, money_round
+                _leaf_prev_cost = money_round(node.get("cost"))
                 if unit_cost and unit_cost > 0 and actual_qty != 0 and cost_mode != "keep":
-                    old_cost = _leaf_prev_cost
+                    old_cost = to_money(_leaf_prev_cost)
                     old_stock = max(0, node["stock"] - abs(actual_qty))
                     if cost_mode == "new":
-                        node["cost"] = int(unit_cost)
+                        node["cost"] = money_round(unit_cost)
                     elif old_cost > 0 and old_stock > 0:
+                        # Weighted average in full precision, round once at store.
                         tot = old_stock + abs(actual_qty)
-                        node["cost"] = int((old_cost * old_stock + unit_cost * abs(actual_qty)) / tot)
+                        wavg = (old_cost * to_money(old_stock)
+                                + to_money(unit_cost) * to_money(abs(actual_qty))) / to_money(tot)
+                        node["cost"] = money_round(wavg)
                     else:
-                        node["cost"] = int(unit_cost)
+                        node["cost"] = money_round(unit_cost)
                 product["variant_tree"] = tree
                 product["stock"] = self._vt_node_total(tree)
                 # Movement log
@@ -2732,7 +2741,7 @@ class CatalogHandler:
                     "product": product.get("name", matched_key),
                     "new_stock": self._as_num(product.get("stock", 0), 0),
                     "variant": resolved_variant,
-                    "landing_cost": self._as_int(node.get("cost"), 0),
+                    "landing_cost": money_round(node.get("cost")),
                     "prev_cost": _leaf_prev_cost,
                     "unit_warning": _unit_warning,
                 }
@@ -2770,50 +2779,55 @@ class CatalogHandler:
             product["stock"] = new_stock
 
         # ── Landing cost update (from purchase) ──
+        # COST is money (kobo-precise); STOCK/qty may be fractional. Keep the
+        # weighted-average math in full Decimal precision and round to kobo ONCE
+        # when storing — never int() mid-calc (that compounds error + drops kobo).
+        from utils.money import to_money, money_round
         # Capture the cost that was on record BEFORE this purchase, so the caller
         # can offer Use-new / Keep-old / Weighted-average when it differs.
         if resolved_variant:
-            _prev_cost = int(product.get("variant_costs", {}).get(resolved_variant, 0))
+            _prev_cost = money_round(product.get("variant_costs", {}).get(resolved_variant, 0))
         else:
-            _prev_cost = int(product.get("landing_cost", 0))
+            _prev_cost = money_round(product.get("landing_cost", 0))
         effective_unit_cost = unit_cost
         if unit_cost and unit_cost > 0 and cost_mode != "keep":
-            # If conversion was applied, adjust cost per base unit
-            if actual_qty != qty_change and abs(qty_change) > 0:
-                effective_unit_cost = int(unit_cost * abs(qty_change) / abs(actual_qty)) if actual_qty != 0 else unit_cost
+            # If conversion was applied, adjust cost per base unit (money, precise).
+            if actual_qty != qty_change and abs(qty_change) > 0 and actual_qty != 0:
+                effective_unit_cost = to_money(unit_cost) * to_money(abs(qty_change)) / to_money(abs(actual_qty))
+            else:
+                effective_unit_cost = to_money(unit_cost)
+            new_qty = to_money(abs(actual_qty))
 
             if resolved_variant:
                 # Update variant-specific cost.
                 variant_costs = product.get("variant_costs", {})
-                old_cost = int(variant_costs.get(resolved_variant, 0))
-                old_stock = int(variant_stock.get(resolved_variant, 0)) - abs(actual_qty)
-                old_stock = max(0, old_stock)
+                old_cost = to_money(variant_costs.get(resolved_variant, 0))
+                old_stock = to_money(max(0, self._as_num(variant_stock.get(resolved_variant, 0), 0) - abs(actual_qty)))
 
                 if cost_mode == "new":
-                    variant_costs[resolved_variant] = effective_unit_cost
+                    variant_costs[resolved_variant] = money_round(effective_unit_cost)
                 elif old_cost > 0 and old_stock > 0:
-                    # Weighted average: (old_cost × old_stock + new_cost × new_qty) / total
-                    total_units = old_stock + abs(actual_qty)
-                    weighted_avg = int((old_cost * old_stock + effective_unit_cost * abs(actual_qty)) / total_units)
-                    variant_costs[resolved_variant] = weighted_avg
+                    # Weighted average: (old_cost×old_stock + new_cost×new_qty)/total
+                    total_units = old_stock + new_qty
+                    wavg = (old_cost * old_stock + effective_unit_cost * new_qty) / total_units
+                    variant_costs[resolved_variant] = money_round(wavg)
                 else:
-                    variant_costs[resolved_variant] = effective_unit_cost
+                    variant_costs[resolved_variant] = money_round(effective_unit_cost)
 
                 product["variant_costs"] = variant_costs
             else:
                 # Update base landing_cost.
-                old_cost = int(product.get("landing_cost", 0))
-                old_stock = int(product.get("stock", 0)) - abs(actual_qty)
-                old_stock = max(0, old_stock)
+                old_cost = to_money(product.get("landing_cost", 0))
+                old_stock = to_money(max(0, self._as_num(product.get("stock", 0), 0) - abs(actual_qty)))
 
                 if cost_mode == "new":
-                    product["landing_cost"] = effective_unit_cost
+                    product["landing_cost"] = money_round(effective_unit_cost)
                 elif old_cost > 0 and old_stock > 0:
-                    total_units = old_stock + abs(actual_qty)
-                    weighted_avg = int((old_cost * old_stock + effective_unit_cost * abs(actual_qty)) / total_units)
-                    product["landing_cost"] = weighted_avg
+                    total_units = old_stock + new_qty
+                    wavg = (old_cost * old_stock + effective_unit_cost * new_qty) / total_units
+                    product["landing_cost"] = money_round(wavg)
                 else:
-                    product["landing_cost"] = effective_unit_cost
+                    product["landing_cost"] = money_round(effective_unit_cost)
 
             # ── Append to cost_history (purchases only) ──
             if actual_qty > 0:
@@ -2821,8 +2835,8 @@ class CatalogHandler:
                 cost_history = product.get("cost_history", [])
                 cost_history.append({
                     "date": datetime.now().strftime("%Y-%m-%d"),
-                    "cost": effective_unit_cost,
-                    "qty": abs(actual_qty),
+                    "cost": money_round(effective_unit_cost),
+                    "qty": self._as_num(abs(actual_qty), 0),
                     "variant": resolved_variant,
                 })
                 # Keep last 50 entries to avoid bloating
@@ -2830,12 +2844,14 @@ class CatalogHandler:
 
         self._save_products(phone_number, products)
 
+        _lc = (product.get("variant_costs", {}).get(resolved_variant, product.get("landing_cost", 0))
+               if resolved_variant else product.get("landing_cost", 0))
         return {
             "matched": True,
             "product": product.get("name", matched_key),
-            "new_stock": int(product.get("stock", 0)),
+            "new_stock": self._as_num(product.get("stock", 0), 0),   # qty, fractional-safe
             "variant": resolved_variant,
-            "landing_cost": int(product.get("variant_costs", {}).get(resolved_variant, product.get("landing_cost", 0))) if resolved_variant else int(product.get("landing_cost", 0)),
+            "landing_cost": money_round(_lc),                        # money, kobo-precise
             "prev_cost": _prev_cost,
             "unit_warning": _unit_warning,
         }
@@ -2855,14 +2871,15 @@ class CatalogHandler:
         variant_costs = product.get("variant_costs", {})
 
         # Check if product_name contains a variant (e.g. "Toyota RAV4 2018")
+        from utils.money import money_round
         if variant_costs:
             product_name_lower = product_name.lower()
             for variant, cost in variant_costs.items():
                 if variant.lower() in product_name_lower:
-                    return int(cost)
+                    return money_round(cost)   # kobo-precise (sub-naira survives)
 
         # Fallback to base landing_cost
-        return int(product.get("landing_cost", 0))
+        return money_round(product.get("landing_cost", 0))
 
     # Item types that are sellable in a manufacturing/hybrid sale picker.
     # Everything else (raw_material, overhead, consumable) is a production input,
@@ -3961,7 +3978,8 @@ class CatalogHandler:
         'Use new price' / 'Keep old price' choice, which re-sets the cost after
         the purchase already folded a weighted-average. Returns True on success."""
         try:
-            cost = int(cost)
+            from utils.money import money_round
+            cost = money_round(cost)   # kobo-precise (sub-naira costs survive)
             products = self._get_products(phone_number)
             key = self._find_product_key(products, product_name)
             if not key:
@@ -3996,7 +4014,8 @@ class CatalogHandler:
             prod = products.get(product_key)
             if not isinstance(prod, dict):
                 return False
-            prod["sale_price"] = int(price)
+            from utils.money import money_round
+            prod["sale_price"] = money_round(price)   # kobo-precise
             products[product_key] = prod
             self._save_products(phone_number, products)
             return True
@@ -4048,7 +4067,8 @@ class CatalogHandler:
                 return 0
             parts = [p.strip() for p in str(leaf_path).split(self._COMBO_SEP) if p.strip()]
             node = self._vt_get_node(tree, parts)
-            return self._as_int((node or {}).get("cost"), 0)
+            from utils.money import money_round
+            return money_round((node or {}).get("cost"))   # kobo-precise
         except Exception:
             return 0
 
@@ -4354,8 +4374,8 @@ class CatalogHandler:
             self.session.reset(phone_number)
             return [text_response("❓ That variant no longer exists.")]
         if field == "stock":
-            old = self._as_int(node.get("stock"), 0)
-            node["stock"] = max(0, int(val))
+            old = self._as_num(node.get("stock"), 0)
+            node["stock"] = self._as_num(max(0, self._as_num(val, 0)), 0)   # fractional-safe
             try:
                 moves = prod.get("stock_movements") or []
                 from datetime import datetime as _dt
@@ -4368,7 +4388,8 @@ class CatalogHandler:
         elif field == "unit":
             node["unit"] = str(val).strip()
         else:
-            node["cost"] = int(val)
+            from utils.money import money_round
+            node["cost"] = money_round(val)   # leaf cost, kobo-precise
         prod["variant_tree"] = root
         prod["stock"] = self._vt_node_total(root)
         products[key] = prod
