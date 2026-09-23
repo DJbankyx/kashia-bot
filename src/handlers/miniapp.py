@@ -1623,6 +1623,70 @@ _PAGE_HTML = """<!doctype html>
   // "recipe model" = finished goods derive cost from a recipe (mfg + hybrid).
   function usesRecipes() { return isMfg() || isHybrid(); }
 
+  // ── Industry terminology (Stage 3) ───────────────────────────────────
+  // Mirrors the chat-side industry TERMS so the web speaks the same language.
+  // Trading is the baseline — its strings match the HTML byte-for-byte, so
+  // applying labels for a Trading user is a no-op (the control never changes).
+  // Only the specific labelled elements below are touched; all money math and
+  // data remain identical across industries.
+  var TERMS = {
+    trading: {
+      sale: "Sale", sales: "Sales", purchase: "Purchase", purchases: "Purchases",
+      catalog: "Catalog", customers: "Customers", cogs: "Cost of sales",
+      sale_emoji: "\ud83d\udcb0", purchase_emoji: "\ud83d\udce6"
+    },
+    manufacturing: {
+      sale: "Output sale", sales: "Output sales", purchase: "Raw material",
+      purchases: "Raw materials", catalog: "Products & materials",
+      customers: "Customers", cogs: "Production cost",
+      sale_emoji: "\ud83c\udff7\ufe0f", purchase_emoji: "\ud83e\uddf1"
+    },
+    services: {
+      sale: "Job / service", sales: "Jobs / services", purchase: "Supply purchase",
+      purchases: "Supply purchases", catalog: "Services & supplies",
+      customers: "Clients", cogs: "Direct costs",
+      sale_emoji: "\ud83d\udcbc", purchase_emoji: "\ud83d\udce6"
+    },
+    hybrid: {
+      sale: "Sale / service", sales: "Sales / services", purchase: "Purchase",
+      purchases: "Purchases", catalog: "Products & supplies",
+      customers: "Customers", cogs: "Cost of sales",
+      sale_emoji: "\ud83d\udcb0", purchase_emoji: "\ud83d\udce6"
+    }
+  };
+  function t(key) {
+    var set = TERMS[APP.industry] || TERMS.trading;
+    return set[key] != null ? set[key] : (TERMS.trading[key] || "");
+  }
+  // Set an element's text only if it exists (defensive against markup changes).
+  function setText(id, s) { var el = document.getElementById(id); if (el) el.textContent = s; }
+  // Apply industry wording to the static labels. Idempotent; safe to re-run.
+  var _labelsApplied = false;
+  function applyIndustryLabels() {
+    if (_labelsApplied) return;
+    _labelsApplied = true;
+    // Bottom nav — Customers vs Clients.
+    setText("tab-crm", "\ud83d\udc65 " + t("customers"));
+    setText("tab-cat", "\ud83d\udce6 " + t("catalog"));
+    // Dashboard "Cost of sales" card label.
+    var cogsCard = document.querySelector('#cogs') &&
+                   document.querySelector('#cogs').parentElement.querySelector('.k');
+    if (cogsCard) cogsCard.textContent = t("cogs");
+    // Record sheet type chips (sale/purchase; expense stays "Expense").
+    var recSale = document.querySelector('#rec-type .chip[data-t="sale"]');
+    if (recSale) recSale.textContent = t("sale_emoji") + " " + t("sale");
+    var recPur = document.querySelector('#rec-type .chip[data-t="purchase"]');
+    if (recPur) recPur.textContent = t("purchase_emoji") + " " + t("purchase");
+    // Records-tab tabs (Sales/Purchases).
+    var rtSale = document.querySelector('#rec-type-tabs .chip[data-rt="sale"]');
+    if (rtSale) rtSale.textContent = t("sale_emoji") + " " + t("sales");
+    var rtPur = document.querySelector('#rec-type-tabs .chip[data-rt="purchase"]');
+    if (rtPur) rtPur.textContent = t("purchase_emoji") + " " + t("purchases");
+    // CRM directory tab — Customers vs Clients.
+    var crmCust = document.querySelector('#crm-dir-tabs .chip[data-cd="customers"]');
+    if (crmCust) crmCust.textContent = "\ud83d\udc64 " + t("customers");
+  }
+
   // Web page (not a PDF) so the ₦ glyph is safe and reads cleaner than "NGN".
   function naira(n) { return "\u20a6" + Number(n||0).toLocaleString("en-NG"); }
   function setSigned(id, n) {
@@ -1785,6 +1849,8 @@ _PAGE_HTML = """<!doctype html>
         // Stage 0: capture the industry from the summary payload so catalog +
         // other tabs can shape their UI. Falls back to "trading" (control).
         if (d.industry) APP.industry = d.industry;
+        // Stage 3: apply industry wording to static labels (once).
+        applyIndustryLabels();
         document.getElementById("biz").textContent = d.business || "Kashia";
         document.getElementById("period").textContent = (d.period_label || "");
         var pl = document.getElementById("periodlabel");
@@ -2141,7 +2207,11 @@ _PAGE_HTML = """<!doctype html>
       tabs[i].classList.toggle("active", tabs[i].getAttribute("data-rt") === t);
     }
     var k = document.getElementById("rec-total-k");
-    k.textContent = "Total " + (t === "sale" ? "sales" : (t === "purchase" ? "purchases" : "expenses"));
+    // Industry wording (param 't' shadows the term helper here, so read the
+    // TERMS set directly). Lower-cased to read naturally after "Total".
+    var _ts = TERMS[APP.industry] || TERMS.trading;
+    var _word = (t === "sale" ? _ts.sales : (t === "purchase" ? _ts.purchases : "expenses"));
+    k.textContent = "Total " + String(_word).toLowerCase();
     loadRecords();
   };
   function recRenderChips() {
