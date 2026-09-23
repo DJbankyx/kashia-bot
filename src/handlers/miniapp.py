@@ -1448,7 +1448,11 @@ _PAGE_HTML = """<!doctype html>
   var curTo = "";
   var curSpecific = "";   // dashboard specific month/quarter/year query, if picked
   // Records tab state (independent period + range + type).
-  var recType = "sale";
+  // NB: named recTabType (NOT recType) — recType is the record-SHEET's type
+  // switcher function (window.recType). Sharing the name let the Records tab
+  // overwrite that function with a string, which killed the "Record a
+  // transaction" button after visiting Records. Keep them separate.
+  var recTabType = "sale";
   var recPeriod = "month";
   var recFrom = "";
   var recTo = "";
@@ -1963,7 +1967,7 @@ _PAGE_HTML = """<!doctype html>
   var REC_PERIODS = [["today","Today"],["week","Week"],["month","This month"],
                      ["last_month","Last month"]];
   window.recSetType = function (t) {
-    recType = t;
+    recTabType = t;
     var tabs = document.getElementById("rec-type-tabs").children;
     for (var i = 0; i < tabs.length; i++) {
       tabs[i].classList.toggle("active", tabs[i].getAttribute("data-rt") === t);
@@ -2017,7 +2021,7 @@ _PAGE_HTML = """<!doctype html>
     recRenderChips(); loadRecords();
   };
   function recQuery() {
-    var q = "type=" + recType;
+    var q = "type=" + recTabType;
     if (recFrom) {
       q += "&from=" + encodeURIComponent(recFrom) + "&to=" + encodeURIComponent(recTo || recFrom);
     } else if (recSpecific) {
