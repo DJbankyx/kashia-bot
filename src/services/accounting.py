@@ -45,11 +45,22 @@ COST_MISSING = "MISSING"                  # no cost known — flag, don't fake
 
 
 def _to_int(v, default=0):
-    """Coerce to int — for MONEY (naira)."""
+    """Coerce a MONEY value to a kobo-precise number (2dp).
+
+    Name kept for churn-minimisation, but it NO LONGER truncates to whole naira —
+    it rounds to kobo (int when whole, else a 2dp float) so sub-naira per-unit
+    costs (electricity ₦0.06/kWh) survive reads + aggregation. Used only for
+    money in this module; quantity uses _to_num. Money math should stay in
+    Decimal (to_money) and round once — this is the safe read/round helper.
+    """
     try:
-        return int(float(v))
-    except (TypeError, ValueError):
-        return default
+        from utils.money import money_round
+        return money_round(v)
+    except Exception:
+        try:
+            return int(float(v))
+        except (TypeError, ValueError):
+            return default
 
 
 def _to_num(v, default=0):
@@ -181,8 +192,10 @@ class Accounting:
             # Match the sale-flow convention: a landing_cost_per_unit marker means
             # landing_cost is already the TOTAL; otherwise it's per-unit.
             has_per_unit = extra.get("landing_cost_per_unit") or sale_tx.get("landing_cost_per_unit")
-            # qty may be fractional → round the line COGS to int naira.
-            total = _to_int(lc) if has_per_unit else _to_int(_to_int(lc) * qty)
+            # qty may be fractional; cost is kobo-precise → compute in Decimal,
+            # round the line COGS to kobo once.
+            from utils.money import to_money, money_round
+            total = money_round(lc) if has_per_unit else money_round(to_money(lc) * to_money(qty))
             return total, COST_SALE_LANDING
 
         # 1b) Variant-TREE leaf cost. For a tree product, cost lives on the LEAF
@@ -206,7 +219,8 @@ class Accounting:
                     pkey = cat._find_product_key(products, product.get("name", "")) or ""
                 leaf_c = cat.leaf_cost(sale_tx.get("phone_number", ""), pkey, leaf_path) if pkey else 0
                 if leaf_c and leaf_c > 0:
-                    return _to_int(leaf_c * qty), COST_WEIGHTED_AVG
+                    from utils.money import to_money, money_round
+                    return money_round(to_money(leaf_c) * to_money(qty)), COST_WEIGHTED_AVG
             except Exception as e:
                 logger.debug(f"tree leaf cost lookup failed: {e}")
 
@@ -214,7 +228,8 @@ class Accounting:
         if product is not None:
             avg = product_avg_cost(product)
             if avg > 0:
-                return _to_int(avg * qty), COST_WEIGHTED_AVG
+                from utils.money import to_money, money_round
+                return money_round(to_money(avg) * to_money(qty)), COST_WEIGHTED_AVG
 
         # 3) Catalog landing_cost fallback (by name/brand), reusing the exact
         #    lookup the sale flow uses so numbers agree.
@@ -226,7 +241,8 @@ class Accounting:
             search = f"{brand} {desc}".strip() if brand else desc
             cc = cat.get_landing_cost(sale_tx.get("phone_number", ""), search) if search else 0
             if cc and cc > 0:
-                return _to_int(cc * qty), COST_CATALOG
+                from utils.money import to_money, money_round
+                return money_round(to_money(cc) * to_money(qty)), COST_CATALOG
         except Exception as e:
             logger.debug(f"catalog cost lookup failed: {e}")
 
@@ -257,10 +273,11 @@ class Accounting:
             # A cost the user explicitly entered for THIS sale wins (specific).
             lc = tx_data.get("landing_cost")
             if lc not in (None, "") and _to_int(lc) > 0:
-                total = _to_int(lc)
+                from utils.money import to_money, money_round
+                total = money_round(lc)
                 # landing_cost from the sale flow is a TOTAL for the line.
-                # qty may be fractional → divide (not //) then round the per-unit.
-                unit_cost = _to_int(total / qty) if qty else total
+                # qty may be fractional → Decimal divide then round per-unit.
+                unit_cost = money_round(to_money(total) / to_money(qty)) if qty else total
                 return total, unit_cost, COST_SALE_LANDING
 
             products = self._products(phone_number)
@@ -315,8 +332,9 @@ class Accounting:
                     logger.debug(f"resolve_sale_cost catalog lookup failed: {e}")
 
             if unit > 0:
-                # qty may be fractional → round the line total to int naira.
-                return _to_int(unit * qty), unit, source
+                # qty may be fractional → round the line total to kobo.
+                from utils.money import to_money, money_round
+                return money_round(to_money(unit) * to_money(qty)), unit, source
             return 0, 0, COST_MISSING
         except Exception as e:
             logger.warning(f"resolve_sale_cost_now failed: {e}")
@@ -615,24 +633,27 @@ class Accounting:
             base_cost = product_avg_cost(product)
             units = value = 0
             for variant, qty in vstock.items():
+                from utils.money import to_money, money_round
                 q = _to_num(qty)                    # stock may be fractional
-                c = _to_int(vcosts.get(variant, base_cost))   # cost = int naira
+                c = money_round(vcosts.get(variant, base_cost))   # cost kobo-precise
                 units += q
-                value += _to_int(q * c)             # line value rounded to naira
+                value += money_round(to_money(q) * to_money(c))   # line value → kobo
             return _to_num(units), value
 
         # Base product: stock × weighted-average cost.
+        from utils.money import to_money, money_round
         qty = _to_num(product.get("stock", 0))       # stock may be fractional
         cost = product_avg_cost(product)
-        return qty, _to_int(qty * cost)
+        return qty, money_round(to_money(qty) * to_money(cost))
 
     def _value_tree(self, node):
         """Recursively value a variant tree: leaves contribute stock × cost."""
         children = node.get("children") or {}
         if not children:
+            from utils.money import to_money, money_round
             q = _to_num(node.get("stock", 0))    # leaf stock may be fractional
-            c = _to_int(node.get("cost", 0))      # cost = int naira
-            return q, _to_int(q * c)
+            c = money_round(node.get("cost", 0))  # cost kobo-precise
+            return q, money_round(to_money(q) * to_money(c))
         units = value = 0
         for child in children.values():
             u, v = self._value_tree(child)
