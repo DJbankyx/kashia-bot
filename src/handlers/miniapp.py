@@ -439,10 +439,10 @@ def _row_from_product(p: dict, cat=None) -> dict:
     For a variant-TREE product, cost + stock value live on the leaves (product
     landing_cost is 0), so we roll them up via cat.tree_rollup — otherwise the
     app would show 'no price/cost set' even when leaves are costed."""
-    cost = int(p.get("landing_cost") or 0)
-    stock_value = int(p.get("_stock_value") or 0)
-    # STOCK may be fractional (0.5 kg) — keep it numeric (int when whole so the
-    # UI shows "5", float when fractional). MONEY stays integer naira.
+    # MONEY is kobo-precise (int when whole, else 2dp); STOCK may be fractional.
+    from utils.money import money_round
+    cost = money_round(p.get("landing_cost") or 0)
+    stock_value = money_round(p.get("_stock_value") or 0)
     def _num(v):
         try:
             n = float(v or 0)
@@ -454,9 +454,9 @@ def _row_from_product(p: dict, cat=None) -> dict:
         try:
             roll = cat.tree_rollup(p)
             if roll.get("avg_cost"):
-                cost = int(roll["avg_cost"])
+                cost = money_round(roll["avg_cost"])
             if roll.get("value"):
-                stock_value = int(roll["value"])
+                stock_value = money_round(roll["value"])
             if roll.get("stock") is not None:
                 stock = _num(roll["stock"])
         except Exception:
@@ -468,7 +468,7 @@ def _row_from_product(p: dict, cat=None) -> dict:
         "unit": p.get("primary_unit") or "",
         "stock": stock,
         "cost": cost,
-        "sale_price": int(p.get("sale_price") or 0),
+        "sale_price": money_round(p.get("sale_price") or 0),
         "reorder_level": int(p.get("reorder_level") or 0),
         "low_stock": bool(p.get("_is_low_stock")),
         "has_variants": bool(p.get("_has_tree") or p.get("_has_variants")),
@@ -685,14 +685,15 @@ def _product_write(event, user_id: str):
         if not path:
             return _json(400, {"error": "a variant path is required"})
         leaf = " / ".join(path)   # _COMBO_SEP
-        # Leaf STOCK may be fractional (0.5 kg); leaf COST stays integer naira.
+        # Leaf STOCK may be fractional (0.5 kg); leaf COST is money (kobo-precise).
+        from utils.money import money_round
         try:
             if action == "set_leaf_stock":
                 value = float(data.get("value"))
                 if value == int(value):
                     value = int(value)
-            else:
-                value = int(data.get("value"))
+            else:  # set_leaf_cost — money
+                value = money_round(data.get("value"))
         except (TypeError, ValueError):
             return _json(400, {"error": "value must be a number"})
         if value < 0:
@@ -709,6 +710,7 @@ def _product_write(event, user_id: str):
     # ── Value actions (existing): price / cost / stock exact / stock delta ──
     # STOCK may be fractional (0.5 kg) → parse as a number; MONEY (price/cost) +
     # reorder stay integer. set_stock_delta may be negative (a deduction).
+    from utils.money import money_round as _mr
     _stock_actions = ("set_stock", "set_stock_delta")
     try:
         if action in _stock_actions:
@@ -716,7 +718,7 @@ def _product_write(event, user_id: str):
             if value == int(value):
                 value = int(value)   # keep whole values whole for clean display
         else:
-            value = int(data.get("value"))
+            value = _mr(data.get("value"))   # set_price / set_cost — money (kobo)
     except (TypeError, ValueError):
         return _json(400, {"error": "value must be a number"})
     if action in ("set_price", "set_cost", "set_stock") and value < 0:
@@ -835,7 +837,8 @@ def _transaction_write(event, user_id: str):
     if tx_type not in ("sale", "purchase", "expense"):
         return _json(400, {"error": "invalid type"})
     try:
-        amount = int(data.get("amount"))
+        from utils.money import money_round
+        amount = money_round(data.get("amount"))   # kobo-precise
     except (TypeError, ValueError):
         return _json(400, {"error": "amount must be a number"})
     if amount <= 0:
@@ -1122,7 +1125,8 @@ def _debt_payment_write(event, user_id: str):
     name = (data.get("name") or "").strip()
     direction = (data.get("direction") or "").strip().lower()
     try:
-        amount = int(data.get("amount") or 0)
+        from utils.money import money_round
+        amount = money_round(data.get("amount") or 0)   # kobo-precise
     except (TypeError, ValueError):
         return _json(400, {"error": "amount must be a number"})
     if not name:
@@ -1561,7 +1565,7 @@ _PAGE_HTML = """<!doctype html>
       <div class="sub2" id="pay-sub"></div>
       <div class="field">
         <label id="pay-amount-label">Amount (\u20a6)</label>
-        <input id="pay-amount" type="number" inputmode="numeric" min="0" oninput="payHint()">
+        <input id="pay-amount" type="number" inputmode="decimal" min="0" step="any" oninput="payHint()">
         <div class="sub2" id="pay-hint"></div>
       </div>
       <div class="sheeterr" id="pay-err"></div>
@@ -1594,11 +1598,11 @@ _PAGE_HTML = """<!doctype html>
       </div>
       <div class="field">
         <label>Selling price (\u20a6)</label>
-        <input id="sh-price" type="number" inputmode="numeric" min="0">
+        <input id="sh-price" type="number" inputmode="decimal" min="0" step="any">
       </div>
       <div class="field" id="sh-cost-wrap">
         <label>Cost per unit (\u20a6)</label>
-        <input id="sh-cost" type="number" inputmode="numeric" min="0">
+        <input id="sh-cost" type="number" inputmode="decimal" min="0" step="any">
       </div>
       <!-- Mfg/Hybrid finished goods: cost is recipe-driven (Decision A). Show
            the rolled-up cost read-only + point the owner to Set Recipe in chat.
@@ -1652,7 +1656,7 @@ _PAGE_HTML = """<!doctype html>
       </div>
       <div class="field">
         <label id="rec-amount-label">Amount received (\u20a6)</label>
-        <input id="rec-amount" type="number" inputmode="numeric" min="0" oninput="recBalanceHint()">
+        <input id="rec-amount" type="number" inputmode="decimal" min="0" step="any" oninput="recBalanceHint()">
       </div>
       <div class="field" id="rec-qty-wrap">
         <label id="rec-qty-label">Quantity</label>
@@ -1661,7 +1665,7 @@ _PAGE_HTML = """<!doctype html>
       </div>
       <div class="field" id="rec-cost-wrap">
         <label id="rec-cost-label">Cost of goods (total, \u20a6) — optional</label>
-        <input id="rec-cost" type="number" inputmode="numeric" min="0" placeholder="for accurate profit">
+        <input id="rec-cost" type="number" inputmode="decimal" min="0" step="any" placeholder="for accurate profit">
         <div class="sub2">💡 Leave blank to use the cost saved on the product. Enter the TOTAL cost for this sale (all units), not per-unit — it sets your profit.</div>
       </div>
       <div class="field">
@@ -1679,7 +1683,7 @@ _PAGE_HTML = """<!doctype html>
       </div>
       <div class="field hidden" id="rec-deposit-wrap">
         <label id="rec-deposit-label">Deposit paid now (\u20a6)</label>
-        <input id="rec-deposit" type="number" inputmode="numeric" min="0" placeholder="amount paid so far" oninput="recBalanceHint()">
+        <input id="rec-deposit" type="number" inputmode="decimal" min="0" step="any" placeholder="amount paid so far" oninput="recBalanceHint()">
         <div class="sub2" id="rec-balance-hint"></div>
       </div>
       <div class="sheeterr" id="rec-err"></div>
@@ -2351,14 +2355,14 @@ _PAGE_HTML = """<!doctype html>
   };
   window.payHint = function () {
     if (!payCtx) return;
-    var v = parseInt(document.getElementById("pay-amount").value, 10) || 0;
+    var v = parseFloat(document.getElementById("pay-amount").value) || 0;   // money, kobo
     var rem = Math.max(0, (payCtx.amount || 0) - v);
     document.getElementById("pay-hint").textContent =
       v > 0 ? ("Remaining after this: " + naira(rem)) : "";
   };
   window.savePay = function () {
     if (!payCtx) return;
-    var v = parseInt(document.getElementById("pay-amount").value, 10) || 0;
+    var v = parseFloat(document.getElementById("pay-amount").value) || 0;   // money, kobo
     var err = document.getElementById("pay-err");
     if (v <= 0) { err.textContent = "Enter an amount greater than 0."; return; }
     var btn = document.getElementById("pay-save");
@@ -2667,7 +2671,7 @@ _PAGE_HTML = """<!doctype html>
       '<div class="field"><label>Stock</label>' +
       '<input id="leaf-stock" type="number" inputmode="decimal" min="0" step="any" value="' + Number(stock||0) + '"></div>' +
       '<div class="field"><label>Cost per unit (\u20a6)</label>' +
-      '<input id="leaf-cost" type="number" inputmode="numeric" min="0" value="' + (cost ? Number(cost) : "") + '"></div>' +
+      '<input id="leaf-cost" type="number" inputmode="decimal" min="0" step="any" value="' + (cost ? Number(cost) : "") + '"></div>' +
       '<div class="sheeterr" id="leaf-err"></div>';
     var btn = document.createElement("button");
     btn.className = "btn save"; btn.style.width = "100%"; btn.textContent = "Save variant";
@@ -2679,7 +2683,7 @@ _PAGE_HTML = """<!doctype html>
     var err = document.getElementById("leaf-err");
     var st = Math.max(0, parseFloat(document.getElementById("leaf-stock").value) || 0);  // stock may be fractional
     var coRaw = document.getElementById("leaf-cost").value;
-    var co = coRaw === "" ? null : Math.max(0, parseInt(coRaw, 10) || 0);
+    var co = coRaw === "" ? null : Math.max(0, parseFloat(coRaw) || 0);   // cost money, kobo
     var ops = [];
     if (st !== oldStock)
       ops.push({ action: "set_leaf_stock", key: varProd.key, path: path, value: st });
@@ -2706,8 +2710,8 @@ _PAGE_HTML = """<!doctype html>
     var newStock = Math.max(0, parseFloat(document.getElementById("sh-stock").value) || 0);
     var priceRaw = document.getElementById("sh-price").value;
     var costRaw = document.getElementById("sh-cost").value;
-    var newPrice = priceRaw === "" ? null : Math.max(0, parseInt(priceRaw, 10) || 0);
-    var newCost = costRaw === "" ? null : Math.max(0, parseInt(costRaw, 10) || 0);
+    var newPrice = priceRaw === "" ? null : Math.max(0, parseFloat(priceRaw) || 0);   // money, kobo
+    var newCost = costRaw === "" ? null : Math.max(0, parseFloat(costRaw) || 0);       // money, kobo
 
     var newName = (document.getElementById("sh-rename").value || "").trim();
     var newUnit = (document.getElementById("sh-unit").value || "").trim();
@@ -3195,8 +3199,8 @@ _PAGE_HTML = """<!doctype html>
   };
   // Live "balance owed" preview under the deposit field.
   window.recBalanceHint = function () {
-    var amount = parseInt(document.getElementById("rec-amount").value, 10) || 0;
-    var dep = parseInt(document.getElementById("rec-deposit").value, 10) || 0;
+    var amount = parseFloat(document.getElementById("rec-amount").value) || 0;   // money, kobo
+    var dep = parseFloat(document.getElementById("rec-deposit").value) || 0;
     var hint = document.getElementById("rec-balance-hint");
     if (!amount) { hint.textContent = ""; return; }
     var bal = Math.max(0, amount - dep);
@@ -3231,12 +3235,12 @@ _PAGE_HTML = """<!doctype html>
     var desc = isExpense
       ? (document.getElementById("rec-desc").value || "").trim()
       : (pick.name || "");
-    var amount = parseInt(document.getElementById("rec-amount").value, 10) || 0;
+    var amount = parseFloat(document.getElementById("rec-amount").value) || 0;   // money, kobo
     // Quantity may be fractional (0.5 kg, 2.5 L) — parseFloat, not parseInt.
     // Still at least a positive amount; a blank/0 falls back to 1.
     var qtyRawV = parseFloat(document.getElementById("rec-qty").value);
     var qty = (qtyRawV > 0) ? qtyRawV : 1;
-    var cost = parseInt(document.getElementById("rec-cost").value, 10) || 0;
+    var cost = parseFloat(document.getElementById("rec-cost").value) || 0;   // COGS money, kobo
     var who = (document.getElementById("rec-who").value || "").trim();
     var err = document.getElementById("rec-err");
     err.textContent = "";
@@ -3247,7 +3251,7 @@ _PAGE_HTML = """<!doctype html>
     // Part payment = deposit now + balance owed. If the deposit covers the full
     // amount, treat it as a normal (paid) transfer — mirrors the chat flow.
     var isPart = recPayVal === "part";
-    var deposit = isPart ? (parseInt(document.getElementById("rec-deposit").value, 10) || 0) : 0;
+    var deposit = isPart ? (parseFloat(document.getElementById("rec-deposit").value) || 0) : 0;   // money, kobo
     if (isPart && deposit >= amount) { isPart = false; recPayVal = "transfer"; }
     var isCredit = (recPayVal === "credit") || isPart;  // both create a debt
 
