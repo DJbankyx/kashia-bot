@@ -441,6 +441,15 @@ def _row_from_product(p: dict, cat=None) -> dict:
     app would show 'no price/cost set' even when leaves are costed."""
     cost = int(p.get("landing_cost") or 0)
     stock_value = int(p.get("_stock_value") or 0)
+    # STOCK may be fractional (0.5 kg) — keep it numeric (int when whole so the
+    # UI shows "5", float when fractional). MONEY stays integer naira.
+    def _num(v):
+        try:
+            n = float(v or 0)
+        except (TypeError, ValueError):
+            return 0
+        return int(n) if n == int(n) else n
+    stock = _num(p.get("stock"))
     if p.get("_has_tree") and cat is not None:
         try:
             roll = cat.tree_rollup(p)
@@ -448,6 +457,8 @@ def _row_from_product(p: dict, cat=None) -> dict:
                 cost = int(roll["avg_cost"])
             if roll.get("value"):
                 stock_value = int(roll["value"])
+            if roll.get("stock") is not None:
+                stock = _num(roll["stock"])
         except Exception:
             pass
     return {
@@ -455,7 +466,7 @@ def _row_from_product(p: dict, cat=None) -> dict:
         "name": p.get("name"),
         "category": p.get("category") or "",
         "unit": p.get("primary_unit") or "",
-        "stock": int(p.get("stock") or 0),
+        "stock": stock,
         "cost": cost,
         "sale_price": int(p.get("sale_price") or 0),
         "reorder_level": int(p.get("reorder_level") or 0),
@@ -674,8 +685,14 @@ def _product_write(event, user_id: str):
         if not path:
             return _json(400, {"error": "a variant path is required"})
         leaf = " / ".join(path)   # _COMBO_SEP
+        # Leaf STOCK may be fractional (0.5 kg); leaf COST stays integer naira.
         try:
-            value = int(data.get("value"))
+            if action == "set_leaf_stock":
+                value = float(data.get("value"))
+                if value == int(value):
+                    value = int(value)
+            else:
+                value = int(data.get("value"))
         except (TypeError, ValueError):
             return _json(400, {"error": "value must be a number"})
         if value < 0:
@@ -690,8 +707,16 @@ def _product_write(event, user_id: str):
         return _echo(key)
 
     # ── Value actions (existing): price / cost / stock exact / stock delta ──
+    # STOCK may be fractional (0.5 kg) → parse as a number; MONEY (price/cost) +
+    # reorder stay integer. set_stock_delta may be negative (a deduction).
+    _stock_actions = ("set_stock", "set_stock_delta")
     try:
-        value = int(data.get("value"))
+        if action in _stock_actions:
+            value = float(data.get("value"))
+            if value == int(value):
+                value = int(value)   # keep whole values whole for clean display
+        else:
+            value = int(data.get("value"))
     except (TypeError, ValueError):
         return _json(400, {"error": "value must be a number"})
     if action in ("set_price", "set_cost", "set_stock") and value < 0:
@@ -1558,7 +1583,7 @@ _PAGE_HTML = """<!doctype html>
       </div>
       <div class="field">
         <label>Stock</label>
-        <input id="sh-stock" type="number" inputmode="numeric" min="0">
+        <input id="sh-stock" type="number" inputmode="decimal" min="0" step="any">
         <div class="steppers">
           <div class="step" onclick="bump(-5)">-5</div>
           <div class="step" onclick="bump(-1)">-1</div>
@@ -1631,8 +1656,8 @@ _PAGE_HTML = """<!doctype html>
       </div>
       <div class="field" id="rec-qty-wrap">
         <label id="rec-qty-label">Quantity</label>
-        <input id="rec-qty" type="number" inputmode="numeric" min="1" value="1">
-        <div class="sub2">💡 Counted in this item's unit (set the unit on the product in Catalog). Stock drops by this amount.</div>
+        <input id="rec-qty" type="number" inputmode="decimal" min="0" step="any" value="1">
+        <div class="sub2">💡 Counted in this item's unit (set the unit on the product in Catalog). Can be fractional, e.g. 0.5 kg. Stock drops by this amount.</div>
       </div>
       <div class="field" id="rec-cost-wrap">
         <label id="rec-cost-label">Cost of goods (total, \u20a6) — optional</label>
@@ -2554,7 +2579,11 @@ _PAGE_HTML = """<!doctype html>
   };
   window.bump = function (n) {
     var el = document.getElementById("sh-stock");
-    el.value = Math.max(0, (parseInt(el.value, 10) || 0) + n);
+    // Preserve a fractional base (e.g. 0.5) when stepping by whole amounts.
+    var cur = parseFloat(el.value) || 0;
+    var next = Math.max(0, cur + n);
+    // Keep whole values whole for a clean field (5, not 5.0).
+    el.value = (next === Math.round(next)) ? Math.round(next) : next;
   };
 
   // ── Read-only variant viewer (tap a variant product in Inventory) ──
@@ -2636,7 +2665,7 @@ _PAGE_HTML = """<!doctype html>
     box.innerHTML =
       '<div class="k" style="margin-bottom:6px">Edit ' + title + '</div>' +
       '<div class="field"><label>Stock</label>' +
-      '<input id="leaf-stock" type="number" inputmode="numeric" min="0" value="' + Number(stock||0) + '"></div>' +
+      '<input id="leaf-stock" type="number" inputmode="decimal" min="0" step="any" value="' + Number(stock||0) + '"></div>' +
       '<div class="field"><label>Cost per unit (\u20a6)</label>' +
       '<input id="leaf-cost" type="number" inputmode="numeric" min="0" value="' + (cost ? Number(cost) : "") + '"></div>' +
       '<div class="sheeterr" id="leaf-err"></div>';
@@ -2648,7 +2677,7 @@ _PAGE_HTML = """<!doctype html>
   }
   function saveLeaf(path, oldStock, oldCost) {
     var err = document.getElementById("leaf-err");
-    var st = Math.max(0, parseInt(document.getElementById("leaf-stock").value, 10) || 0);
+    var st = Math.max(0, parseFloat(document.getElementById("leaf-stock").value) || 0);  // stock may be fractional
     var coRaw = document.getElementById("leaf-cost").value;
     var co = coRaw === "" ? null : Math.max(0, parseInt(coRaw, 10) || 0);
     var ops = [];
@@ -2674,7 +2703,7 @@ _PAGE_HTML = """<!doctype html>
   window.saveSheet = function () {
     if (!editing) return;
     var key = editing.key;
-    var newStock = Math.max(0, parseInt(document.getElementById("sh-stock").value, 10) || 0);
+    var newStock = Math.max(0, parseFloat(document.getElementById("sh-stock").value) || 0);
     var priceRaw = document.getElementById("sh-price").value;
     var costRaw = document.getElementById("sh-cost").value;
     var newPrice = priceRaw === "" ? null : Math.max(0, parseInt(priceRaw, 10) || 0);
@@ -3203,7 +3232,10 @@ _PAGE_HTML = """<!doctype html>
       ? (document.getElementById("rec-desc").value || "").trim()
       : (pick.name || "");
     var amount = parseInt(document.getElementById("rec-amount").value, 10) || 0;
-    var qty = Math.max(1, parseInt(document.getElementById("rec-qty").value, 10) || 1);
+    // Quantity may be fractional (0.5 kg, 2.5 L) — parseFloat, not parseInt.
+    // Still at least a positive amount; a blank/0 falls back to 1.
+    var qtyRawV = parseFloat(document.getElementById("rec-qty").value);
+    var qty = (qtyRawV > 0) ? qtyRawV : 1;
     var cost = parseInt(document.getElementById("rec-cost").value, 10) || 0;
     var who = (document.getElementById("rec-who").value || "").trim();
     var err = document.getElementById("rec-err");
