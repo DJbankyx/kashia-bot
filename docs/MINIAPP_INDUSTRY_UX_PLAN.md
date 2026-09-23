@@ -163,3 +163,38 @@ manual check (Trading control + the industry being changed) before moving on.
 
 **Next:** Stage 2 — web recipe/BOM editor (new `/app/api/recipe` endpoints wrapping
 `production.py`; no forked cost math).
+
+### 2026-09-22 — Stage 2 shipped (commit `bb972a6`)
+
+**Web recipe / BOM editor — engine-owned cost, no forked JS math.**
+- `production.py` gained pure, session-free entry points (single source of truth
+  for recipe cost):
+  - `recipe_unit_cost(recipe)` — static; cost to make ONE unit = Σ material
+    qty×cost_per_unit + Σ overhead qty×rate. Matches chat production maths.
+    Unit-tested (materials + overhead + legacy fallback + empty/bad-value safe).
+  - `get_recipe(phone, key)` — returns recipe lines, rolled-up `unit_cost`, and
+    `available_materials` (catalog raw_material/supply/overhead rows for the
+    picker).
+  - `web_add_material(...)` / `web_remove_material(...)` — edit one line then
+    `_save_recipe`, which tags the product `finished_product` and restamps
+    `landing_cost = round(recipe_unit_cost)`. Missing cost falls back to the
+    material's catalog landing_cost (same as chat).
+- `miniapp.py` endpoints: `GET /app/api/recipe?key=` (`_recipe_read`) and
+  `POST /app/api/recipe` (`_recipe_write`, actions `add_material`/`remove_material`).
+  Both just wrap ProductionHandler — no cost math in the handler.
+- Mini-app JS: recipe editor overlay opened via "📋 Set / edit recipe" on the
+  edit sheet (mfg/hybrid finished goods only). Shows unit cost + material list
+  with Remove, and an add-material form (catalog picker + qty + optional cost).
+  On change it re-renders from the server response and syncs the edit sheet's
+  "Cost (from recipe)" line. `apiPost` reused (ok-gated, text-first error parse).
+- **template.yaml:** added `RecipeGet` + `RecipeWrite` API Gateway routes (both
+  `/app/api/recipe`). This is a REAL template change → **`./deploy.sh dev`
+  activates the routes** (undeclared routes 403). Lambda already has UsersTable
+  CRUD (recipe lives on the user's product_catalog), so no new IAM.
+- Verified: `py_compile` + `check_syntax.py` pass; `recipe_unit_cost` unit test
+  passes (`RECIPE_MATH_OK`). One source of truth: a recipe set in the web shows
+  the same cost in chat (same catalog field + same formula).
+
+**Next:** Stage 3 — industry-aware labels/fields across the app (Services "job",
+Manufacturing "output", hide stock/qty where N/A); then Stage 4 (catalog-first
+setup nudge) and Stage 5 (owner's remaining mini-app improvement list).
