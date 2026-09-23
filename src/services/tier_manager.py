@@ -27,7 +27,7 @@ TIERS = {
     },
     "basic": {
         "name": "Basic",
-        "price": 3000,
+        "price": 3500,
         "limits": {
             "transactions_per_month": 999999,
             "exports_per_month": 999999,
@@ -38,7 +38,7 @@ TIERS = {
     },
     "pro": {
         "name": "Pro",
-        "price": 6000,
+        "price": 6500,
         "limits": {
             "transactions_per_month": 999999,
             "exports_per_month": 999999,
@@ -102,6 +102,23 @@ class TierManager:
         if max_transactions >= 999999:
             return True, None
 
+        # ── 14-DAY FULL-ACCESS TRIAL (retention) ──
+        # A hard transaction wall on day 3 kills the daily-logging habit before it
+        # forms. Instead, every new (free) account gets 14 days of UNLIMITED
+        # recording. We convert on value realised, not a random count. After the
+        # trial the soft monthly cap applies — but we NEVER block viewing history
+        # or reports (those are separate paths and stay open regardless).
+        trial_days, trial_left = self._trial_status(phone_number)
+        if trial_left is not None and trial_left > 0:
+            # In trial: unlimited. Gently remind near the end (last 3 days).
+            if trial_left <= 3:
+                return True, (f"🎁 Your free trial has {trial_left} day"
+                              f"{'s' if trial_left != 1 else ''} left — "
+                              f"then you can log up to {max_transactions} sales a "
+                              f"month free, or upgrade for unlimited. Type "
+                              f"*UPGRADE* to see plans.")
+            return True, None
+
         current_count = self.db.count_transactions_this_month(phone_number)
 
         if current_count >= max_transactions:
@@ -119,6 +136,31 @@ class TierManager:
             return True, warning
 
         return True, None
+
+    # Trial length for a new free account (days of unlimited recording).
+    TRIAL_DAYS = 14
+
+    def _trial_status(self, phone_number):
+        """Return (trial_days, days_left) for a user's free trial.
+
+        days_left is:
+          * > 0  while still inside the 14-day window,
+          * 0    once the trial has ended,
+          * None if we can't tell (no created_at) — caller treats None as
+            "no trial bypass" so we fail safe to the normal cap.
+        Never raises."""
+        try:
+            user = self.db.get_user(phone_number) or {}
+            created = user.get("created_at")
+            if not created:
+                return self.TRIAL_DAYS, None
+            created_dt = datetime.fromisoformat(str(created))
+            elapsed = (datetime.now() - created_dt).days
+            left = self.TRIAL_DAYS - elapsed
+            return self.TRIAL_DAYS, max(0, left)
+        except Exception as e:
+            logger.warning(f"_trial_status failed for {phone_number}: {e}")
+            return self.TRIAL_DAYS, None
 
     def check_can_export(self, phone_number):
         """
@@ -162,8 +204,9 @@ class TierManager:
         if max_invoices == 0:
             message = (
                 "📄 *Invoices are a paid feature.*\n\n"
-                "Upgrade to Basic (₦3,000/month) to send up to 10 invoices/month.\n\n"
-                "Or upgrade to Pro (₦6,000/month) for unlimited invoices!\n\n"
+                "Upgrade to Basic (from ₦3,500/month) to send up to 10 invoices/month.\n\n"
+                "Or upgrade to Pro (from ₦6,500/month) for unlimited invoices!\n\n"
+                "_Tip: yearly billing saves you ~2.5 months._\n\n"
                 "Type *UPGRADE* to see plans."
             )
             return False, message
@@ -177,7 +220,7 @@ class TierManager:
         if current_invoices >= max_invoices:
             message = (
                 f"📄 You've used {current_invoices}/{max_invoices} invoices this month.\n\n"
-                f"Upgrade to *Pro* (₦6,000/month) for unlimited invoices!\n\n"
+                f"Upgrade to *Pro* (from ₦6,500/month) for unlimited invoices!\n\n"
                 f"Type *UPGRADE* to see plans."
             )
             return False, message
@@ -197,7 +240,7 @@ class TierManager:
         if not limits.get('crm_insights'):
             message = (
                 "🧠 *Smart Insights (AI) is a Pro feature.*\n\n"
-                "Upgrade to *Pro* (₦6,000/month) and Kashia will read your numbers "
+                "Upgrade to *Pro* (from ₦6,500/month) and Kashia will read your numbers "
                 "and tell you what's really going on — best/worst margins, cash to "
                 "chase, who's gone quiet, and what to do about it.\n\n"
                 "Tap below or type *UPGRADE* to see plans."
@@ -219,7 +262,7 @@ class TierManager:
         if not limits['pdf_statements']:
             message = (
                 "📄 *PDF Statements are a paid feature.*\n\n"
-                "Upgrade to Basic (₦3,000/month) to generate professional "
+                "Upgrade to Basic (from ₦3,500/month) to generate professional "
                 "financial statements for your accountant or bank.\n\n"
                 "Type *UPGRADE* to see plans."
             )
@@ -279,25 +322,26 @@ class TierManager:
             "💎 *Kashia Plans*\n\n"
             "━━━━━━━━━━━━━━━━━━\n"
             "🆓 *FREE* (current)\n"
-            "  • 30 transactions/month\n"
+            "  • Log up to 30 sales a month\n"
             "  • 5 exports/month\n"
             "  • Basic text reports\n"
-            "  • No invoices\n\n"
+            "  • Your full history is always visible\n\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "💼 *BASIC — ₦3,000/month*\n"
+            "💼 *BASIC — from ₦3,500/month*\n"
             "  • Unlimited transactions\n"
             "  • Unlimited exports\n"
             "  • 10 invoices/month\n"
             "  • PDF financial statements\n"
             "  • Full CRM\n\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "🏆 *PRO — ₦6,000/month*\n"
+            "🏆 *PRO — from ₦6,500/month*\n"
             "  • Everything in Basic\n"
             "  • Unlimited invoices\n"
             "  • CRM insights & alerts\n"
             "  • Branded documents\n"
             "  • Priority support\n\n"
-            "━━━━━━━━━━━━━━━━━━\n\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "💡 *Pay yearly and save ~2.5 months.*\n\n"
             "Reply *BASIC* or *PRO* to upgrade."
         )
 
@@ -325,7 +369,7 @@ class TierManager:
             lines = [f"💳 *{plan_name}* — choose how long:", ""]
             buttons = []
             label = {"monthly": "Monthly", "quarterly": "Quarterly (save)",
-                     "yearly": "Yearly (2 months free)"}
+                     "yearly": "Yearly (best value — save ~2.5 months)"}
             for per in PERIODS:
                 disp = periods[per]["price_display"]
                 lines.append(f"• *{label[per]}* — {disp}")
@@ -517,15 +561,15 @@ class TierManager:
             return (
                 f"⚠️ *Transaction limit reached!*\n\n"
                 f"You've used {current}/{maximum} free transactions this month.\n\n"
-                f"Upgrade to *Basic* (₦3,000/month) for *unlimited* transactions.\n\n"
-                f"💡 That's ₦100/day — cheaper than a plate of rice!\n\n"
+                f"Upgrade to *Basic* (from ₦3,500/month) for *unlimited* transactions.\n\n"
+                f"💡 Pay yearly and it's about ₦82/day.\n\n"
                 f"Type *UPGRADE* to see plans."
             )
         elif feature == "exports":
             return (
                 f"📎 *Export limit reached!*\n\n"
                 f"You've used {current}/{maximum} free exports this month.\n\n"
-                f"Upgrade to *Basic* (₦3,000/month) for unlimited exports.\n\n"
+                f"Upgrade to *Basic* (from ₦3,500/month) for unlimited exports.\n\n"
                 f"Type *UPGRADE* to see plans."
             )
         else:

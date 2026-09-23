@@ -26,24 +26,26 @@ def _paystack_safe(user_id: str) -> str:
     return re.sub(r"[^A-Za-z0-9]", "_", str(user_id or ""))
 
 # Plan amounts in kobo (Paystack uses kobo = naira × 100), per billing PERIOD.
-# Yearly = pay for 10 months (owner decision: 2 months free); quarterly carries a
-# small discount. Monthly is the default and back-compat baseline.
-#   Basic: 3,000/mo · 8,500/qtr · 30,000/yr    Pro: 6,000/mo · 17,000/qtr · 60,000/yr
+# Pricing (2026-09, owner-approved). Annual is pushed hard as the retention lever
+# — yearly ≈ 2.5 months free vs monthly, quarterly a smaller discount. Amounts in
+# kobo (naira × 100).
+#   Basic: 3,500/mo · 9,000/qtr · 30,000/yr   (yr saves ~₦12,000 = ~3.4 mo)
+#   Pro:   6,500/mo · 17,000/qtr · 55,000/yr  (yr saves ~₦23,000 = ~3.5 mo)
 PLANS = {
     "basic": {
         "name": "Kashia Basic",
         "periods": {
-            "monthly":   {"amount": 300000,  "price_display": "₦3,000/month"},
-            "quarterly": {"amount": 850000,  "price_display": "₦8,500/quarter"},
+            "monthly":   {"amount": 350000,  "price_display": "₦3,500/month"},
+            "quarterly": {"amount": 900000,  "price_display": "₦9,000/quarter"},
             "yearly":    {"amount": 3000000, "price_display": "₦30,000/year"},
         },
     },
     "pro": {
         "name": "Kashia Pro",
         "periods": {
-            "monthly":   {"amount": 600000,   "price_display": "₦6,000/month"},
+            "monthly":   {"amount": 650000,   "price_display": "₦6,500/month"},
             "quarterly": {"amount": 1700000,  "price_display": "₦17,000/quarter"},
-            "yearly":    {"amount": 6000000,  "price_display": "₦60,000/year"},
+            "yearly":    {"amount": 5500000,  "price_display": "₦55,000/year"},
         },
     },
 }

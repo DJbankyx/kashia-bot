@@ -274,8 +274,8 @@ class SettingsHandler:
             responses.append(button_response(
                 "Want unlimited transactions and more?",
                 [
-                    {"id": "set_upgrade_basic", "title": "💼 Go Basic ₦3,000"},
-                    {"id": "set_upgrade_pro",   "title": "🏆 Go Pro ₦6,000"},
+                    {"id": "set_upgrade_basic", "title": "💼 Go Basic ₦3,500"},
+                    {"id": "set_upgrade_pro",   "title": "🏆 Go Pro ₦6,500"},
                 ]
             ))
 
@@ -298,8 +298,8 @@ class SettingsHandler:
             responses.append(button_response(
                 "Choose your plan:",
                 [
-                    {"id": "set_upgrade_basic", "title": "💼 Basic — ₦3,000/mo"},
-                    {"id": "set_upgrade_pro",   "title": "🏆 Pro — ₦6,000/mo"},
+                    {"id": "set_upgrade_basic", "title": "💼 Basic — from ₦3,500/mo"},
+                    {"id": "set_upgrade_pro",   "title": "🏆 Pro — from ₦6,500/mo"},
                 ]
             ))
         elif tier == "basic":
