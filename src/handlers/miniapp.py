@@ -775,6 +775,7 @@ def _recipe_write(event, user_id: str):
             unit=str(data.get("unit", "") or "").strip(),
             cost_per_unit=data.get("cost_per_unit"),
             mat_type=str(data.get("mat_type", "material") or "material").strip(),
+            new_material_name=str(data.get("new_material_name", "") or "").strip(),
         )
     else:  # remove_material
         res = prod.web_remove_material(user_id, key, data.get("index"))
@@ -1427,7 +1428,12 @@ _PAGE_HTML = """<!doctype html>
       <!-- Add-material mini form -->
       <div class="field" style="margin-top:12px">
         <label>Add material / cost</label>
-        <select id="rc-mat" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--line)"></select>
+        <select id="rc-mat" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--line)" onchange="rcMatChanged()"></select>
+      </div>
+      <!-- New-material name (shown only when "New material…" is picked). -->
+      <div class="field hidden" id="rc-newname-wrap">
+        <label>New material name</label>
+        <input id="rc-newname" placeholder="e.g. Flour">
       </div>
       <div class="row">
         <div class="field" style="flex:1">
@@ -1435,7 +1441,7 @@ _PAGE_HTML = """<!doctype html>
           <input id="rc-qty" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 2">
         </div>
         <div class="field" style="flex:1">
-          <label>Cost per (optional)</label>
+          <label id="rc-cost-label">Cost per (optional)</label>
           <input id="rc-cost" type="number" inputmode="numeric" min="0" placeholder="uses catalog cost">
         </div>
       </div>
@@ -2839,44 +2845,61 @@ _PAGE_HTML = """<!doctype html>
         list.appendChild(row);
       });
     }
-    // Populate the material picker from catalog raw materials / supplies.
+    // Populate the material picker from catalog raw materials / supplies, and
+    // ALWAYS offer "➕ New material…" so a fresh account can build a recipe
+    // without leaving the app (the server creates the material inline).
     var sel = document.getElementById("rc-mat");
     var avail = d.available_materials || [];
     sel.innerHTML = "";
-    if (!avail.length) {
+    document.getElementById("rc-add").disabled = false;
+    avail.forEach(function (m) {
       var o = document.createElement("option");
-      o.value = ""; o.textContent = "No raw materials in catalog — add one first";
+      o.value = m.key;
+      o.setAttribute("data-unit", m.unit || "");
+      o.setAttribute("data-type", m.item_type || "material");
+      o.textContent = m.name + (m.unit ? (" (" + m.unit + ")") : "") +
+        (m.cost ? (" · " + naira(m.cost)) : "");
       sel.appendChild(o);
-      document.getElementById("rc-add").disabled = true;
-    } else {
-      document.getElementById("rc-add").disabled = false;
-      avail.forEach(function (m) {
-        var o = document.createElement("option");
-        o.value = m.key;
-        o.setAttribute("data-unit", m.unit || "");
-        o.setAttribute("data-type", m.item_type || "material");
-        o.textContent = m.name + (m.unit ? (" (" + m.unit + ")") : "") +
-          (m.cost ? (" · " + naira(m.cost)) : "");
-        sel.appendChild(o);
-      });
-    }
+    });
+    var nn = document.createElement("option");
+    nn.value = "__new__";
+    nn.textContent = "\u2795 New material\u2026";
+    sel.appendChild(nn);
+    // Default to "New material…" when the catalog has none yet.
+    if (!avail.length) sel.value = "__new__";
+    rcMatChanged();
   }
+  // Toggle the new-material name field + adjust the cost label/placeholder.
+  window.rcMatChanged = function () {
+    var sel = document.getElementById("rc-mat");
+    var isNew = sel.value === "__new__";
+    document.getElementById("rc-newname-wrap").classList.toggle("hidden", !isNew);
+    var costInput = document.getElementById("rc-cost");
+    // For an existing material we can fall back to its catalog cost; a brand-new
+    // one has none yet, so guide the user to enter it.
+    costInput.placeholder = isNew ? "enter buy-cost" : "uses catalog cost";
+  };
   window.recipeAddMaterial = function () {
     var sel = document.getElementById("rc-mat");
     var matKey = sel.value;
     var err = document.getElementById("rc-err");
     if (!matKey) { err.textContent = "Pick a material."; return; }
+    var isNew = matKey === "__new__";
+    var newName = (document.getElementById("rc-newname").value || "").trim();
+    if (isNew && !newName) { err.textContent = "Enter the new material's name."; return; }
     var qtyRaw = document.getElementById("rc-qty").value;
     var qty = qtyRaw === "" ? null : parseFloat(qtyRaw);
     if (qty === null || !(qty > 0)) { err.textContent = "Enter a quantity per unit."; return; }
     var costRaw = document.getElementById("rc-cost").value;
     var opt = sel.options[sel.selectedIndex];
     var body = {
-      action: "add_material", key: recipeKey, material_key: matKey,
+      action: "add_material", key: recipeKey,
+      material_key: isNew ? "" : matKey,
       quantity: qty,
-      unit: opt ? (opt.getAttribute("data-unit") || "") : "",
-      mat_type: (opt && opt.getAttribute("data-type") === "overhead") ? "overhead" : "material"
+      unit: (isNew || !opt) ? "" : (opt.getAttribute("data-unit") || ""),
+      mat_type: (!isNew && opt && opt.getAttribute("data-type") === "overhead") ? "overhead" : "material"
     };
+    if (isNew) body.new_material_name = newName;
     if (costRaw !== "") body.cost_per_unit = Math.max(0, parseInt(costRaw, 10) || 0);
     var btn = document.getElementById("rc-add");
     btn.disabled = true; err.textContent = "";
@@ -2884,7 +2907,8 @@ _PAGE_HTML = """<!doctype html>
       .then(function (d) {
         document.getElementById("rc-qty").value = "";
         document.getElementById("rc-cost").value = "";
-        renderRecipe(d);
+        document.getElementById("rc-newname").value = "";
+        renderRecipe(d);   // re-lists materials (the new one now appears) + resets picker
         btn.disabled = false;
         if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
       })

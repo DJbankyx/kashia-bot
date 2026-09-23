@@ -1773,11 +1773,18 @@ class ProductionHandler:
 
     def web_add_material(self, phone_number: str, product_key: str,
                          material_key: str, quantity, unit: str = "",
-                         cost_per_unit=None, mat_type: str = "material") -> dict:
+                         cost_per_unit=None, mat_type: str = "material",
+                         new_material_name: str = "") -> dict:
         """Add (or update, by material name) one recipe line, then restamp cost.
 
         Reuses the catalog material's landing_cost when cost_per_unit is not
         given, matching the chat auto-fill behaviour.
+
+        Web inline-create: if new_material_name is given (the picker's "New
+        material…" option), the material is created in the catalog first —
+        tagged raw_material (or overhead when mat_type=="overhead") — so a fresh
+        account isn't forced back to chat just to build a recipe. This mirrors
+        the chat flow, which also auto-creates missing recipe materials.
         """
         user = self.db.get_user(phone_number) or {}
         catalog = user.get("product_catalog", {}) or {}
@@ -1786,17 +1793,53 @@ class ProductionHandler:
         if not isinstance(prod, dict):
             return {"ok": False, "error": "product not found"}
 
-        mat_product = products.get(material_key)
-        if not isinstance(mat_product, dict):
-            return {"ok": False, "error": "material not found in catalog"}
-        material_name = mat_product.get("name") or material_key
-
         try:
             qty = float(quantity)
         except (TypeError, ValueError):
             return {"ok": False, "error": "quantity must be a number"}
         if qty <= 0:
             return {"ok": False, "error": "quantity must be greater than 0"}
+
+        # Resolve the material: an existing catalog row by key, OR create a new
+        # one from new_material_name.
+        mat_product = products.get(material_key)
+        if not isinstance(mat_product, dict):
+            name = str(new_material_name or "").strip()
+            if not name:
+                return {"ok": False, "error": "material not found in catalog"}
+            new_key = name.lower().replace(" ", "_")
+            if new_key == product_key:
+                return {"ok": False, "error": "a material can't be the product itself"}
+            mat_product = products.get(new_key)
+            if not isinstance(mat_product, dict):
+                # Create the material as a proper catalog item so it also shows
+                # up in inventory + future recipe pickers.
+                new_type = "overhead" if mat_type == "overhead" else "raw_material"
+                init_cost = 0.0
+                if cost_per_unit not in (None, ""):
+                    try:
+                        init_cost = float(cost_per_unit)
+                    except (TypeError, ValueError):
+                        init_cost = 0.0
+                mat_product = {
+                    "name": name.title(),
+                    "stock": 0,
+                    "landing_cost": init_cost,
+                    "item_type": new_type,
+                    "category": "",
+                    "variants": [],
+                    "recipe": [],
+                    "conversions": {},
+                }
+                if unit:
+                    mat_product["primary_unit"] = unit
+                products[new_key] = mat_product
+                # Persist the new material immediately (self._save_recipe reloads
+                # the user, so the new product must be saved first).
+                catalog["products"] = products
+                self.db.update_user_field(phone_number, "product_catalog", catalog)
+            material_key = new_key
+        material_name = mat_product.get("name") or material_key
 
         if mat_type not in ("material", "overhead"):
             mat_type = "overhead" if mat_product.get("item_type") == "overhead" else "material"
