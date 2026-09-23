@@ -306,8 +306,14 @@ def _summary(event, user_id: str):
         owed_suppliers = pos["payables"]
         owed_expenses = 0
 
+    # Industry drives per-industry UI in the app (Stage 0). Read from the user,
+    # never guessed in JS. Fallback to trading (the baseline).
+    industry = (user.get("industry_class")
+                or user.get("business_type") or "trading")
+
     return _json(200, {
         "business": business,
+        "industry": industry,
         "period": period,
         "period_label": label,
         "pnl": {
@@ -375,6 +381,10 @@ def _row_from_product(p: dict, cat=None) -> dict:
         "has_variants": bool(p.get("_has_tree") or p.get("_has_variants")),
         "stock_value": stock_value,
         "item_type": p.get("item_type") or "",
+        # Stage 1: does this product carry a recipe? Finished/manufactured goods
+        # derive their cost from a recipe (Decision A), so the mfg/hybrid UI
+        # shows "Cost (from recipe)" instead of a manual cost field.
+        "has_recipe": bool(p.get("recipe")),
     }
 
 
@@ -489,6 +499,7 @@ def _product_write(event, user_id: str):
     db = Database()
     cat = CatalogHandler(None, db)
     products = cat._get_products(user_id) or {}
+    user = db.get_user(user_id) or {}   # for industry-aware write guards
 
     def _echo(k):
         updated = cat.get_normalized_product(user_id, k)
@@ -510,6 +521,12 @@ def _product_write(event, user_id: str):
             "category": str(data.get("category", "") or "").strip(),
             "variants": [],
         }
+        # Stage 1: let mfg/hybrid tag the item type on creation (finished_product
+        # / raw_material / supply). Only accept known values; trading omits it and
+        # ensure_item_types will auto-tag as before.
+        req_type = str(data.get("item_type", "") or "").strip()
+        if req_type in ("finished_product", "raw_material", "supply"):
+            products[new_key]["item_type"] = req_type
         cat._save_products(user_id, products)
         return _echo(new_key)
 
@@ -602,6 +619,21 @@ def _product_write(event, user_id: str):
     if action == "set_price":
         ok = cat.set_sale_price(user_id, key, value)
     elif action == "set_cost":
+        # Decision A: finished/manufactured goods derive cost from their recipe.
+        # A manual cost write on such a product would create a second source of
+        # truth (the exact confusion this stage removes), so reject it. The JS
+        # already hides the field, but this guards direct/replayed POSTs too.
+        # Raw materials/supplies keep a real manual buy-cost, and Trading is
+        # unaffected (its products aren't tagged finished_product).
+        industry = (user.get("industry_class")
+                    or user.get("business_type") or "trading")
+        if industry in ("manufacturing", "hybrid") and \
+                prod.get("item_type") == "finished_product":
+            return _json(409, {
+                "error": "This is a manufactured item — its cost comes from "
+                         "its recipe. Set the recipe in chat to update the cost.",
+                "recipe_driven": True,
+            })
         ok = cat.set_cost_direct(user_id, name, value, variant)
     elif action == "set_stock":
         res = cat.set_stock_exact(user_id, name, value, variant)
@@ -1206,6 +1238,19 @@ _PAGE_HTML = """<!doctype html>
         <label>Product name</label>
         <input id="add-name" placeholder="e.g. Hilux">
       </div>
+      <!-- Item type — only shown for Manufacturing/Hybrid. Choosing "finished"
+           up front means the edit sheet will treat its cost as recipe-driven,
+           while "raw material / supply" keeps a normal buy-cost. Trading never
+           sees this (its products are plain goods). -->
+      <div class="field hidden" id="add-type-wrap">
+        <label>What kind of item is this?</label>
+        <div class="chips" id="add-type">
+          <div class="chip active" data-it="finished_product" onclick="addSetType('finished_product')">🏭 Finished product</div>
+          <div class="chip" data-it="raw_material" onclick="addSetType('raw_material')">🧱 Raw material</div>
+          <div class="chip" data-it="supply" onclick="addSetType('supply')">🧰 Supply</div>
+        </div>
+        <div class="sub2" id="add-type-hint" style="margin-top:6px">A finished product's cost is calculated from its recipe. Set the recipe in chat after adding.</div>
+      </div>
       <div class="field">
         <label>Category (optional)</label>
         <input id="add-cat" placeholder="e.g. Vehicles">
@@ -1319,9 +1364,17 @@ _PAGE_HTML = """<!doctype html>
         <label>Selling price (\u20a6)</label>
         <input id="sh-price" type="number" inputmode="numeric" min="0">
       </div>
-      <div class="field">
+      <div class="field" id="sh-cost-wrap">
         <label>Cost per unit (\u20a6)</label>
         <input id="sh-cost" type="number" inputmode="numeric" min="0">
+      </div>
+      <!-- Mfg/Hybrid finished goods: cost is recipe-driven (Decision A). Show
+           the rolled-up cost read-only + point the owner to Set Recipe in chat.
+           Hidden for Trading and for raw materials, which keep a manual cost. -->
+      <div class="field hidden" id="sh-recipe-cost-wrap">
+        <label>Cost (from recipe)</label>
+        <div id="sh-recipe-cost" class="readonly-val" style="padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--card2,#f5f5f7)"></div>
+        <div class="sub2" id="sh-recipe-hint" style="margin-top:6px"></div>
       </div>
       <div class="row">
         <div class="field" style="flex:1">
@@ -1457,6 +1510,20 @@ _PAGE_HTML = """<!doctype html>
   var recFrom = "";
   var recTo = "";
   var recSpecific = "";   // records specific month/quarter/year query, if picked
+
+  // ── Industry awareness (Stage 0) ──────────────────────────────────────
+  // The server tells us the business industry via /api/summary. The mini app
+  // uses this ONLY to shape UI/terminology (labels, which catalog fields to
+  // show). NO cost/accounting math lives in JS — the engine owns that.
+  // Default "trading" keeps the control industry byte-for-byte unchanged even
+  // before summary loads. Manufacturing + Hybrid share the mfg model (recipes).
+  var APP = { industry: "trading" };
+  function isTrading()  { return APP.industry === "trading"; }
+  function isMfg()      { return APP.industry === "manufacturing"; }
+  function isServices() { return APP.industry === "services"; }
+  function isHybrid()   { return APP.industry === "hybrid"; }
+  // "recipe model" = finished goods derive cost from a recipe (mfg + hybrid).
+  function usesRecipes() { return isMfg() || isHybrid(); }
 
   // Web page (not a PDF) so the ₦ glyph is safe and reads cleaner than "NGN".
   function naira(n) { return "\u20a6" + Number(n||0).toLocaleString("en-NG"); }
@@ -1617,6 +1684,9 @@ _PAGE_HTML = """<!doctype html>
     msg.textContent = "";
     api("api/summary?" + periodQuery())
       .then(function (d) {
+        // Stage 0: capture the industry from the summary payload so catalog +
+        // other tabs can shape their UI. Falls back to "trading" (control).
+        if (d.industry) APP.industry = d.industry;
         document.getElementById("biz").textContent = d.business || "Kashia";
         document.getElementById("period").textContent = (d.period_label || "");
         var pl = document.getElementById("periodlabel");
@@ -2125,8 +2195,33 @@ _PAGE_HTML = """<!doctype html>
     document.getElementById("sh-cat").value = p.category || "";
     document.getElementById("sh-err").textContent = "";
     document.getElementById("sh-save").disabled = false;
+    // Stage 1 — recipe-driven cost for mfg/hybrid finished goods (Decision A).
+    // Hide the manual cost input and show the rolled-up recipe cost read-only.
+    // Trading + raw materials keep the manual cost field exactly as before.
+    applyCostFieldMode(p);
     document.getElementById("overlay").classList.remove("hidden");
   };
+  // Decide whether the edit sheet shows a manual cost input or a read-only
+  // "Cost (from recipe)" display, based on industry + the product's item_type.
+  function applyCostFieldMode(p) {
+    var manualWrap = document.getElementById("sh-cost-wrap");
+    var recipeWrap = document.getElementById("sh-recipe-cost-wrap");
+    if (!manualWrap || !recipeWrap) return;
+    var isFinished = (p.item_type === "finished_product");
+    var recipeDriven = usesRecipes() && isFinished;
+    if (recipeDriven) {
+      manualWrap.classList.add("hidden");
+      recipeWrap.classList.remove("hidden");
+      document.getElementById("sh-recipe-cost").textContent =
+        p.cost ? naira(p.cost) : "Not set yet";
+      document.getElementById("sh-recipe-hint").textContent = p.has_recipe
+        ? "Cost is calculated from this item's recipe. To change it, update the recipe in chat (Catalog → Set Recipe)."
+        : "No recipe yet. Set this item's recipe in chat (Catalog → Set Recipe) so its cost is calculated automatically.";
+    } else {
+      manualWrap.classList.remove("hidden");
+      recipeWrap.classList.add("hidden");
+    }
+  }
   window.closeSheet = function () {
     document.getElementById("overlay").classList.add("hidden");
     editing = null;
@@ -2273,7 +2368,10 @@ _PAGE_HTML = """<!doctype html>
       ops.push({ action: "set_stock", key: key, value: newStock });
     if (newPrice !== null && newPrice !== Number(editing.sale_price || 0))
       ops.push({ action: "set_price", key: key, value: newPrice });
-    if (newCost !== null && newCost !== Number(editing.cost || 0))
+    // Recipe-driven finished goods (mfg/hybrid) never send a manual cost — the
+    // cost field is hidden for them and cost comes from the recipe (Decision A).
+    var costLocked = usesRecipes() && (editing.item_type === "finished_product");
+    if (!costLocked && newCost !== null && newCost !== Number(editing.cost || 0))
       ops.push({ action: "set_cost", key: key, value: newCost });
     if (newUnit !== (editing.unit || ""))
       ops.push({ action: "set_unit", key: key, unit: newUnit });
@@ -2340,11 +2438,27 @@ _PAGE_HTML = """<!doctype html>
   };
 
   // ── Add product ──
+  // Chosen item type for a NEW product (mfg/hybrid only). Default finished.
+  var addItemType = "finished_product";
+  window.addSetType = function (t) {
+    addItemType = t;
+    var chips = document.querySelectorAll("#add-type .chip");
+    for (var i = 0; i < chips.length; i++) {
+      chips[i].classList.toggle("active", chips[i].getAttribute("data-it") === t);
+    }
+    document.getElementById("add-type-hint").textContent = (t === "finished_product")
+      ? "A finished product's cost is calculated from its recipe. Set the recipe in chat after adding."
+      : "A raw material or supply has a normal buy-cost you set on the product.";
+  };
   window.openAddProduct = function () {
     document.getElementById("add-name").value = "";
     document.getElementById("add-cat").value = "";
     document.getElementById("add-err").textContent = "";
     document.getElementById("add-save").disabled = false;
+    // Item-type chooser only for mfg/hybrid; default to finished product.
+    var typeWrap = document.getElementById("add-type-wrap");
+    if (usesRecipes()) { typeWrap.classList.remove("hidden"); addSetType("finished_product"); }
+    else { typeWrap.classList.add("hidden"); addItemType = ""; }
     document.getElementById("addOverlay").classList.remove("hidden");
   };
   window.closeAddProduct = function () {
@@ -2357,7 +2471,10 @@ _PAGE_HTML = """<!doctype html>
     if (!name) { err.textContent = "Enter a product name."; return; }
     var btn = document.getElementById("add-save");
     btn.disabled = true; err.textContent = "";
-    apiPost("api/product", { action: "add", name: name, category: cat })
+    var body = { action: "add", name: name, category: cat };
+    // Only mfg/hybrid tag an item type up front; trading stays a plain product.
+    if (usesRecipes() && addItemType) body.item_type = addItemType;
+    apiPost("api/product", body)
       .then(function (j) {
         if (j.product) (invData = invData || []).push(j.product);
         closeAddProduct();
