@@ -344,28 +344,38 @@ class TierManager:
     # UPGRADE FLOW
     # ==========================================
 
-    def get_upgrade_options(self):
+    def get_upgrade_options(self, tier="free"):
         """
         Show upgrade plans.
+
+        `tier` marks which plan the user is CURRENTLY on with "(current)" — the
+        old version hardcoded "(current)" on FREE, so a paying Basic/Pro user
+        still saw FREE flagged as their plan (wrong). The FREE bullets now also
+        state the 14-day full-access trial (the pricing redesign gives new
+        accounts unlimited for 14 days; the "30 sales/month" cap only applies
+        AFTER the trial), so the screen matches actual behaviour.
         Returns: WhatsApp-formatted text
         """
+        tier = str(tier or "free").lower()
+        cur = lambda t: "  ← *current*" if tier == t else ""
         return (
             "💎 *Kashia Plans*\n\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "🆓 *FREE* (current)\n"
-            "  • Log up to 30 sales a month\n"
+            f"🆓 *FREE*{cur('free')}\n"
+            "  • 14 days FREE unlimited to start\n"
+            "  • Then log up to 30 sales a month\n"
             "  • 5 exports/month\n"
             "  • Basic text reports\n"
             "  • Your full history is always visible\n\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "💼 *BASIC — from ₦3,500/month*\n"
+            f"💼 *BASIC — from ₦3,500/month*{cur('basic')}\n"
             "  • Unlimited transactions\n"
             "  • Unlimited exports\n"
             "  • 10 invoices/month\n"
             "  • PDF financial statements\n"
             "  • Full CRM\n\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "🏆 *PRO — from ₦6,500/month*\n"
+            f"🏆 *PRO — from ₦6,500/month*{cur('pro')}\n"
             "  • Everything in Basic\n"
             "  • Unlimited invoices\n"
             "  • CRM insights & alerts\n"

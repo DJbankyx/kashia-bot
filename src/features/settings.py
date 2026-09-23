@@ -290,7 +290,7 @@ class SettingsHandler:
         user = self.db.get_user(phone_number) or {}
         tier = user.get("tier", "free")
 
-        plan_text = self.tier_manager.get_upgrade_options()
+        plan_text = self.tier_manager.get_upgrade_options(tier)
 
         responses = [text_response(plan_text)]
 
