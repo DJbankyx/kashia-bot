@@ -270,6 +270,81 @@ def lambda_handler(event, context):
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
 
+def _catalog_health(user: dict, industry: str) -> dict:
+    """Stage 4 — a gentle, catalog-first setup check.
+
+    Scans the user's products and counts setup gaps that hurt accuracy, so the
+    app can nudge (never block) the owner to finish setup. Computed server-side
+    (has the full catalog + industry); the app only renders the counts.
+
+    Gaps flagged:
+      - finished goods (mfg/hybrid) with NO recipe → cost can't be derived
+      - raw materials / supplies with NO cost → COGS/margin understated
+      - products with NO selling price → margin unknown
+      - products with NO unit → quantity/valuation ambiguous
+    Trading has no recipe concept, so that check is skipped for it.
+    Returns {total, complete, issues:{no_recipe,no_cost,no_price,no_unit}, tips:[...]}.
+    """
+    catalog = user.get("product_catalog", {}) or {}
+    products = catalog.get("products", {}) or {}
+    uses_recipes = industry in ("manufacturing", "hybrid")
+
+    no_recipe = no_cost = no_price = no_unit = 0
+    total = 0
+    for key, p in products.items():
+        if not isinstance(p, dict):
+            continue
+        total += 1
+        item_type = p.get("item_type", "")
+        has_tree = bool(p.get("variant_tree") or p.get("_has_tree"))
+        # Variant-tree products carry cost/stock on leaves — don't false-flag
+        # them for a missing product-level cost.
+        cost = float(p.get("landing_cost", 0) or 0)
+        price = float(p.get("sale_price", 0) or 0)
+        unit = str(p.get("primary_unit", "") or "").strip()
+        recipe = p.get("recipe") or []
+
+        if uses_recipes and item_type == "finished_product" and not recipe:
+            no_recipe += 1
+        # Cost gap: raw materials / supplies need a buy-cost. Finished goods get
+        # cost from the recipe, so a missing product cost there isn't a gap.
+        if item_type in ("raw_material", "supply", "overhead", "") and not has_tree:
+            if item_type != "" or not uses_recipes:  # plain products count in trading
+                if cost <= 0:
+                    no_cost += 1
+        if price <= 0 and item_type not in ("raw_material", "supply", "overhead"):
+            no_price += 1
+        if not unit:
+            no_unit += 1
+
+    issues = {
+        "no_recipe": no_recipe,
+        "no_cost": no_cost,
+        "no_price": no_price,
+        "no_unit": no_unit,
+    }
+    issue_total = no_recipe + no_cost + no_price + no_unit
+    complete = (total > 0 and issue_total == 0)
+
+    tips = []
+    if no_recipe:
+        tips.append(f"{no_recipe} finished product(s) have no recipe — set one so cost is calculated.")
+    if no_cost:
+        tips.append(f"{no_cost} item(s) have no cost — add it for accurate profit.")
+    if no_price:
+        tips.append(f"{no_price} product(s) have no selling price — set it to see margin.")
+    if no_unit:
+        tips.append(f"{no_unit} product(s) have no unit — add one (e.g. piece, kg).")
+
+    return {
+        "total": total,
+        "complete": complete,
+        "issue_count": issue_total,
+        "issues": issues,
+        "tips": tips,
+    }
+
+
 def _summary(event, user_id: str):
     """Dashboard numbers for a period. Reuses the accounting engine + the SAME
     period boundaries as the chat dashboard (reports._date_range)."""
@@ -351,6 +426,8 @@ def _summary(event, user_id: str):
             "net_position": pos["net_worth_proxy"],
         },
         "uncosted_sales": pnl["uncosted_count"],
+        # Stage 4: catalog-first setup health (nudge, never blocks).
+        "catalog_health": _catalog_health(user, industry),
     })
 
 
@@ -1241,6 +1318,16 @@ _PAGE_HTML = """<!doctype html>
   <button class="btn save" id="recordBtn" style="width:100%;margin-bottom:12px" onclick="openRecord()">➕ Record a transaction</button>
 
   <div id="view-dash">
+    <!-- Stage 4: catalog-first setup nudge. Gentle + dismissable; never blocks. -->
+    <div id="catnudge" class="hidden" style="background:var(--card);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:12px;padding:12px 14px;margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+        <div style="font-weight:700;font-size:14px" id="catnudge-title">Finish setting up your catalog</div>
+        <div onclick="dismissNudge()" style="cursor:pointer;color:var(--hint);font-size:18px;line-height:1">✕</div>
+      </div>
+      <div class="sub2" style="margin:4px 0 8px">Good catalog setup drives accurate cost, margin and reports.</div>
+      <div id="catnudge-tips"></div>
+      <button class="btn save" style="width:100%;margin-top:8px" onclick="showTab('cat')">📦 Open catalog</button>
+    </div>
     <div class="chips" id="chips"></div>
     <div class="chips hidden" id="dash-more-panel" style="flex-wrap:wrap"></div>
     <div class="datebox hidden" id="datebox">
@@ -1687,6 +1774,37 @@ _PAGE_HTML = """<!doctype html>
     if (crmCust) crmCust.textContent = "\ud83d\udc64 " + t("customers");
   }
 
+  // ── Catalog-first setup nudge (Stage 4) ─────────────────────────────
+  // Session-scoped dismiss: hidden until the app is reopened, then shown again
+  // if setup is still incomplete. No blocking, ever.
+  var nudgeDismissed = false;
+  window.dismissNudge = function () {
+    nudgeDismissed = true;
+    var el = document.getElementById("catnudge");
+    if (el) el.classList.add("hidden");
+  };
+  function renderCatNudge(h) {
+    var box = document.getElementById("catnudge");
+    if (!box) return;
+    // Nothing to nudge: no catalog yet handled elsewhere; hide when complete,
+    // dismissed, or no issues.
+    if (nudgeDismissed || !h || !h.issue_count || h.complete) {
+      box.classList.add("hidden");
+      return;
+    }
+    var tips = h.tips || [];
+    var wrap = document.getElementById("catnudge-tips");
+    wrap.innerHTML = "";
+    tips.forEach(function (tp) {
+      var row = document.createElement("div");
+      row.className = "sub2";
+      row.style.cssText = "margin:3px 0;color:var(--text)";
+      row.textContent = "• " + tp;
+      wrap.appendChild(row);
+    });
+    box.classList.remove("hidden");
+  }
+
   // Web page (not a PDF) so the ₦ glyph is safe and reads cleaner than "NGN".
   function naira(n) { return "\u20a6" + Number(n||0).toLocaleString("en-NG"); }
   function setSigned(id, n) {
@@ -1851,6 +1969,8 @@ _PAGE_HTML = """<!doctype html>
         if (d.industry) APP.industry = d.industry;
         // Stage 3: apply industry wording to static labels (once).
         applyIndustryLabels();
+        // Stage 4: catalog-first setup nudge (gentle, dismissable).
+        renderCatNudge(d.catalog_health);
         document.getElementById("biz").textContent = d.business || "Kashia";
         document.getElementById("period").textContent = (d.period_label || "");
         var pl = document.getElementById("periodlabel");
