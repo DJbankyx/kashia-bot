@@ -713,7 +713,8 @@ def _product_write(event, user_id: str):
                 prod.get("item_type") == "finished_product":
             return _json(409, {
                 "error": "This is a manufactured item — its cost comes from "
-                         "its recipe. Set the recipe in chat to update the cost.",
+                         "its recipe. Open it and tap \"Set / edit recipe\" to "
+                         "change the cost.",
                 "recipe_driven": True,
             })
         ok = cat.set_cost_direct(user_id, name, value, variant)
@@ -1401,7 +1402,7 @@ _PAGE_HTML = """<!doctype html>
           <div class="chip" data-it="raw_material" onclick="addSetType('raw_material')">🧱 Raw material</div>
           <div class="chip" data-it="supply" onclick="addSetType('supply')">🧰 Supply</div>
         </div>
-        <div class="sub2" id="add-type-hint" style="margin-top:6px">A finished product's cost is calculated from its recipe. Set the recipe in chat after adding.</div>
+        <div class="sub2" id="add-type-hint" style="margin-top:6px">A finished product's cost is calculated from its recipe. After adding, tap it → "📋 Set / edit recipe" to build the recipe here.</div>
       </div>
       <div class="field">
         <label>Category (optional)</label>
@@ -1454,9 +1455,12 @@ _PAGE_HTML = """<!doctype html>
           <input id="rc-unit" placeholder="e.g. kg, litre, kW, sec">
         </div>
       </div>
+      <div class="sub2" id="rc-unit-hint" style="margin-top:-6px;margin-bottom:12px">
+        💡 Use the SAME unit you track this material's stock in (e.g. if you buy nylon in kg, write kg here). Mixing units — kg here but grams in stock — makes the cost and stock deduction wrong.
+      </div>
       <div class="field">
         <label id="rc-cost-label">Cost per unit (optional)</label>
-        <input id="rc-cost" type="number" inputmode="numeric" min="0" placeholder="uses catalog cost">
+        <input id="rc-cost" type="number" inputmode="decimal" min="0" step="any" placeholder="uses catalog cost">
       </div>
       <div class="sheeterr" id="rc-err"></div>
       <button class="btn save" id="rc-add" style="width:100%" onclick="recipeAddMaterial()">➕ Add to recipe</button>
@@ -1628,11 +1632,12 @@ _PAGE_HTML = """<!doctype html>
       <div class="field" id="rec-qty-wrap">
         <label id="rec-qty-label">Quantity</label>
         <input id="rec-qty" type="number" inputmode="numeric" min="1" value="1">
-        <div class="sub2">In the product's unit (set the unit in Catalog).</div>
+        <div class="sub2">💡 Counted in this item's unit (set the unit on the product in Catalog). Stock drops by this amount.</div>
       </div>
       <div class="field" id="rec-cost-wrap">
         <label id="rec-cost-label">Cost of goods (total, \u20a6) — optional</label>
         <input id="rec-cost" type="number" inputmode="numeric" min="0" placeholder="for accurate profit">
+        <div class="sub2">💡 Leave blank to use the cost saved on the product. Enter the TOTAL cost for this sale (all units), not per-unit — it sets your profit.</div>
       </div>
       <div class="field">
         <label id="rec-who-label">Customer (optional)</label>
@@ -2536,8 +2541,8 @@ _PAGE_HTML = """<!doctype html>
       document.getElementById("sh-recipe-cost").textContent =
         p.cost ? naira(p.cost) : "Not set yet";
       document.getElementById("sh-recipe-hint").textContent = p.has_recipe
-        ? "Cost is calculated from this item's recipe. To change it, update the recipe in chat (Catalog → Set Recipe)."
-        : "No recipe yet. Set this item's recipe in chat (Catalog → Set Recipe) so its cost is calculated automatically.";
+        ? "Cost is calculated from this item's recipe. Tap \"Set / edit recipe\" below to change it."
+        : "No recipe yet. Tap \"Set / edit recipe\" below so its cost is calculated automatically.";
     } else {
       manualWrap.classList.remove("hidden");
       recipeWrap.classList.add("hidden");
@@ -2768,7 +2773,7 @@ _PAGE_HTML = """<!doctype html>
       chips[i].classList.toggle("active", chips[i].getAttribute("data-it") === t);
     }
     document.getElementById("add-type-hint").textContent = (t === "finished_product")
-      ? "A finished product's cost is calculated from its recipe. Set the recipe in chat after adding."
+      ? "A finished product's cost is calculated from its recipe. After adding, tap it → \"📋 Set / edit recipe\"."
       : "A raw material or supply has a normal buy-cost you set on the product.";
   };
   window.openAddProduct = function () {
@@ -2970,7 +2975,9 @@ _PAGE_HTML = """<!doctype html>
       mat_type: matType
     };
     if (isNew) body.new_material_name = newName;
-    if (costRaw !== "") body.cost_per_unit = Math.max(0, parseInt(costRaw, 10) || 0);
+    // Cost/rate may be fractional (e.g. ₦0.05/gram, ₦0.5/sec) — parseFloat, not
+    // parseInt, so small per-unit rates aren't truncated to 0. Engine takes float.
+    if (costRaw !== "") body.cost_per_unit = Math.max(0, parseFloat(costRaw) || 0);
     var btn = document.getElementById("rc-add");
     btn.disabled = true; err.textContent = "";
     apiPost("api/recipe", body)
