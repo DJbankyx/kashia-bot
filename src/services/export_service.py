@@ -13,11 +13,29 @@ from openpyxl.utils import get_column_letter
 from services.database import Database
 from services.whatsapp_client import WhatsAppClient
 from services.messaging_client import resolve_client
+from utils.money import to_money, money_round
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 BUCKET_NAME = os.environ.get('GENERATED_FILES_BUCKET', 'kashia-generated-files-dev')
+
+
+def _m(value) -> str:
+    """Kobo-precise money string for report text (no currency symbol; callers
+    prepend 'NGN'). Whole -> "1,500", kobo -> "1,500.06", sub-naira -> up to 4dp."""
+    d = to_money(value)
+    sign = "-" if d < 0 else ""
+    mag = abs(d)
+    if mag == 0:
+        return "0"
+    if mag < 1:
+        body = f"{float(mag):.4f}".rstrip("0").rstrip(".")
+    elif mag == mag.to_integral_value():
+        body = f"{int(mag):,}"
+    else:
+        body = f"{float(mag):,.2f}"
+    return f"{sign}{body}"
 
 
 class ExportService:
@@ -68,7 +86,8 @@ class ExportService:
             top=Side(style='thin'),
             bottom=Side(style='thin')
         )
-        money_format = '#,##0'
+        # Show kobo only when present: whole naira -> "1,500", kobo -> "1,500.06".
+        money_format = '#,##0.##'
         income_fill = PatternFill(start_color="E8F5E9", end_color="E8F5E9", fill_type="solid")
         expense_fill = PatternFill(start_color="FFF3E0", end_color="FFF3E0", fill_type="solid")
 
@@ -85,7 +104,7 @@ class ExportService:
             ws1.cell(row=row_idx, column=2, value=tx.get('description', ''))
             ws1.cell(row=row_idx, column=3, value=tx.get('type', '').title())
 
-            amount_cell = ws1.cell(row=row_idx, column=4, value=int(tx.get('amount', 0)))
+            amount_cell = ws1.cell(row=row_idx, column=4, value=money_round(tx.get('amount', 0)))
             amount_cell.number_format = money_format
 
             ws1.cell(row=row_idx, column=5, value=tx.get('category', ''))
@@ -106,9 +125,9 @@ class ExportService:
         # ---- SHEET 2: Summary ----
         ws2 = wb.create_sheet("Summary")
 
-        income = sum(int(tx.get('amount', 0)) for tx in transactions if tx.get('type') in ('income', 'sale'))
-        purchases = sum(int(tx.get('amount', 0)) for tx in transactions if tx.get('type') == 'purchase')
-        expenses = sum(int(tx.get('amount', 0)) for tx in transactions if tx.get('type') == 'expense')
+        income = sum((to_money(tx.get('amount', 0)) for tx in transactions if tx.get('type') in ('income', 'sale')), to_money(0))
+        purchases = sum((to_money(tx.get('amount', 0)) for tx in transactions if tx.get('type') == 'purchase'), to_money(0))
+        expenses = sum((to_money(tx.get('amount', 0)) for tx in transactions if tx.get('type') == 'expense'), to_money(0))
         gross_profit = income - purchases
         net_profit = gross_profit - expenses
 
@@ -136,11 +155,12 @@ class ExportService:
                 lc = extra.get('landing_cost') or tx.get('landing_cost')
 
                 # Fallback: lookup from catalog
-                if not lc or int(lc) <= 0:
+                lc = to_money(lc) if lc else to_money(0)
+                if lc <= 0:
                     desc = tx.get('description', tx.get('item_name', ''))
                     brand = tx.get('brand', '')
                     search_name = f"{brand} {desc}".strip() if brand else desc
-                    catalog_cost = cat_handler.get_landing_cost(phone_number, search_name)
+                    catalog_cost = to_money(cat_handler.get_landing_cost(phone_number, search_name))
                     if catalog_cost > 0:
                         import re as _re
                         qty_str = tx.get('quantity', '1')
@@ -148,17 +168,17 @@ class ExportService:
                         if qty_str:
                             match = _re.match(r'^(\d+)', str(qty_str))
                             qty = int(match.group(1)) if match else 1
-                        lc = catalog_cost * qty
+                        lc = catalog_cost * to_money(qty)
 
-                if lc and int(lc) > 0:
+                if lc > 0:
                     costed_sales.append({
-                        "revenue": int(tx.get('amount', 0)),
-                        "cost": int(lc),
+                        "revenue": to_money(tx.get('amount', 0)),
+                        "cost": lc,
                     })
 
         if costed_sales:
-            margin_rev  = sum(s["revenue"] for s in costed_sales)
-            margin_cost = sum(s["cost"] for s in costed_sales)
+            margin_rev  = sum((s["revenue"] for s in costed_sales), to_money(0))
+            margin_cost = sum((s["cost"] for s in costed_sales), to_money(0))
             margin      = margin_rev - margin_cost
             margin_pct  = int(margin / margin_rev * 100) if margin_rev > 0 else 0
             summary_data.extend([
@@ -173,11 +193,17 @@ class ExportService:
         ws2.cell(row=4, column=1, value="Metric").font = Font(bold=True)
         ws2.cell(row=4, column=2, value="Amount (NGN)").font = Font(bold=True)
 
+        from decimal import Decimal as _Dec
         for i, (label, value) in enumerate(summary_data, 5):
             ws2.cell(row=i, column=1, value=label)
-            cell = ws2.cell(row=i, column=2, value=value)
-            if isinstance(value, int):
+            # Money values (int/float/Decimal) get kobo-precise rounding + the
+            # money number format; the 'Total Transactions' count and text stay
+            # as-is. label check keeps the plain integer count unformatted.
+            if isinstance(value, (int, float, _Dec)) and not isinstance(value, bool) and label != 'Total Transactions':
+                cell = ws2.cell(row=i, column=2, value=money_round(value))
                 cell.number_format = money_format
+            else:
+                ws2.cell(row=i, column=2, value=value)
 
         ws2.column_dimensions['A'].width = 25
         ws2.column_dimensions['B'].width = 20
@@ -189,7 +215,7 @@ class ExportService:
         for tx in transactions:
             if tx.get('type') in ('expense', 'purchase'):
                 cat = tx.get('category', 'Other')
-                categories[cat] = categories.get(cat, 0) + int(tx.get('amount', 0))
+                categories[cat] = categories.get(cat, to_money(0)) + to_money(tx.get('amount', 0))
 
         sorted_cats = sorted(categories.items(), key=lambda x: x[1], reverse=True)
 
@@ -201,10 +227,10 @@ class ExportService:
             cell.font = header_font
             cell.fill = header_fill
 
-        total_expense = sum(categories.values())
+        total_expense = sum(categories.values(), to_money(0))
         for i, (cat, amount) in enumerate(sorted_cats, 4):
             ws3.cell(row=i, column=1, value=cat)
-            ws3.cell(row=i, column=2, value=amount).number_format = money_format
+            ws3.cell(row=i, column=2, value=money_round(amount)).number_format = money_format
             pct = (amount / total_expense * 100) if total_expense > 0 else 0
             ws3.cell(row=i, column=3, value=f"{pct:.1f}%")
             count = len([tx for tx in transactions if tx.get('category') == cat and tx.get('type') in ('expense', 'purchase')])
@@ -279,8 +305,8 @@ class ExportService:
         for i, contact in enumerate(contacts, 2):
             ws.cell(row=i, column=1, value=contact.get('name', ''))
             ws.cell(row=i, column=2, value=contact.get('type', '').title())
-            ws.cell(row=i, column=3, value=int(contact.get('total_paid', 0)))
-            ws.cell(row=i, column=4, value=int(contact.get('total_received', 0)))
+            ws.cell(row=i, column=3, value=money_round(contact.get('total_paid', 0))).number_format = '#,##0.##'
+            ws.cell(row=i, column=4, value=money_round(contact.get('total_received', 0))).number_format = '#,##0.##'
             ws.cell(row=i, column=5, value=int(contact.get('transaction_count', 0)))
             ws.cell(row=i, column=6, value=contact.get('last_transaction_date', ''))
 
@@ -498,20 +524,23 @@ class ExportService:
             cell.fill = header_fill
 
         # Data rows
-        total = 0
+        money_format = '#,##0.##'  # show kobo only when present
+        total = to_money(0)
         for row_idx, tx in enumerate(sorted(transactions, key=lambda x: x.get('date', ''), reverse=True), 6):
-            amount = int(tx.get('amount', 0))
+            amount = to_money(tx.get('amount', 0))
             total += amount
             ws.cell(row=row_idx, column=1, value=tx.get('date', ''))
             ws.cell(row=row_idx, column=2, value=tx.get('description', '')[:50])
             ws.cell(row=row_idx, column=3, value=tx.get('category', ''))
             ws.cell(row=row_idx, column=4, value=tx.get('vendor', ''))
-            ws.cell(row=row_idx, column=5, value=amount)
+            ws.cell(row=row_idx, column=5, value=money_round(amount)).number_format = money_format
 
         # Total row
         total_row = 6 + len(transactions)
         ws.cell(row=total_row, column=4, value='TOTAL').font = Font(bold=True)
-        ws.cell(row=total_row, column=5, value=total).font = Font(bold=True)
+        _total_cell = ws.cell(row=total_row, column=5, value=money_round(total))
+        _total_cell.font = Font(bold=True)
+        _total_cell.number_format = money_format
 
         # Column widths
         ws.column_dimensions['A'].width = 12
@@ -533,7 +562,7 @@ class ExportService:
             caption=f"{label} - {period_label} ({len(transactions)} transactions)")
         if not ok:
             return [{"type": "text", "content": "⚠️ I built the Excel but couldn't deliver it. Please try again in a moment."}]
-        return [{"type": "text", "content": f"\u2705 Excel exported!\n\n{label} \u2014 {period_label}\n{len(transactions)} transactions | Total: NGN {total:,}\n\n\U0001f4ce Check your chat for the file."}]
+        return [{"type": "text", "content": f"\u2705 Excel exported!\n\n{label} \u2014 {period_label}\n{len(transactions)} transactions | Total: NGN {_m(total)}\n\n\U0001f4ce Check your chat for the file."}]
 
     def _export_filtered_pdf(self, phone_number, transactions, label, period_label, business_name):
         """Generate PDF report for filtered transactions"""
@@ -562,23 +591,23 @@ class ExportService:
         story.append(Spacer(1, 10*mm))
 
         # Summary
-        total = sum(int(tx.get('amount', 0)) for tx in transactions)
-        story.append(Paragraph(f"<b>Total:</b> NGN {total:,}", styles['Normal']))
+        total = sum((to_money(tx.get('amount', 0)) for tx in transactions), to_money(0))
+        story.append(Paragraph(f"<b>Total:</b> NGN {_m(total)}", styles['Normal']))
         story.append(Paragraph(f"<b>Transactions:</b> {len(transactions)}", styles['Normal']))
         story.append(Spacer(1, 8*mm))
 
         # Table
         table_data = [['Date', 'Description', 'Category', 'Vendor', 'Amount (NGN)']]
         for tx in sorted(transactions, key=lambda x: x.get('date', ''), reverse=True):
-            amount = int(tx.get('amount', 0))
+            amount = to_money(tx.get('amount', 0))
             table_data.append([
                 tx.get('date', ''),
                 tx.get('description', '')[:35],
                 tx.get('category', ''),
                 tx.get('vendor', ''),
-                f"NGN {amount:,}"
+                f"NGN {_m(amount)}"
             ])
-        table_data.append(['', '', '', 'TOTAL', f"NGN {total:,}"])
+        table_data.append(['', '', '', 'TOTAL', f"NGN {_m(total)}"])
 
         t = Table(table_data, colWidths=[2.5*cm, 5*cm, 4*cm, 3.5*cm, 3*cm])
         t.setStyle(TableStyle([
@@ -603,7 +632,7 @@ class ExportService:
                                      caption=f"{label} - {period_label}")
         if not ok:
             return [{"type": "text", "content": "⚠️ I built the PDF but couldn't deliver it. Please try again in a moment."}]
-        return [{"type": "text", "content": f"\u2705 PDF exported!\n\n{label} \u2014 {period_label}\n{len(transactions)} transactions | Total: NGN {total:,}\n\n\U0001f4ce Check your chat for the file."}]
+        return [{"type": "text", "content": f"\u2705 PDF exported!\n\n{label} \u2014 {period_label}\n{len(transactions)} transactions | Total: NGN {_m(total)}\n\n\U0001f4ce Check your chat for the file."}]
     def export_full_history_csv(self, phone_number):
         """Export ALL transactions as a CSV file"""
         import csv

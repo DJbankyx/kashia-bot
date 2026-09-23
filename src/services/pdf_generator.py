@@ -16,9 +16,28 @@ from reportlab.platypus import (
 
 from services.database import Database
 from services.export_service import ExportService
+from utils.money import to_money, money_round
+from utils.quantity import fmt_qty
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+
+def _m(value) -> str:
+    """Kobo-precise money for PDF cells: whole -> "1,500", kobo -> "1,500.50",
+    sub-naira -> up to 4dp. No currency symbol (callers prepend "NGN")."""
+    d = to_money(value)
+    sign = "-" if d < 0 else ""
+    mag = abs(d)
+    if mag == 0:
+        return "0"
+    if mag < 1:
+        body = f"{float(mag):.4f}".rstrip("0").rstrip(".")
+    elif mag == mag.to_integral_value():
+        body = f"{int(mag):,}"
+    else:
+        body = f"{float(mag):,.2f}"
+    return f"{sign}{body}"
 
 
 class PDFGenerator:
@@ -262,46 +281,52 @@ class PDFGenerator:
             # Items table
             if items:
                 table_data = [['Description', 'Qty', 'Unit Price', 'Amount (NGN)']]
-                total = 0
+                total = to_money(0)
                 for item in items:
-                    item_amount = int(item.get('amount', 0))
-                    qty = int(item.get('quantity', 1) or 1)
+                    item_amount = to_money(item.get('amount', 0))
+                    qty = to_money(item.get('quantity', 1) or 1)
                     total += item_amount
-                    unit_price = int(item.get('unit_cost', 0) or 0) or (item_amount // qty if qty > 0 else item_amount)
+                    unit_cost = to_money(item.get('unit_cost', 0))
+                    if unit_cost > 0:
+                        unit_price = unit_cost
+                    elif qty > 0:
+                        unit_price = item_amount / qty
+                    else:
+                        unit_price = item_amount
                     # Use structured description from the item
                     item_desc = item.get('description', 'Goods/Services')
                     table_data.append([
                         item_desc,
-                        str(qty),
-                        f"NGN {unit_price:,}",
-                        f"NGN {item_amount:,}"
+                        _m(qty),
+                        f"NGN {_m(unit_price)}",
+                        f"NGN {_m(item_amount)}"
                     ])
             else:
                 table_data = [['Description', 'Qty', 'Unit Price', 'Amount (NGN)']]
-                table_data.append([description or 'Goods/Services', '1', f"NGN {int(amount):,}", f"NGN {int(amount):,}"])
-                total = int(amount)
+                table_data.append([description or 'Goods/Services', '1', f"NGN {_m(amount)}", f"NGN {_m(amount)}"])
+                total = to_money(amount)
 
             # Add subtotal, discount, tax, and total rows
             subtotal = total
             if discount or tax:
-                table_data.append(['', '', 'Subtotal', f"NGN {subtotal:,}"])
+                table_data.append(['', '', 'Subtotal', f"NGN {_m(subtotal)}"])
 
             if discount:
-                disc_amt = int(discount.get('amount', 0))
+                disc_amt = to_money(discount.get('amount', 0))
                 disc_pct = discount.get('percent')
                 disc_label = f"Discount ({disc_pct}%)" if disc_pct else "Discount"
-                table_data.append(['', '', disc_label, f"- NGN {disc_amt:,}"])
+                table_data.append(['', '', disc_label, f"- NGN {_m(disc_amt)}"])
                 total = subtotal - disc_amt
 
             if tax:
-                tax_amt = int(tax.get('amount', 0))
+                tax_amt = to_money(tax.get('amount', 0))
                 tax_pct = tax.get('percent')
                 tax_type = tax.get('type', 'Tax')
                 tax_label = f"{tax_type} ({tax_pct}%)" if tax_pct else tax_type
-                table_data.append(['', '', tax_label, f"+ NGN {tax_amt:,}"])
+                table_data.append(['', '', tax_label, f"+ NGN {_m(tax_amt)}"])
                 total = total + tax_amt
 
-            table_data.append(['', '', 'TOTAL', f"NGN {total:,}"])
+            table_data.append(['', '', 'TOTAL', f"NGN {_m(total)}"])
 
             items_table = Table(table_data, colWidths=[7*cm, 2.5*cm, 3.5*cm, 4*cm])
             items_table.setStyle(TableStyle([
@@ -447,7 +472,7 @@ class PDFGenerator:
             story.append(Spacer(1, 10*mm))
 
             # Transaction details
-            amount = int(tx.get('amount', 0))
+            amount = to_money(tx.get('amount', 0))
             tx_type = tx.get('type', 'expense')
             vendor = tx.get('vendor', '')
 
@@ -459,7 +484,7 @@ class PDFGenerator:
             story.append(Spacer(1, 8*mm))
 
             # Amount (large, prominent)
-            story.append(Paragraph(f"NGN {amount:,}", self.styles['KashiaAmount']))
+            story.append(Paragraph(f"NGN {_m(amount)}", self.styles['KashiaAmount']))
             story.append(Spacer(1, 8*mm))
 
             # Build clean description from transaction data
@@ -512,7 +537,7 @@ class PDFGenerator:
             if quantity:
                 details.append(['Quantity', str(quantity)])
             if unit_cost:
-                details.append(['Unit Price', f"NGN {int(unit_cost):,}"])
+                details.append(['Unit Price', f"NGN {_m(unit_cost)}"])
 
             # Add payment type
             payment_method = tx.get('payment_method', 'Cash').title() if tx.get('payment_method') else ('Cash' if tx_type in ('income', 'sale') else 'Payment')
@@ -525,16 +550,16 @@ class PDFGenerator:
 
             if discount_amt or tax_amt:
                 if subtotal:
-                    details.append(['Subtotal', f"NGN {int(subtotal):,}"])
+                    details.append(['Subtotal', f"NGN {_m(subtotal)}"])
                 if discount_amt:
                     disc_pct = tx.get('discount_percent')
                     disc_label = f"Discount ({disc_pct}%)" if disc_pct else "Discount"
-                    details.append([disc_label, f"- NGN {int(discount_amt):,}"])
+                    details.append([disc_label, f"- NGN {_m(discount_amt)}"])
                 if tax_amt:
                     tax_pct = tx.get('tax_percent')
                     tax_type = tx.get('tax_type', 'Tax')
                     tax_label = f"{tax_type} ({tax_pct}%)" if tax_pct else tax_type
-                    details.append([tax_label, f"+ NGN {int(tax_amt):,}"])
+                    details.append([tax_label, f"+ NGN {_m(tax_amt)}"])
 
             details_table = Table(details, colWidths=[5*cm, 12*cm])
             details_table.setStyle(TableStyle([
@@ -650,8 +675,8 @@ class PDFGenerator:
             opex_txns = [tx for tx in transactions
                         if tx.get('type') == 'expense' and tx.get('category', '') not in COGS_CATEGORIES]
 
-            total_opex = sum(int(tx.get('amount', 0)) for tx in opex_txns)
-            total_debt_received = sum(int(tx.get('amount', 0)) for tx in debt_payments)
+            total_opex = sum((to_money(tx.get('amount', 0)) for tx in opex_txns), to_money(0))
+            total_debt_received = sum((to_money(tx.get('amount', 0)) for tx in debt_payments), to_money(0))
 
             # ─── ACCRUAL TOTALS from the shared accounting engine ───
             # COGS = cost of goods actually SOLD (weighted-average), NOT the sum
@@ -677,12 +702,12 @@ class PDFGenerator:
             revenue_cats = {}
             for tx in income_txns:
                 cat = tx.get('category', 'Sales Revenue')
-                revenue_cats[cat] = revenue_cats.get(cat, 0) + int(tx.get('amount', 0))
+                revenue_cats[cat] = revenue_cats.get(cat, to_money(0)) + to_money(tx.get('amount', 0))
 
             rev_data = [['', 'Amount (NGN)']]
             for cat, amt in sorted(revenue_cats.items(), key=lambda x: x[1], reverse=True):
-                rev_data.append([f"  {cat}", f"{amt:,}"])
-            rev_data.append(['TOTAL REVENUE', f"{total_revenue:,}"])
+                rev_data.append([f"  {cat}", _m(amt)])
+            rev_data.append(['TOTAL REVENUE', _m(total_revenue)])
 
             rev_table = Table(rev_data, colWidths=[10*cm, 6*cm])
             rev_table.setStyle(TableStyle([
@@ -708,8 +733,8 @@ class PDFGenerator:
             # not a breakdown of purchases. We show it as a single line so it can
             # never be confused with total stock bought.
             cogs_data = [['', 'Amount (NGN)']]
-            cogs_data.append(['  Cost of goods sold this period', f"({total_cogs:,})"])
-            cogs_data.append(['TOTAL COGS', f"({total_cogs:,})"])
+            cogs_data.append(['  Cost of goods sold this period', f"({_m(total_cogs)})"])
+            cogs_data.append(['TOTAL COGS', f"({_m(total_cogs)})"])
 
             cogs_table = Table(cogs_data, colWidths=[10*cm, 6*cm])
             cogs_table.setStyle(TableStyle([
@@ -744,7 +769,7 @@ class PDFGenerator:
             # ─── GROSS PROFIT ───
             gp_color = '#27ae60' if gross_profit >= 0 else '#c0392b'
             gp_data = [
-                [pnl_labels['gross_title'], f"{gross_profit:,}"],
+                [pnl_labels['gross_title'], _m(gross_profit)],
                 ['Gross Margin', f"{gross_margin}%"],
             ]
             gp_table = Table(gp_data, colWidths=[10*cm, 6*cm])
@@ -767,16 +792,15 @@ class PDFGenerator:
             opex_cats = {}
             for tx in opex_txns:
                 cat = tx.get('category', 'Other Expenses')
-                opex_cats[cat] = opex_cats.get(cat, 0) + int(tx.get('amount', 0))
+                opex_cats[cat] = opex_cats.get(cat, to_money(0)) + to_money(tx.get('amount', 0))
 
             opex_data = [['', 'Amount (NGN)']]
             if opex_cats:
                 for cat, amt in sorted(opex_cats.items(), key=lambda x: x[1], reverse=True):
-                    pct = int((amt / total_opex * 100)) if total_opex > 0 else 0
-                    opex_data.append([f"  {cat}", f"({amt:,})"])
+                    opex_data.append([f"  {cat}", f"({_m(amt)})"])
             else:
                 opex_data.append(['  No operating expenses', '-'])
-            opex_data.append(['TOTAL OPERATING EXPENSES', f"({total_opex:,})"])
+            opex_data.append(['TOTAL OPERATING EXPENSES', f"({_m(total_opex)})"])
 
             opex_table = Table(opex_data, colWidths=[10*cm, 6*cm])
             opex_table.setStyle(TableStyle([
@@ -797,7 +821,7 @@ class PDFGenerator:
             # ─── NET PROFIT ═══
             np_color = '#27ae60' if net_profit >= 0 else '#c0392b'
             np_data = [
-                [pnl_labels['net_title'], f"{net_profit:,}"],
+                [pnl_labels['net_title'], _m(net_profit)],
                 ['Net Margin', f"{net_margin}%"],
             ]
             np_table = Table(np_data, colWidths=[10*cm, 6*cm])
@@ -829,10 +853,10 @@ class PDFGenerator:
                 ))
                 pos_data = [
                     ['', 'Amount (NGN)'],
-                    [f"  Inventory at cost ({_pos['inventory_units']:,} units)", f"{_pos['inventory_value']:,}"],
-                    ['  Receivables (owed to you)', f"{_pos['receivables']:,}"],
-                    ['  Payables (you owe)', f"({_pos['payables']:,})"],
-                    ['NET POSITION', f"{_pos['net_worth_proxy']:,}"],
+                    [f"  Inventory at cost ({fmt_qty(_pos['inventory_units'])} units)", _m(_pos['inventory_value'])],
+                    ['  Receivables (owed to you)', _m(_pos['receivables'])],
+                    ['  Payables (you owe)', f"({_m(_pos['payables'])})"],
+                    ['NET POSITION', _m(_pos['net_worth_proxy'])],
                 ]
                 pos_table = Table(pos_data, colWidths=[10*cm, 6*cm])
                 pos_table.setStyle(TableStyle([
@@ -874,8 +898,8 @@ class PDFGenerator:
                         if r["has_uncosted"]:
                             nm += " *"
                         m_data.append([
-                            nm, f"{r['qty']:,}", f"{r['revenue']:,}",
-                            f"{r['cogs']:,}", f"{r['margin']:,} ({r['margin_pct']}%)",
+                            nm, fmt_qty(r['qty']), _m(r['revenue']),
+                            _m(r['cogs']), f"{_m(r['margin'])} ({r['margin_pct']}%)",
                         ])
                     m_table = Table(m_data, colWidths=[5.5*cm, 1.8*cm, 3.2*cm, 2.8*cm, 3.7*cm])
                     m_table.setStyle(TableStyle([
@@ -902,7 +926,7 @@ class PDFGenerator:
             if debt_payments:
                 story.append(Paragraph("<b>MEMO: Debt Payments Received</b>", self.styles['KashiaHeading']))
                 story.append(Paragraph(
-                    f"Total debt collected this period: NGN {total_debt_received:,} ({len(debt_payments)} payments)",
+                    f"Total debt collected this period: NGN {_m(total_debt_received)} ({len(debt_payments)} payments)",
                     self.styles['KashiaBody']
                 ))
                 story.append(Paragraph(
@@ -936,28 +960,29 @@ class PDFGenerator:
                 # If not, the landing_cost might be per-unit (old format) — multiply by qty.
                 has_per_unit_field = extra.get('landing_cost_per_unit') or tx.get('landing_cost_per_unit')
 
-                if lc and int(lc) > 0:
+                lc = to_money(lc) if lc else to_money(0)
+                if lc > 0:
                     if has_per_unit_field:
                         # New format: landing_cost is already total
                         pass
                     else:
                         # Old format: landing_cost is per-unit, multiply by qty
-                        lc = int(lc) * qty
+                        lc = lc * to_money(qty)
 
                 # Fallback: lookup from catalog
-                if not lc or int(lc) <= 0:
+                if lc <= 0:
                     desc = tx.get('description', tx.get('item_name', ''))
                     brand = tx.get('brand', '')
                     search_name = f"{brand} {desc}".strip() if brand else desc
-                    catalog_cost = cat_handler.get_landing_cost(phone_number, search_name)
+                    catalog_cost = to_money(cat_handler.get_landing_cost(phone_number, search_name))
                     if catalog_cost > 0:
-                        lc = catalog_cost * qty
+                        lc = catalog_cost * to_money(qty)
 
-                if lc and int(lc) > 0:
+                if lc > 0:
                     costed_sales.append({
                         "description": self._clean_item_description(tx),
-                        "revenue": int(tx.get('amount', 0)),
-                        "cost": int(lc),
+                        "revenue": to_money(tx.get('amount', 0)),
+                        "cost": lc,
                     })
 
             if costed_sales:
@@ -968,15 +993,15 @@ class PDFGenerator:
                 ))
                 story.append(Spacer(1, 3*mm))
 
-                margin_total_rev  = sum(s["revenue"] for s in costed_sales)
-                margin_total_cost = sum(s["cost"] for s in costed_sales)
+                margin_total_rev  = sum((s["revenue"] for s in costed_sales), to_money(0))
+                margin_total_cost = sum((s["cost"] for s in costed_sales), to_money(0))
                 margin_profit     = margin_total_rev - margin_total_cost
                 margin_pct        = int(margin_profit / margin_total_rev * 100) if margin_total_rev > 0 else 0
 
                 margin_data = [['', 'Amount (NGN)']]
-                margin_data.append(['Revenue (costed sales)', f"{margin_total_rev:,}"])
-                margin_data.append(['Landing Cost', f"({margin_total_cost:,})"])
-                margin_data.append(['GROSS MARGIN', f"{margin_profit:,} ({margin_pct}%)"])
+                margin_data.append(['Revenue (costed sales)', _m(margin_total_rev)])
+                margin_data.append(['Landing Cost', f"({_m(margin_total_cost)})"])
+                margin_data.append(['GROSS MARGIN', f"{_m(margin_profit)} ({margin_pct}%)"])
 
                 margin_table = Table(margin_data, colWidths=[10*cm, 6*cm])
                 margin_table.setStyle(TableStyle([
@@ -1002,9 +1027,9 @@ class PDFGenerator:
                         item_pct = int(item_margin / s["revenue"] * 100) if s["revenue"] > 0 else 0
                         item_data.append([
                             s["description"][:30],
-                            f"{s['revenue']:,}",
-                            f"({s['cost']:,})",
-                            f"{item_margin:,} ({item_pct}%)",
+                            _m(s['revenue']),
+                            f"({_m(s['cost'])})",
+                            f"{_m(item_margin)} ({item_pct}%)",
                         ])
                     item_table = Table(item_data, colWidths=[5*cm, 3.5*cm, 3.5*cm, 4*cm])
                     item_table.setStyle(TableStyle([
@@ -1036,17 +1061,17 @@ class PDFGenerator:
             tx_data = [['Date', 'Description', 'Category', 'Type', 'Amount']]
             for tx in display_txns:
                 desc = self._clean_item_description(tx)
-                amount = int(tx.get('amount', 0))
+                amount = to_money(tx.get('amount', 0))
                 qty = tx.get('quantity', '')
                 unit_cost = tx.get('unit_cost', '')
                 display_desc = desc
                 if qty and unit_cost:
-                    display_desc += f" x{qty} @ {int(unit_cost):,}"
+                    display_desc += f" x{qty} @ {_m(unit_cost)}"
                 elif qty:
                     display_desc += f" x{qty}"
                 tx_type = tx.get('type', '')
                 category = tx.get('category', '')[:18]
-                amount_str = f"{amount:,}" if tx_type in ('income', 'sale') else f"({amount:,})"
+                amount_str = _m(amount) if tx_type in ('income', 'sale') else f"({_m(amount)})"
                 tx_data.append([
                     tx.get('date', ''),
                     display_desc[:40],
@@ -1175,13 +1200,13 @@ class PDFGenerator:
         if result and result[0]:
             filepath, filename = result
             delivered, s3_url = self.deliver_pdf(phone_number, filepath, filename,
-                            caption=f"{doc_label} for {customer_name} - \u20a6{int(amount):,}")
+                            caption=f"{doc_label} for {customer_name} - \u20a6{_m(amount)}")
             if not delivered:
                 return [{"type": "text", "content": f"⚠️ {doc_label} generated but delivery failed. Please try again."}]
             responses = [{"type": "text", "content": (
                 f"✅ {doc_label} sent!\n\n"
                 f"To: {customer_name}\n"
-                f"Amount: \u20a6{int(amount):,}\n\n"
+                f"Amount: \u20a6{_m(amount)}\n\n"
                 f"📎 Check your chat for the PDF."
             )}]
             # Add forward-to-customer metadata
@@ -1212,8 +1237,8 @@ class PDFGenerator:
         items = []
         customer_name = ''
         for tx in selected:
-            qty = int(tx.get('quantity', 1)) or 1
-            amount = int(tx.get('amount', 0))
+            qty = tx.get('quantity', 1) or 1
+            amount = money_round(tx.get('amount', 0))
             unit_cost = tx.get('unit_cost')
             desc = self._clean_item_description(tx)
             vendor = tx.get('vendor', '')
@@ -1232,21 +1257,21 @@ class PDFGenerator:
         if not customer_name:
             customer_name = 'Customer'
 
-        total_amount = sum(item['amount'] for item in items)
+        total_amount = money_round(sum(to_money(item['amount']) for item in items))
 
         result = self.generate_invoice(phone_number, customer_name, total_amount, '', items=items)
 
         if result and result[0]:
             filepath, filename = result
             delivered, s3_url = self.deliver_pdf(phone_number, filepath, filename,
-                            caption=f"Invoice for {customer_name} - \u20a6{total_amount:,}")
+                            caption=f"Invoice for {customer_name} - \u20a6{_m(total_amount)}")
             if not delivered:
                 return [{"type": "text", "content": "\u26a0\ufe0f Invoice generated but delivery failed. Please try again."}]
             responses = [{"type": "text", "content": (
                 f"\u2705 Multi-item invoice sent!\n\n"
                 f"To: {customer_name}\n"
                 f"Items: {len(items)}\n"
-                f"Total: \u20a6{total_amount:,}\n\n"
+                f"Total: \u20a6{_m(total_amount)}\n\n"
                 f"\ud83d\udcce Check your chat for the PDF."
             )}]
             if customer_name and customer_name.lower() != 'customer':
@@ -1325,15 +1350,15 @@ class PDFGenerator:
 
             # Items table
             table_data = [['#', 'Description', 'Qty', 'Amount (NGN)']]
-            total = 0
+            total = to_money(0)
             for idx, tx in enumerate(transactions, 1):
-                amount = int(tx.get('amount', 0))
+                amount = to_money(tx.get('amount', 0))
                 total += amount
                 qty = tx.get('quantity', '1')
                 desc = self._clean_item_description(tx)
-                table_data.append([str(idx), desc, str(qty), f"NGN {amount:,}"])
+                table_data.append([str(idx), desc, str(qty), f"NGN {_m(amount)}"])
 
-            table_data.append(['', '', 'TOTAL', f"NGN {total:,}"])
+            table_data.append(['', '', 'TOTAL', f"NGN {_m(total)}"])
 
             items_table = Table(table_data, colWidths=[1.5*cm, 8*cm, 3*cm, 4.5*cm])
             items_table.setStyle(TableStyle([
@@ -1365,7 +1390,7 @@ class PDFGenerator:
             responses = [{"type": "text", "content": (
                 f"\u2705 Combined receipt sent!\n\n"
                 f"Items: {len(transactions)}\n"
-                f"Total: \u20a6{total:,}\n\n"
+                f"Total: \u20a6{_m(total)}\n\n"
                 f"\ud83d\udcce Check your chat for the PDF."
             )}]
             # Add forward prompt — use first customer found
@@ -1446,14 +1471,14 @@ class PDFGenerator:
         for tx in sales[:10]:
             tx_id = tx.get('transaction_id', '')
             desc = self._clean_item_description(tx)[:22]
-            amt = int(tx.get('amount', 0))
+            amt = to_money(tx.get('amount', 0))
             vendor = tx.get('vendor', '')
             date_s = tx.get('date', '')[-5:]
             vendor_s = f" · {vendor}" if vendor else ""
 
             rows.append({
                 "id": f"gen_receipt_{tx_id}",
-                "title": f"{desc} — ₦{amt:,}"[:24],
+                "title": f"{desc} — ₦{_m(amt)}"[:24],
                 "description": f"{date_s}{vendor_s}"[:72],
             })
 
