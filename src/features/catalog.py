@@ -2670,6 +2670,7 @@ class CatalogHandler:
                 incoming_unit = unit_match.group(1).strip().lower()
 
         # ── Standard unit conversion to primary_unit ──
+        from utils.money import to_money, money_round
         primary_unit = product.get("primary_unit", "").lower().strip()
         _unit_warning = None
         if primary_unit and incoming_unit and incoming_unit.rstrip("s") != primary_unit.rstrip("s"):
@@ -2677,11 +2678,13 @@ class CatalogHandler:
             factor = self._get_standard_conversion_factor(incoming_unit, primary_unit)
             if factor:
                 actual_qty = abs(qty_change) * factor * (1 if qty_change >= 0 else -1)
-                # Also adjust unit_cost to primary_unit
+                # Also adjust unit_cost to primary_unit (money, kobo-precise).
                 if unit_cost and unit_cost > 0:
                     # Original cost was per incoming_unit, convert to per primary_unit
-                    # e.g. ₦5/CL → ₦500/litre (factor=0.01 means 1CL=0.01L, so cost×(1/factor))
-                    unit_cost = int(unit_cost / factor) if factor > 0 else unit_cost
+                    # e.g. ₦5/CL → ₦500/litre (factor=0.01 means 1CL=0.01L, so cost×(1/factor)).
+                    # Was int()-truncated — a sub-naira per-unit cost (₦0.06/kWh)
+                    # would round to ₦0 after conversion. Keep it precise.
+                    unit_cost = money_round(to_money(unit_cost) / to_money(factor)) if factor > 0 else unit_cost
             else:
                 # No conversion found — flag unit mismatch warning
                 _unit_warning = (
