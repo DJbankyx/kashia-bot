@@ -2628,8 +2628,8 @@ _PAGE_HTML = """<!doctype html>
       document.getElementById("sh-recipe-cost").textContent =
         p.cost ? naira(p.cost) : "Not set yet";
       document.getElementById("sh-recipe-hint").textContent = p.has_recipe
-        ? "Cost is calculated from this item's recipe. Tap \"Set / edit recipe\" below to change it."
-        : "No recipe yet. Tap \"Set / edit recipe\" below so its cost is calculated automatically.";
+        ? "Cost is calculated from this item's recipe. Tap the Set / edit recipe button below to change it."
+        : "No recipe yet. Tap the Set / edit recipe button below so its cost is calculated automatically.";
     } else {
       manualWrap.classList.remove("hidden");
       recipeWrap.classList.add("hidden");
@@ -2909,7 +2909,7 @@ _PAGE_HTML = """<!doctype html>
       chips[i].classList.toggle("active", chips[i].getAttribute("data-it") === t);
     }
     document.getElementById("add-type-hint").textContent = (t === "finished_product")
-      ? "A finished product's cost is calculated from its recipe. After adding, tap it → \"📋 Set / edit recipe\"."
+      ? "A finished product's cost is calculated from its recipe. After adding, tap it to Set / edit recipe."
       : "A raw material or supply has a normal buy-cost you set on the product.";
   };
   window.openAddProduct = function () {
