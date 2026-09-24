@@ -1796,10 +1796,23 @@ class Database:
                         attr_strs.append(attr)
                 line += f" | Attributes: {'; '.join(attr_strs)}"
 
-            # Conversions
-            if convs:
-                conv_strs = [f"{k}={v}" for k, v in convs.items()]
-                line += f" | Units: {', '.join(conv_strs)}"
+            # Units — serialize the product's base unit + custom conversions via
+            # the shared engine so the AI sees accurate, upgraded units (handles
+            # both legacy `conversions` and the new base_unit/unit_defs shape).
+            try:
+                from utils import units as _units
+                base_unit, unit_defs = _units.product_units(p_data)
+                if base_unit:
+                    unit_bits = [f"base={base_unit}"]
+                    for u, f in unit_defs.items():
+                        from utils.quantity import fmt_qty
+                        unit_bits.append(f"1 {u}={fmt_qty(f)} {base_unit}")
+                    line += f" | Units: {', '.join(unit_bits)}"
+                elif convs:
+                    line += f" | Units: {', '.join(f'{k}={v}' for k, v in convs.items())}"
+            except Exception:
+                if convs:
+                    line += f" | Units: {', '.join(f'{k}={v}' for k, v in convs.items())}"
 
             lines.append(line)
 
@@ -1815,85 +1828,21 @@ class Database:
         return 'pieces'
 
     def set_primary_unit(self, phone_number, product_name, unit):
-        """Set the primary/base unit for a product"""
+        """Set the primary/base unit for a product (keeps base_unit in sync so
+        the shared unit engine and legacy readers agree)."""
         catalog = self.get_product_catalog(phone_number)
         products = catalog.get('products', {})
         if product_name in products:
-            products[product_name]['primary_unit'] = unit.lower().strip()
+            u = unit.lower().strip()
+            products[product_name]['primary_unit'] = u
+            products[product_name]['base_unit'] = u
             self.save_product_catalog(phone_number, catalog)
             return True
         return False
 
-    def get_conversions_for_product(self, phone_number, product_name, subcategory=None):
-        """Get all conversions for a product (subcategory overrides product level)"""
-        catalog = self.get_product_catalog(phone_number)
-        products = catalog.get('products', {})
-        if product_name not in products:
-            return {}
-        p_data = products[product_name]
-        conversions = dict(p_data.get('conversions', {}))
-        if subcategory:
-            subcats = p_data.get('subcategories', {})
-            if subcategory in subcats:
-                conversions.update(subcats[subcategory].get('conversions', {}))
-        return conversions
-
-    def convert_to_base(self, phone_number, product_name, quantity_raw, unit_raw, subcategory=None):
-        """Convert quantity+unit to base units using registered conversions."""
-        import re as _re
-        conversions = self.get_conversions_for_product(phone_number, product_name, subcategory)
-        primary_unit = self.get_primary_unit(phone_number, product_name)
-
-        if not conversions or not unit_raw:
-            return (quantity_raw, unit_raw or primary_unit, None)
-
-        unit_lower = str(unit_raw).lower().strip()
-
-        for conv_key, conv_value in conversions.items():
-            # Normalize: "1dozen" -> "1 dozen", "12pieces" -> "12 pieces"
-            norm_key = _re.sub(r'(\d)(\D)', r'\1 \2', conv_key.strip())
-            norm_val = _re.sub(r'(\d)(\D)', r'\1 \2', conv_value.strip())
-            key_match = _re.match(r'^(\d+)\s+(.+)$', norm_key)
-            val_match = _re.match(r'^(\d+)\s+(.+)$', norm_val)
-
-            if key_match and val_match:
-                key_num = int(key_match.group(1))
-                key_unit = key_match.group(2).lower().strip()
-                val_num = int(val_match.group(1))
-                val_unit = val_match.group(2).lower().strip()
-
-                if (unit_lower == key_unit or
-                    unit_lower == key_unit + 's' or
-                    unit_lower + 's' == key_unit or
-                    unit_lower.rstrip('s') == key_unit.rstrip('s')):
-
-                    base_qty = int(quantity_raw) * (val_num // key_num)
-                    conv_str = f"{conv_key} = {conv_value}"
-                    return (base_qty, val_unit, conv_str)
-
-        return (quantity_raw, unit_raw or primary_unit, None)
-
-    def convert_from_base(self, phone_number, product_name, base_quantity, target_unit, subcategory=None):
-        """Convert FROM base units TO a target unit. Returns (qty, unit) or None."""
-        import re as _re
-        conversions = self.get_conversions_for_product(phone_number, product_name, subcategory)
-        target_lower = target_unit.lower().strip()
-
-        for conv_key, conv_value in conversions.items():
-            key_match = _re.match(r'^(\d+)\s+(.+)$', conv_key.strip())
-            val_match = _re.match(r'^(\d+)\s+(.+)$', conv_value.strip())
-
-            if key_match and val_match:
-                key_num = int(key_match.group(1))
-                key_unit = key_match.group(2).lower().strip()
-                val_num = int(val_match.group(1))
-
-                if (target_lower == key_unit or
-                    target_lower == key_unit + 's' or
-                    target_lower.rstrip('s') == key_unit.rstrip('s')):
-                    if val_num > 0:
-                        converted = base_quantity * key_num / val_num
-                        if converted == int(converted):
-                            return (int(converted), target_unit)
-                        return (round(converted, 1), target_unit)
-        return None
+    # NOTE: the legacy per-product converters (get_conversions_for_product,
+    # convert_to_base, convert_from_base) lived here. They used a str→str
+    # `conversions` shape with integer // truncation and had no live callers.
+    # They've been RETIRED in favour of the single shared engine utils/units.py
+    # (base_unit + unit_defs, standard library + custom multi-hop, fraction-safe).
+    # Use utils.units.convert / factor_to_base instead.
