@@ -411,6 +411,12 @@ Resources:
             RestApiId: !Ref WebhookApi
             Path: /app/api/produce
             Method: post
+        CashAdjustWrite:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /app/api/cash-adjust
+            Method: post
       Policies:
         # UsersTable needs WRITE (M6a): the product catalog lives on the user
         # record, so catalog edits (stock/price/cost) update it.

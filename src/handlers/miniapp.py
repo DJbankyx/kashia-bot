@@ -244,6 +244,8 @@ def lambda_handler(event, context):
             return _recipe_write(event, user_id)
         if method == "POST" and path.endswith("/app/api/produce"):
             return _produce_write(event, user_id)
+        if method == "POST" and path.endswith("/app/api/cash-adjust"):
+            return _cash_adjust_write(event, user_id)
 
         # ── Reads ──
         if method == "GET" and path.endswith("/app/api/recipe"):
@@ -904,6 +906,28 @@ def _produce_write(event, user_id: str):
     return _json(200, res)
 
 
+def _cash_adjust_write(event, user_id: str):
+    """Record a manual cash movement (owner withdrawal / capital injection /
+    bank<->cash transfer / correction). Body: {amount, direction:'in'|'out',
+    reason}. Reuses TransactionHandler.record_cash_adjustment (the engine) —
+    saved as type='cash_adjustment', counted by cash_position, excluded from
+    the P&L."""
+    from services.database import Database
+    from features.transactions import TransactionHandler
+
+    data = _parse_body(event)
+    tx = TransactionHandler(None, Database(), None, None)
+    res = tx.record_cash_adjustment(
+        user_id,
+        amount=data.get("amount"),
+        direction=str(data.get("direction", "in")),
+        reason=str(data.get("reason", "") or ""),
+    )
+    if not res.get("ok"):
+        return _json(400, res)
+    return _json(200, res)
+
+
 def _transaction_write(event, user_id: str):
     """M6b — record a full sale/purchase/expense from the web (stateless).
 
@@ -1515,7 +1539,8 @@ _PAGE_HTML = """<!doctype html>
     <div class="card"><div class="k">Cash in - out</div><div class="v" id="cash">—</div></div>
 
     <div class="seclabel">Current balances · as of today</div>
-    <div class="card"><div class="k">💵 Cash at hand</div><div class="v" id="cashhand">—</div><div class="sub">Received in, less paid out — all time</div></div>
+    <div class="card"><div class="k">💵 Cash at hand</div><div class="v" id="cashhand">—</div><div class="sub">Received in, less paid out — all time</div>
+      <button class="btn cancel" style="width:100%;margin-top:10px" onclick="openCashAdjust()">± Adjust cash</button></div>
     <div class="row">
       <div class="card"><div class="k">Owed to you</div><div class="v pos" id="owed">—</div></div>
       <div class="card"><div class="k">You owe</div><div class="v neg" id="iowe">—</div><div class="sub" id="iowebreak"></div></div>
@@ -1711,6 +1736,39 @@ _PAGE_HTML = """<!doctype html>
       <div class="actions">
         <button class="btn cancel" onclick="closePay()">Cancel</button>
         <button class="btn save" id="pay-save" onclick="savePay()">Record payment</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cash adjustment sheet (owner withdrawal / capital / bank transfer / fix) -->
+  <div id="cashOverlay" class="overlay hidden">
+    <div class="sheet">
+      <h2>Adjust cash</h2>
+      <div class="sub2" id="cash-current"></div>
+      <div class="field">
+        <label>What kind of move?</label>
+        <div class="chips" id="cash-reason">
+          <div class="chip active" data-cr="withdrawal" onclick="cashReason('withdrawal')">🏧 Owner withdrawal</div>
+          <div class="chip" data-cr="injection" onclick="cashReason('injection')">➕ Money in (capital)</div>
+          <div class="chip" data-cr="bank_transfer" onclick="cashReason('bank_transfer')">🏦 Bank/cash transfer</div>
+          <div class="chip" data-cr="correction" onclick="cashReason('correction')">✏️ Correction</div>
+        </div>
+      </div>
+      <div class="field" id="cash-dir-wrap">
+        <label>Direction</label>
+        <div class="chips" id="cash-dir">
+          <div class="chip active" data-cd="out" onclick="cashDir('out')">Money out</div>
+          <div class="chip" data-cd="in" onclick="cashDir('in')">Money in</div>
+        </div>
+      </div>
+      <div class="field">
+        <label>Amount (\u20a6)</label>
+        <input id="cash-amount" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 5000">
+      </div>
+      <div class="sheeterr" id="cash-err"></div>
+      <div class="actions">
+        <button class="btn cancel" onclick="closeCashAdjust()">Cancel</button>
+        <button class="btn save" id="cash-save" onclick="saveCashAdjust()">Record</button>
       </div>
     </div>
   </div>
@@ -2606,6 +2664,62 @@ _PAGE_HTML = """<!doctype html>
       .catch(function (e) {
         btn.disabled = false;
         err.textContent = e.message || "Could not record the payment.";
+      });
+  };
+
+  // ── Cash adjustment (manual cash in/out that isn't a sale/purchase/expense) ──
+  var cashReasonVal = "withdrawal";
+  var cashDirVal = "out";
+  window.openCashAdjust = function () {
+    cashReasonVal = "withdrawal"; cashDirVal = "out";
+    document.getElementById("cash-amount").value = "";
+    document.getElementById("cash-err").textContent = "";
+    document.getElementById("cash-save").disabled = false;
+    // Show the current balance for context (from the last loaded summary).
+    var cur = document.getElementById("cashhand");
+    var curTxt = cur ? (cur.textContent || "").trim() : "";
+    document.getElementById("cash-current").textContent =
+      (curTxt && curTxt !== "\u2014") ? ("Now: " + curTxt + " at hand") : "";
+    cashReason("withdrawal");
+    document.getElementById("cashOverlay").classList.remove("hidden");
+  };
+  window.closeCashAdjust = function () {
+    document.getElementById("cashOverlay").classList.add("hidden");
+  };
+  function cashSyncChips(group, val, attr) {
+    var chips = document.querySelectorAll('#' + group + ' .chip');
+    chips.forEach(function (c) { c.classList.toggle("active", c.getAttribute(attr) === val); });
+  }
+  window.cashReason = function (r) {
+    cashReasonVal = r;
+    cashSyncChips("cash-reason", r, "data-cr");
+    // Withdrawal is always out; capital injection always in. Bank transfer +
+    // correction can go either way, so let the owner pick the direction.
+    var dirWrap = document.getElementById("cash-dir-wrap");
+    if (r === "withdrawal") { cashDir("out"); dirWrap.style.display = "none"; }
+    else if (r === "injection") { cashDir("in"); dirWrap.style.display = "none"; }
+    else { dirWrap.style.display = ""; }
+  };
+  window.cashDir = function (d) {
+    cashDirVal = d;
+    cashSyncChips("cash-dir", d, "data-cd");
+  };
+  window.saveCashAdjust = function () {
+    var err = document.getElementById("cash-err");
+    err.textContent = "";
+    var amt = parseFloat(document.getElementById("cash-amount").value) || 0;
+    if (amt <= 0) { err.textContent = "Enter an amount greater than 0."; return; }
+    var btn = document.getElementById("cash-save");
+    btn.disabled = true;
+    apiPost("api/cash-adjust", { amount: amt, direction: cashDirVal, reason: cashReasonVal })
+      .then(function () {
+        closeCashAdjust();
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+        loadSummary();   // cash at hand + net worth both move.
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        err.textContent = (e && e.message) || "Could not record the adjustment.";
       });
   };
 
