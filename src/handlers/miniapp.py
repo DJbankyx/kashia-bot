@@ -2194,13 +2194,21 @@ _PAGE_HTML = """<!doctype html>
     });
 
     // Totals (across the FULL catalog, not just the filtered view).
-    var totUnits = 0, totValue = 0, lowCount = 0;
+    // The "Products" stat card counts SELLABLE products only (finished_product /
+    // plain product), NOT raw materials / supplies / overhead — those have their
+    // own sections. Stock value/units still span the whole catalog.
+    function isSellable(p) {
+      var t = (p.item_type || "").toLowerCase();
+      return t === "" || t === "product" || t === "finished_product";
+    }
+    var totUnits = 0, totValue = 0, lowCount = 0, prodCount = 0;
     invData.forEach(function (p) {
       totUnits += Number(p.stock || 0);
       totValue += Number(p.stock_value || 0);
       if (p.low_stock) lowCount += 1;
+      if (isSellable(p)) prodCount += 1;
     });
-    document.getElementById("cat-count").textContent = invData.length.toLocaleString();
+    document.getElementById("cat-count").textContent = prodCount.toLocaleString();
     document.getElementById("cat-units").textContent = totUnits.toLocaleString();
     document.getElementById("cat-value").textContent = naira(totValue);
     var lowCard = document.getElementById("cat-lowcard");
@@ -2239,48 +2247,73 @@ _PAGE_HTML = """<!doctype html>
       (byType[g] = byType[g] || []).push(p);
     });
 
+    // Render one product row into a card.
+    function appendRow(card, p) {
+      var badges = "";
+      if (p.low_stock) badges += '<span class="badge low">low</span>';
+      if (p.has_variants) badges += '<span class="badge var">variants</span>';
+      var sub = [];
+      if (p.cost) sub.push("cost " + naira(p.cost));
+      if (p.sale_price) sub.push("price " + naira(p.sale_price));
+      var div = document.createElement("div");
+      div.className = "item tappable";
+      div.innerHTML = '<div><div class="name">' + escapeHtml(p.name || "?") + badges +
+        '</div><div class="meta">' + (sub.join(" \u00b7 ") || "no price/cost set") + '</div></div>' +
+        '<div class="right"><div class="stock">' + Number(p.stock||0).toLocaleString() +
+        ' ' + escapeHtml(p.unit || "") + (p.has_variants ? ' \u203a' : '') + '</div><div class="meta">' +
+        (p.stock_value ? naira(p.stock_value) : "") + '</div></div>';
+      div.onclick = p.has_variants
+        ? (function (prod) { return function () { openVarView(prod); }; })(p)
+        : (function (prod) { return function () { openSheet(prod); }; })(p);
+      card.appendChild(div);
+    }
+
     wrap.innerHTML = "";
     TYPE_ORDER.forEach(function (g) {
       var items = byType[g];
       if (!items || !items.length) return;
-      // sort within a type by category then name for a tidy list
-      items.sort(function (a, b) {
-        var ca = (a.category || "~").toLowerCase(), cb = (b.category || "~").toLowerCase();
-        if (ca !== cb) return ca < cb ? -1 : 1;
-        return (a.name || "").toLowerCase() < (b.name || "").toLowerCase() ? -1 : 1;
-      });
       var gValue = 0;
       items.forEach(function (p) { gValue += Number(p.stock_value || 0); });
+
+      // Type section header (Products / Raw materials / …).
       var head = document.createElement("div");
       head.className = "k";
       head.style.margin = "16px 2px 6px";
       head.textContent = TYPE_META[g] + " \u00b7 " + items.length + " item(s) \u00b7 " + naira(gValue);
       wrap.appendChild(head);
 
-      var card = document.createElement("div");
-      card.className = "card";
-      card.style.padding = "4px 0";
+      // Sub-group by CATEGORY within the type (Products → Juice, Water). Keeps
+      // the familiar category browsing the owner had before, nested under type.
+      var byCat = {};
       items.forEach(function (p) {
-        var badges = "";
-        if (p.low_stock) badges += '<span class="badge low">low</span>';
-        if (p.has_variants) badges += '<span class="badge var">variants</span>';
-        var sub = [];
-        if (p.category) sub.push(escapeHtml(p.category));
-        if (p.cost) sub.push("cost " + naira(p.cost));
-        if (p.sale_price) sub.push("price " + naira(p.sale_price));
-        var div = document.createElement("div");
-        div.className = "item tappable";
-        div.innerHTML = '<div><div class="name">' + escapeHtml(p.name || "?") + badges +
-          '</div><div class="meta">' + (sub.join(" \u00b7 ") || "no price/cost set") + '</div></div>' +
-          '<div class="right"><div class="stock">' + Number(p.stock||0).toLocaleString() +
-          ' ' + escapeHtml(p.unit || "") + (p.has_variants ? ' \u203a' : '') + '</div><div class="meta">' +
-          (p.stock_value ? naira(p.stock_value) : "") + '</div></div>';
-        div.onclick = p.has_variants
-          ? (function (prod) { return function () { openVarView(prod); }; })(p)
-          : (function (prod) { return function () { openSheet(prod); }; })(p);
-        card.appendChild(div);
+        var c = (p.category || "").trim() || "Uncategorized";
+        (byCat[c] = byCat[c] || []).push(p);
       });
-      wrap.appendChild(card);
+      var cats = Object.keys(byCat).sort(function (a, b) {
+        if (a === "Uncategorized") return 1;
+        if (b === "Uncategorized") return -1;
+        return a.toLowerCase() < b.toLowerCase() ? -1 : 1;
+      });
+
+      cats.forEach(function (c) {
+        var catItems = byCat[c].sort(function (a, b) {
+          return (a.name || "").toLowerCase() < (b.name || "").toLowerCase() ? -1 : 1;
+        });
+        // Show a category sub-header only when there's more than one category in
+        // this type section (a single category doesn't need a divider).
+        if (cats.length > 1) {
+          var sub = document.createElement("div");
+          sub.className = "meta";
+          sub.style.margin = "10px 4px 4px";
+          sub.textContent = c + " \u00b7 " + catItems.length;
+          wrap.appendChild(sub);
+        }
+        var card = document.createElement("div");
+        card.className = "card";
+        card.style.padding = "4px 0";
+        catItems.forEach(function (p) { appendRow(card, p); });
+        wrap.appendChild(card);
+      });
     });
     document.getElementById("catmsg").textContent = rows.length + " item(s)";
   };
