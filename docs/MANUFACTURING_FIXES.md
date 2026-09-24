@@ -87,3 +87,30 @@ cd ~/projects/kashia-bot
   (`"\\ud83d\\udca1"`), single-escape becomes a lone surrogate → 500.
 - `esprima.parseScript()` on each `<script>` block.
 - `python3 -m utils.units` → ALL_UNITS_OK.
+
+---
+
+## Follow-up (2026-09-25): cash adjustments + true net worth
+
+Owner point: cash-at-hand alone misleads — the owner moves cash that isn't a
+sale/purchase/expense, and cash is only one part of what the business owns.
+
+- **`cash_adjustment` transaction type** (`transactions.record_cash_adjustment`):
+  a manual cash move — Owner withdrawal (out), Capital injection (in), Bank↔cash
+  transfer (either), Correction (either). Counted by `accounting.cash_position`
+  (in → +, out → −). EXCLUDED from the P&L (`period_pnl` reads only sale/
+  sale_return/expense) and from Records-by-type. Verified: sale 80k + injection
+  20k in / expense 10k + withdrawal 50k out → cash at hand 40k, while P&L stays
+  revenue 80k / opex 10k.
+- **True net worth**: `accounting.position()` now folds cash in →
+  `net_worth = cash + inventory + receivables − payables` (`net_worth_proxy`
+  kept for back-compat). Mini App `net_position` uses it; the dashboard card is
+  relabelled **"Net worth"** with a breakdown hint. Live Banky Water: cash
+  −185,000 + inventory 394,000 − payables 100,000 = **net worth 109,000** (the
+  negative cash is offset by the inventory it bought — the honest picture).
+- **UI**: a "± Adjust cash" button on the Cash-at-hand card → a sheet (reason
+  chips + direction + amount) → `POST /app/api/cash-adjust`. Withdrawal defaults
+  to out, injection to in; transfer/correction let the owner pick.
+
+Commits: `17f3d1b` (engine + net worth), `0f71b6a` (UI + `/app/api/cash-adjust`
+route → **deploy required**).
