@@ -380,3 +380,21 @@ Verified: PYC_OK, PAGE_SURR 0, PAGE_ENCODE_OK, JS_PARSE_OK.
 The AGENT DOES NOT DEPLOY — deployment is the owner's. The agent commits + pushes
 and hands over `./deploy.sh dev`; the owner runs it. The template.yaml build
 stamp in the repo is kept synced to the owner's most recent deploy.
+
+---
+
+## 🎯 CATALOG DISPLAY REFINEMENTS (2026-09-24, commit 16650d3 — owner to deploy)
+
+Owner feedback after the item-type grouping shipped:
+1. **"Products" stat card still showed 7.** It counted the whole catalog. Now it
+   counts SELLABLE products only (item_type finished_product/product/"") → shows
+   3. Stock value + total units still span the whole catalog (they're inventory
+   totals, not a product count).
+2. **Category browse restored, nested under type.** Within each type section
+   (Products / Raw materials / …) items are now sub-grouped by CATEGORY with a
+   small sub-header (e.g. Products → "Juice", "Water"), shown only when a type
+   has more than one category. This brings back the familiar per-category
+   browsing the owner had, now organised under the correct item type.
+
+Verified PYC_OK / PAGE_SURR 0 / PAGE_ENCODE_OK / JS_PARSE_OK. Pushed on
+`16650d3`. **Owner deploys** `./deploy.sh dev`.
