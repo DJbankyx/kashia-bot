@@ -441,7 +441,11 @@ def _row_from_product(p: dict, cat=None) -> dict:
     app would show 'no price/cost set' even when leaves are costed."""
     # MONEY is kobo-precise (int when whole, else 2dp); STOCK may be fractional.
     from utils.money import money_round
-    cost = money_round(p.get("landing_cost") or 0)
+    # Cost source order MUST match the accounting engine (product_avg_cost):
+    # weighted-average first (what purchases accrue into), then landing_cost as
+    # the opening/legacy fallback. Reading landing_cost only made a purchased
+    # raw material whose cost lives in avg_cost show "no cost set" in the app.
+    cost = money_round(p.get("avg_cost") or p.get("landing_cost") or 0)
     stock_value = money_round(p.get("_stock_value") or 0)
     def _num(v):
         try:
@@ -1357,8 +1361,12 @@ _PAGE_HTML = """<!doctype html>
   /* Edit sheet (bottom sheet modal) */
   .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55);
     display: flex; align-items: flex-end; z-index: 50; }
+  /* Every bottom-sheet is scrollable and capped to the viewport, so a sheet
+     taller than the screen (e.g. the record form on a small phone) can always
+     reach its lower fields/buttons instead of being clipped/trapped. */
   .sheet { width: 100%; background: var(--bg); border-radius: 16px 16px 0 0;
-    padding: 18px 16px 26px; box-shadow: 0 -4px 24px rgba(0,0,0,.4); }
+    padding: 18px 16px 26px; box-shadow: 0 -4px 24px rgba(0,0,0,.4);
+    max-height: 90vh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
   .sheet h2 { font-size: 16px; margin: 0 0 2px; }
   .sheet .sub2 { color: var(--hint); font-size: 12px; margin-bottom: 14px; }
   .field { margin-bottom: 14px; }
