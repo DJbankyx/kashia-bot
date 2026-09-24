@@ -259,6 +259,103 @@ def build_unit_defs(base_unit: str, edges: list):
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# LEGACY MIGRATION — upgrade old conversion shapes to base_unit + unit_defs.
+# Non-destructive: run on read; if it changes anything the caller persists once.
+# ─────────────────────────────────────────────────────────────────────────
+def _legacy_conversions_to_edges(conversions: dict):
+    """Turn a legacy `conversions` dict (either shape) into build_unit_defs edges.
+
+    Shape A (live catalog):  {"1 carton": {"qty": 24, "unit": "pieces"}}
+    Shape B (legacy db):     {"1 carton": "10 pairs"}   (str value)
+    Both mean: <key> = <value>. Key/value are "<qty> <unit>".
+    Returns list of (qa, ua, qb, ub).
+    """
+    edges = []
+    for key, val in (conversions or {}).items():
+        km = re.match(r"^\s*([\d.]+)\s+(.+?)\s*$", str(key).strip())
+        if not km:
+            continue
+        qa = to_qty(km.group(1)); ua = km.group(2).strip().lower()
+        if isinstance(val, dict):
+            qb = to_qty(val.get("qty", 0)); ub = normalize_unit(val.get("unit", ""))
+        else:
+            vm = re.match(r"^\s*([\d.]+)\s+(.+?)\s*$", str(val).strip())
+            if not vm:
+                continue
+            qb = to_qty(vm.group(1)); ub = vm.group(2).strip().lower()
+        if qa > 0 and qb > 0 and ua and ub:
+            edges.append((qa, ua, qb, ub))
+    return edges
+
+
+def upgrade_product_units(product: dict):
+    """Ensure a product dict has engine-owned `base_unit` + `unit_defs`, upgrading
+    from legacy `primary_unit` + `conversions` on the fly.
+
+    Returns True if the dict was MODIFIED (so the caller can persist once).
+    Idempotent and non-destructive: legacy fields are left in place; already-
+    upgraded products (have unit_defs and base_unit matching primary_unit) are
+    untouched. Never raises.
+    """
+    if not isinstance(product, dict):
+        return False
+    changed = False
+    try:
+        legacy_primary = normalize_unit(product.get("primary_unit", ""))
+        base = normalize_unit(product.get("base_unit", "")) or legacy_primary
+
+        # If there are legacy conversions and no unit_defs yet, build them.
+        has_defs = isinstance(product.get("unit_defs"), dict) and product.get("unit_defs")
+        conversions = product.get("conversions") or {}
+        if conversions and not has_defs:
+            edges = _legacy_conversions_to_edges(conversions)
+            if edges:
+                # If no base is set, infer it from the most common RHS unit of the
+                # edges (the side legacy rules pointed *to*), else fall back.
+                if not base:
+                    rhs = {}
+                    for (_qa, _ua, _qb, ub) in edges:
+                        rhs[ub] = rhs.get(ub, 0) + 1
+                    base = max(rhs, key=rhs.get) if rhs else ""
+                if base:
+                    defs, _conflicts = build_unit_defs(base, edges)
+                    if defs:
+                        product["unit_defs"] = defs
+                        changed = True
+
+        # Keep base_unit present + in sync with legacy primary_unit.
+        if base and product.get("base_unit") != base:
+            product["base_unit"] = base
+            changed = True
+        # Back-fill legacy primary_unit if the product only had base_unit (web/new).
+        if base and not legacy_primary:
+            product["primary_unit"] = base
+            changed = True
+    except Exception:
+        return changed
+    return changed
+
+
+def product_units(product: dict):
+    """Convenience read: return (base_unit, unit_defs) for a product, tolerant of
+    legacy-only products (does an in-memory upgrade without persisting)."""
+    if not isinstance(product, dict):
+        return ("", {})
+    base = normalize_unit(product.get("base_unit", "")) or normalize_unit(product.get("primary_unit", ""))
+    defs = product.get("unit_defs")
+    if not isinstance(defs, dict):
+        defs = {}
+    if not defs and (product.get("conversions") or not base):
+        # in-memory upgrade (does not mutate the caller's persisted copy intent;
+        # upgrade_product_units mutates + signals persist separately)
+        tmp = dict(product)
+        upgrade_product_units(tmp)
+        base = normalize_unit(tmp.get("base_unit", "")) or base
+        defs = tmp.get("unit_defs") if isinstance(tmp.get("unit_defs"), dict) else {}
+    return (base, defs or {})
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # DETERMINISTIC PARSERS (no AI)
 # ─────────────────────────────────────────────────────────────────────────
 # "1 bag = 20 pieces" | "1 bag = 20 piece" | "20 bags = 1 truck"
@@ -407,6 +504,39 @@ if __name__ == "__main__":
     ck("parse '2.5 kg'", parse_quantity("2.5 kg"), (2.5, "kg"))
     ck("parse 'three cartons'", parse_quantity("three cartons"), (3.0, "cartons"))
     ck("parse '2 bags'", parse_quantity("2 bags"), (2.0, "bags"))
+
+    # migration — legacy Model-A (dict values)
+    prodA = {
+        "primary_unit": "pieces",
+        "conversions": {
+            "1 bag": {"qty": 20, "unit": "pieces"},
+            "1 truck": {"qty": 4000, "unit": "pieces"},
+        },
+    }
+    chgA = upgrade_product_units(prodA)
+    ck("migrateA changed", chgA, True)
+    ck("migrateA base", prodA.get("base_unit"), "pieces")
+    ck("migrateA bag", prodA["unit_defs"].get("bag"), 20.0)
+    ck("migrateA truck", prodA["unit_defs"].get("truck"), 4000.0)
+    ck("migrateA idempotent", upgrade_product_units(prodA), False)
+
+    # migration — legacy Model-B (str values), base inferred
+    prodB = {"conversions": {"1 carton": "24 pieces", "1 dozen": "12 pieces"}}
+    chgB = upgrade_product_units(prodB)
+    ck("migrateB changed", chgB, True)
+    ck("migrateB base_inferred", prodB.get("base_unit"), "pieces")
+    ck("migrateB carton", prodB["unit_defs"].get("carton"), 24.0)
+    ck("migrateB dozen", prodB["unit_defs"].get("dozen"), 12.0)
+
+    # product_units read on a legacy-only product doesn't need pre-upgrade
+    base_r, defs_r = product_units({"primary_unit": "pieces",
+                                    "conversions": {"1 bag": {"qty": 20, "unit": "pieces"}}})
+    ck("product_units base", base_r, "pieces")
+    ck("product_units bag", defs_r.get("bag"), 20.0)
+
+    # already-upgraded product untouched
+    up = {"base_unit": "kg", "primary_unit": "kg", "unit_defs": {"bag": 25.0}}
+    ck("upgraded_untouched", upgrade_product_units(up), False)
 
     print()
     if fails:
