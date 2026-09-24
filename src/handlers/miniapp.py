@@ -430,7 +430,10 @@ def _summary(event, user_id: str):
             "inventory_units": pos["inventory_units"],
             "receivables": pos["receivables"],
             "payables": pos["payables"],
-            "net_position": pos["net_worth_proxy"],
+            # TRUE net worth now includes cash at hand (cash + inventory +
+            # receivables − payables). Falls back to the pre-cash proxy for
+            # safety if an older engine build is deployed.
+            "net_position": pos.get("net_worth", pos.get("net_worth_proxy", 0)),
         },
         "uncosted_sales": pnl["uncosted_count"],
         # Stage 4: catalog-first setup health (nudge, never blocks).
@@ -1519,7 +1522,7 @@ _PAGE_HTML = """<!doctype html>
     </div>
     <div class="row">
       <div class="card tappable" onclick="showTab('cat')"><div class="k">Inventory value ›</div><div class="v" id="invval">—</div></div>
-      <div class="card"><div class="k">Net position</div><div class="v" id="netpos">—</div></div>
+      <div class="card"><div class="k">Net worth</div><div class="v" id="netpos">—</div><div class="sub">Cash + stock + owed to you − you owe</div></div>
     </div>
     <div class="card hidden" id="chartTop">
       <div class="k">Top products</div><img class="chart" id="imgTop" alt="">

@@ -1409,6 +1409,64 @@ class TransactionHandler:
             logger.error(f"record_transaction_web error: {e}\n{traceback.format_exc()}")
             return {"ok": False, "error": "could not record — please try again"}
 
+    def record_cash_adjustment(self, phone_number: str, amount, direction: str,
+                               reason: str = "") -> dict:
+        """Record a MANUAL cash movement that is NOT a sale/purchase/expense:
+        owner withdrawal, capital injection, bank<->cash transfer, or a
+        correction. Stored as type='cash_adjustment' so it is counted by
+        accounting.cash_position (in => +, out => -) but EXCLUDED from the P&L
+        (period_pnl only reads sale/expense) and from the Records sale/purchase/
+        expense lists. Stateless (Mini App). Returns {ok, transaction_id, ...} —
+        never raises.
+
+        direction: 'in' (cash added) | 'out' (cash removed).
+        reason:    'withdrawal' | 'injection' | 'bank_transfer' | 'correction'.
+        Net-worth effect (read by position()): withdrawal/injection change net
+        worth; bank_transfer + correction are cash-neutral to net worth (a
+        transfer just moves the pocket; a correction fixes a count error).
+        """
+        try:
+            from utils.money import money_round
+            amt = money_round(amount or 0)
+            if amt <= 0:
+                return {"ok": False, "error": "enter an amount greater than 0"}
+            direction = str(direction or "in").lower()
+            if direction not in ("in", "out"):
+                direction = "in"
+            reason = str(reason or "").lower().strip() or "adjustment"
+            label_map = {
+                "withdrawal": "Owner withdrawal",
+                "injection": "Capital injection",
+                "bank_transfer": "Bank/cash transfer",
+                "correction": "Cash correction",
+            }
+            desc = label_map.get(reason, "Cash adjustment")
+
+            result = self.db.save_transaction(
+                phone_number,
+                amt,
+                "cash_adjustment",
+                desc,
+                "Cash Adjustment",
+                extra_details={
+                    "direction": direction,
+                    "reason": reason,
+                    "source": "miniapp",
+                },
+            )
+            tx_id = result.get("transaction_id", "") if isinstance(result, dict) else ""
+            return {
+                "ok": True,
+                "transaction_id": tx_id,
+                "type": "cash_adjustment",
+                "amount": amt,
+                "direction": direction,
+                "reason": reason,
+            }
+        except Exception as e:
+            logger.error(f"record_cash_adjustment error: {e}")
+            return {"ok": False, "error": "could not record — please try again"}
+
     # ═══════════════════════════════════════════════════════════
     #  RETURNS / REFUNDS  (build #4 — R1 engine core)
     # ═══════════════════════════════════════════════════════════

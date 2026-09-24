@@ -559,6 +559,19 @@ class Accounting:
                     cash_out += _cash_paid(t)         # refund to customer
                 elif ttype == "purchase_return":
                     cash_in += _cash_received(t)      # refund from supplier
+                elif ttype == "cash_adjustment":
+                    # Manual cash move (owner withdrawal / capital injection /
+                    # bank<->cash transfer / correction). extra_details.direction
+                    # says which way; amount is always positive. NOT a P&L event
+                    # (period_pnl/records ignore this type) — cash-only.
+                    ed = t.get("extra_details") or {}
+                    direction = str(ed.get("direction")
+                                    or t.get("cash_direction") or "in").lower()
+                    amt = int(float(t.get("amount", 0) or 0))
+                    if direction == "out":
+                        cash_out += amt
+                    else:
+                        cash_in += amt
                 # production moves no cash (internal) — excluded.
             opening = int(float(opening or 0))
             return {
@@ -650,11 +663,28 @@ class Accounting:
 
         priced_items.sort(key=lambda x: x[2], reverse=True)
 
+        # Cash at hand completes the balance sheet: assets = cash + inventory +
+        # receivables; liabilities = payables. With cash tracked (incl. manual
+        # cash_adjustments), net_worth is a TRUE net worth, not just a proxy.
+        try:
+            user = self.db.get_user(phone_number) or {}
+            cash_at_hand = self.cash_position(
+                phone_number, opening=user.get("opening_cash", 0))["cash_at_hand"]
+        except Exception as e:
+            logger.debug(f"position cash read failed: {e}")
+            cash_at_hand = 0
+
         return {
             "inventory_value": inv_value,
             "inventory_units": inv_units,
             "receivables": receivables,
             "payables": payables,
+            "cash_at_hand": cash_at_hand,
+            # TRUE net worth now that cash is tracked: cash + inventory +
+            # receivables − payables.
+            "net_worth": cash_at_hand + inv_value + receivables - payables,
+            # Kept for back-compat (older callers) — inventory + receivables −
+            # payables, WITHOUT cash.
             "net_worth_proxy": inv_value + receivables - payables,
             "item_count": len(priced_items),
             "top_items": priced_items[:10],
