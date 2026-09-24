@@ -346,3 +346,30 @@ ambiguous (per-unit vs total).
    = quantity × this. Applied to the static label + both dynamic JS setters.
 
 Verified PYC_OK / JS_PARSE_OK / SURR 0. Deployed build 20260924123545.
+
+---
+
+## 🐞 500 (lone surrogate) + CATALOG GROUPING (2026-09-24, commit 2dcec0f — NOT deployed by agent)
+
+1. **`{"message":"Internal server error"}` = my regression.** The recipe-cost
+   hint I added used SINGLE-backslash emoji escapes `"\ud83d\udca1 ..."`. In a
+   Python triple-quoted string that's a LONE SURROGATE pair in the string value
+   → the served page can't UTF-8 encode → 500 (`UnicodeEncodeError: surrogates
+   not allowed`, position ~91877). CloudWatch confirmed. Fixed → double-backslash
+   `"\\ud83d\\udca1 ..."` so the JS engine decodes it, not Python.
+   **Corrected guardrail:** scan the built `_PAGE_HTML` string (and `.encode(
+   "utf-8")` it), NOT just the source file — a `\ud83d` in source reads as 0
+   surrogates in the file bytes but IS a surrogate in the string value. The
+   `_jslint.py` check now does `html.encode("utf-8")` on the page object.
+2. **Catalog mixed products + raw materials + overhead** (7 items in one list).
+   `renderCatalog` grouped only by category. Rewrote it to group by item TYPE
+   first — sections "Products / Raw materials / Supplies / Overheads / Services"
+   (category shown inline on each row). `_row_from_product` already carries
+   `item_type`, so no server change needed. A manufacturer's sellable products
+   are now separated from inputs.
+   (Note: the owner's earlier "Nylon" not showing is a DATA issue — if it isn't
+   in the catalog it must be re-registered; the grouping fix will surface any
+   raw_material that IS saved under "Raw materials".)
+
+Verified: PYC_OK, PAGE_SURR 0, PAGE_ENCODE_OK, JS_PARSE_OK.
+**DEPLOY IS THE OWNER'S** — run `./deploy.sh dev` when ready.
