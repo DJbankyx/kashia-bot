@@ -324,3 +324,25 @@ Category). Set the base **Unit** field first (the canonical stock unit, e.g.
 `pieces`), then type each rule in the box — `1 bag = 20 pieces`, `1 crate = 12
 bags` — and tap **Add**. Standard units (kg, g, litre, ml…) need no rule. Each
 saved rule shows as `1 bag = 20 pieces` under the section.
+
+---
+
+## 🐞 RECIPE OVERLAY + COST CLARITY (2026-09-24, build 20260924123545)
+
+Reported: tapping "Set / edit recipe" looked unresponsive, then the recipe
+screen appeared only after tapping Cancel; and the recipe cost field was
+ambiguous (per-unit vs total).
+
+1. **Overlay z-index stacking.** `#overlay` (edit sheet) and `#recipeOverlay`
+   both use `.overlay { z-index: 50 }`. `openRecipe` opened the recipe overlay
+   but never CLOSED the edit sheet, and the edit sheet is later in the DOM → it
+   rendered ON TOP, hiding the recipe screen. Tapping Cancel closed the sheet and
+   revealed the recipe underneath (looked like it was "loading"). Fix:
+   `openRecipe` now hides `#overlay` first; `closeRecipe` returns to the catalog
+   grid (clears `editing`) instead of leaving a stale sheet.
+2. **Recipe cost clarity.** Relabelled to "Cost of ONE unit of this material"
+   (materials) / "Rate per unit of usage" (overhead), added a hint: enter the
+   price of ONE unit (₦1,200 per kg of nylon), NOT the batch total; product cost
+   = quantity × this. Applied to the static label + both dynamic JS setters.
+
+Verified PYC_OK / JS_PARSE_OK / SURR 0. Deployed build 20260924123545.
