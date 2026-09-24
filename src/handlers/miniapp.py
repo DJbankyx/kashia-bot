@@ -3281,11 +3281,38 @@ _PAGE_HTML = """<!doctype html>
   function renderPickerProducts() {
     var q = (document.getElementById("pick-search").value || "").toLowerCase().trim();
     var list = document.getElementById("pick-list");
+    // Filter by transaction type so a SALE never lists raw materials/overheads
+    // and a PURCHASE never lists finished goods you make (not buy). item_type:
+    // "" (trading), "product"/"finished_product" (sellable), "raw_material",
+    // "supply", "overhead", "service".
+    function typeAllowed(p) {
+      var it = (p.item_type || "").toLowerCase();
+      if (recTypeVal === "sale") {
+        // Sellable outputs only: finished/product/service or untyped (trading).
+        return it === "" || it === "product" || it === "finished_product"
+            || it === "service";
+      }
+      if (recTypeVal === "purchase") {
+        // Things you BUY: raw materials, supplies, or untyped trading stock.
+        // Not finished goods (you produce those) and not overhead (a rate, not
+        // a stocked purchase — recorded as an expense).
+        return it === "" || it === "product" || it === "raw_material"
+            || it === "supply";
+      }
+      return true;  // expense picker is hidden, but never over-filter.
+    }
     var rows = (invData || []).filter(function (p) {
+      if (!typeAllowed(p)) return false;
       return !q || (p.name || "").toLowerCase().indexOf(q) >= 0;
     });
     list.innerHTML = "";
-    if (!rows.length) { list.innerHTML = '<div class="muted">No products. Add one in chat first.</div>'; return; }
+    if (!rows.length) {
+      var hint = (recTypeVal === "purchase")
+        ? "No raw materials or stock to buy. Add one in Catalog first."
+        : "No sellable products. Add one in Catalog first.";
+      list.innerHTML = '<div class="muted">' + hint + '</div>';
+      return;
+    }
     rows.forEach(function (p) {
       var d = document.createElement("div");
       d.className = "item tappable";
