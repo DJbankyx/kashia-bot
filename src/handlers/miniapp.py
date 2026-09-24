@@ -461,11 +461,19 @@ def _row_from_product(p: dict, cat=None) -> dict:
                 stock = _num(roll["stock"])
         except Exception:
             pass
+    # Units for the web: base unit + custom conversion rules (upgraded on read).
+    try:
+        from utils import units as _units
+        _base_unit, _unit_defs = _units.product_units(p)
+    except Exception:
+        _base_unit, _unit_defs = (p.get("primary_unit") or ""), {}
     return {
         "key": p.get("_key"),
         "name": p.get("name"),
         "category": p.get("category") or "",
-        "unit": p.get("primary_unit") or "",
+        "unit": _base_unit or (p.get("primary_unit") or ""),
+        "base_unit": _base_unit or (p.get("primary_unit") or ""),
+        "unit_defs": _unit_defs or {},
         "stock": stock,
         "cost": cost,
         "sale_price": money_round(p.get("sale_price") or 0),
@@ -661,7 +669,43 @@ def _product_write(event, user_id: str):
         cat._save_products(user_id, products)
         return _echo(key)
     if action == "set_unit":
-        prod["primary_unit"] = str(data.get("unit", "") or "").strip()
+        # Set the canonical BASE unit. Keep primary_unit + base_unit in sync and
+        # DO NOT clobber any custom conversion rules the product already has.
+        from utils import units as _units
+        u = _units.normalize_unit(str(data.get("unit", "") or ""))
+        prod["primary_unit"] = u
+        prod["base_unit"] = u
+        cat._save_products(user_id, products)
+        return _echo(key)
+    if action == "set_conversion":
+        # Teach a custom unit rule from the web, e.g. "1 bag = 20 pieces".
+        # Same shared engine as chat: parse, rebuild the multi-hop graph to the
+        # product's base, reject contradictions, echo the resolved factor.
+        from utils import units as _units
+        text = str(data.get("rule", "") or "").strip()
+        rule = _units.parse_rule(text)
+        if not rule:
+            return _json(400, {"error": "Use a format like '1 bag = 20 pieces'"})
+        _units.upgrade_product_units(prod)
+        qa, ua, qb, ub = rule
+        base_unit = _units.normalize_unit(prod.get("base_unit", "")) \
+            or _units.normalize_unit(prod.get("primary_unit", "")) \
+            or _units.normalize_unit(ub)
+        prior_edges = list(prod.get("unit_edges", []) or [])
+        _, conflicts = _units.build_unit_defs(base_unit, prior_edges + [[qa, ua, qb, ub]])
+        if conflicts:
+            return _json(400, {"error": "That conflicts with an existing rule: "
+                                        + "; ".join(conflicts)})
+        raw_edges = [e for e in prior_edges
+                     if not (len(e) == 4
+                             and _units.normalize_unit(e[1]) == _units.normalize_unit(ua)
+                             and _units.normalize_unit(e[3]) == _units.normalize_unit(ub))]
+        raw_edges.append([qa, ua, qb, ub])
+        defs, _ = _units.build_unit_defs(base_unit, raw_edges)
+        prod["base_unit"] = base_unit
+        prod["primary_unit"] = base_unit
+        prod["unit_edges"] = raw_edges
+        prod["unit_defs"] = defs
         cat._save_products(user_id, products)
         return _echo(key)
     if action == "set_category":
@@ -1627,6 +1671,16 @@ _PAGE_HTML = """<!doctype html>
         <label>Category</label>
         <input id="sh-cat" placeholder="e.g. Vehicles">
       </div>
+      <div class="field">
+        <label>Units &amp; conversions</label>
+        <div class="sub2">Standard units (kg, g, litre, ml...) work automatically. Teach custom ones like a bag or carton.</div>
+        <div id="sh-units-list" class="sub2" style="margin:4px 0"></div>
+        <div style="display:flex;gap:6px">
+          <input id="sh-conv" placeholder="e.g. 1 bag = 20 pieces" style="flex:1">
+          <button class="btn" id="sh-conv-add" onclick="addConversion()" style="white-space:nowrap">Add</button>
+        </div>
+        <div class="sheeterr" id="sh-conv-err"></div>
+      </div>
       <div class="sheeterr" id="sh-err"></div>
       <div class="actions">
         <button class="btn cancel" onclick="closeSheet()">Cancel</button>
@@ -2550,6 +2604,9 @@ _PAGE_HTML = """<!doctype html>
     document.getElementById("sh-cat").value = p.category || "";
     document.getElementById("sh-err").textContent = "";
     document.getElementById("sh-save").disabled = false;
+    renderUnitsList(p);
+    var ce = document.getElementById("sh-conv-err"); if (ce) ce.textContent = "";
+    var ci = document.getElementById("sh-conv"); if (ci) ci.value = "";
     // Stage 1 — recipe-driven cost for mfg/hybrid finished goods (Decision A).
     // Hide the manual cost input and show the rolled-up recipe cost read-only.
     // Trading + raw materials keep the manual cost field exactly as before.
@@ -2577,6 +2634,51 @@ _PAGE_HTML = """<!doctype html>
       recipeWrap.classList.add("hidden");
     }
   }
+  function renderUnitsList(p) {
+    var box = document.getElementById("sh-units-list");
+    if (!box) return;
+    var base = p.base_unit || p.unit || "";
+    var defs = p.unit_defs || {};
+    var keys = Object.keys(defs);
+    if (!base && !keys.length) { box.textContent = "No base unit set yet."; return; }
+    var parts = [];
+    if (base) parts.push("Base: " + base);
+    keys.forEach(function (u) {
+      parts.push("1 " + u + " = " + fmtNum(defs[u]) + " " + base);
+    });
+    box.textContent = parts.join("  •  ");
+  }
+  function fmtNum(n) {
+    n = Number(n || 0);
+    return (n === Math.round(n)) ? String(Math.round(n)) : String(n);
+  }
+  window.addConversion = function () {
+    if (!editing) return;
+    var input = document.getElementById("sh-conv");
+    var err = document.getElementById("sh-conv-err");
+    var btn = document.getElementById("sh-conv-add");
+    err.textContent = "";
+    var rule = (input.value || "").trim();
+    if (!rule) { err.textContent = "Type a rule like 1 bag = 20 pieces"; return; }
+    btn.disabled = true;
+    apiPost("api/product", { action: "set_conversion", key: editing.key, rule: rule })
+      .then(function (j) {
+        btn.disabled = false;
+        if (j && j.product) {
+          editing = j.product;
+          // patch the inventory row so the list stays in sync
+          invData = (invData || []).map(function (x) {
+            return x.key === editing.key ? editing : x;
+          });
+          renderUnitsList(editing);
+          input.value = "";
+        }
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        err.textContent = e.message || "Could not add that conversion";
+      });
+  };
   window.closeSheet = function () {
     document.getElementById("overlay").classList.add("hidden");
     editing = null;
