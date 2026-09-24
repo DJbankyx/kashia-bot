@@ -246,6 +246,8 @@ def lambda_handler(event, context):
             return _produce_write(event, user_id)
         if method == "POST" and path.endswith("/app/api/cash-adjust"):
             return _cash_adjust_write(event, user_id)
+        if method == "POST" and path.endswith("/app/api/opening-cash"):
+            return _opening_cash_write(event, user_id)
 
         # ── Reads ──
         if method == "GET" and path.endswith("/app/api/recipe"):
@@ -418,6 +420,8 @@ def _summary(event, user_id: str):
             "net": cf["net_cash"],
             # All-time running balance (snapshot). Distinct from net (period).
             "at_hand": cashpos["cash_at_hand"],
+            # Editable starting balance (the cash held before recording began).
+            "opening": cashpos["opening"],
         },
         "debt": {
             "owed_to_me": pos["receivables"],
@@ -926,6 +930,29 @@ def _cash_adjust_write(event, user_id: str):
     if not res.get("ok"):
         return _json(400, res)
     return _json(200, res)
+
+
+def _opening_cash_write(event, user_id: str):
+    """Set the OPENING cash balance — the cash the business held before it
+    started recording in Kashia. This is an ABSOLUTE figure (not a ± movement):
+    `cash_position` / `position` add `user.opening_cash` to the running total, so
+    both cash-at-hand and net worth shift by the new opening. Body: {amount}."""
+    from services.database import Database
+    from utils.money import money_round
+
+    data = _parse_body(event)
+    try:
+        amount = money_round(data.get("amount") or 0)
+    except Exception:
+        amount = 0
+    if amount < 0:
+        return _json(400, {"error": "opening balance can't be negative"})
+    try:
+        Database().update_user_field(user_id, "opening_cash", amount)
+        return _json(200, {"ok": True, "opening_cash": amount})
+    except Exception as e:
+        logger.error(f"_opening_cash_write failed: {e}")
+        return _json(400, {"ok": False, "error": "could not save the opening balance"})
 
 
 def _transaction_write(event, user_id: str):
@@ -1752,6 +1779,7 @@ _PAGE_HTML = """<!doctype html>
           <div class="chip" data-cr="injection" onclick="cashReason('injection')">➕ Money in (capital)</div>
           <div class="chip" data-cr="bank_transfer" onclick="cashReason('bank_transfer')">🏦 Bank/cash transfer</div>
           <div class="chip" data-cr="correction" onclick="cashReason('correction')">✏️ Correction</div>
+          <div class="chip" data-cr="opening" onclick="cashReason('opening')">🏁 Set opening balance</div>
         </div>
       </div>
       <div class="field" id="cash-dir-wrap">
@@ -1762,8 +1790,9 @@ _PAGE_HTML = """<!doctype html>
         </div>
       </div>
       <div class="field">
-        <label>Amount (\u20a6)</label>
+        <label id="cash-amount-label">Amount (\u20a6)</label>
         <input id="cash-amount" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 5000">
+        <div class="sub2" id="cash-amount-hint"></div>
       </div>
       <div class="sheeterr" id="cash-err"></div>
       <div class="actions">
@@ -2283,6 +2312,8 @@ _PAGE_HTML = """<!doctype html>
         // All-time cash at hand (snapshot). Guard: older payloads may omit it.
         var chEl = document.getElementById("cashhand");
         if (chEl && d.cash && d.cash.at_hand != null) setSigned("cashhand", d.cash.at_hand);
+        // Remember the editable opening balance for the "Set opening balance" flow.
+        curOpeningCash = (d.cash && d.cash.opening != null) ? d.cash.opening : 0;
         document.getElementById("owed").textContent = naira(d.debt.owed_to_me);
         document.getElementById("iowe").textContent = naira(d.debt.i_owe);
         var ib = document.getElementById("iowebreak");
@@ -2670,6 +2701,7 @@ _PAGE_HTML = """<!doctype html>
   // ── Cash adjustment (manual cash in/out that isn't a sale/purchase/expense) ──
   var cashReasonVal = "withdrawal";
   var cashDirVal = "out";
+  var curOpeningCash = 0;   // last-known opening balance (for the opening flow)
   window.openCashAdjust = function () {
     cashReasonVal = "withdrawal"; cashDirVal = "out";
     document.getElementById("cash-amount").value = "";
@@ -2693,9 +2725,27 @@ _PAGE_HTML = """<!doctype html>
   window.cashReason = function (r) {
     cashReasonVal = r;
     cashSyncChips("cash-reason", r, "data-cr");
+    var dirWrap = document.getElementById("cash-dir-wrap");
+    var amtLabel = document.getElementById("cash-amount-label");
+    var amtHint = document.getElementById("cash-amount-hint");
+    var amtInput = document.getElementById("cash-amount");
+    if (r === "opening") {
+      // ABSOLUTE starting balance, not a ± movement. Hide direction, relabel,
+      // and prefill with the current opening value.
+      dirWrap.style.display = "none";
+      amtLabel.textContent = "Opening cash balance (\u20a6)";
+      if (amtHint) amtHint.textContent =
+        "\\uD83C\\uDFC1 The cash you had before you started recording in Kashia. " +
+        "It shifts your cash at hand \\u0026 net worth.";
+      amtInput.value = (curOpeningCash != null ? curOpeningCash : 0);
+      return;
+    }
+    // Non-opening reasons: a ± movement. Restore the amount label + clear hint.
+    amtLabel.textContent = "Amount (\u20a6)";
+    if (amtHint) amtHint.textContent = "";
+    if (amtInput.value && cashReasonVal !== "opening") { /* keep typed value */ }
     // Withdrawal is always out; capital injection always in. Bank transfer +
     // correction can go either way, so let the owner pick the direction.
-    var dirWrap = document.getElementById("cash-dir-wrap");
     if (r === "withdrawal") { cashDir("out"); dirWrap.style.display = "none"; }
     else if (r === "injection") { cashDir("in"); dirWrap.style.display = "none"; }
     else { dirWrap.style.display = ""; }
@@ -2707,9 +2757,27 @@ _PAGE_HTML = """<!doctype html>
   window.saveCashAdjust = function () {
     var err = document.getElementById("cash-err");
     err.textContent = "";
-    var amt = parseFloat(document.getElementById("cash-amount").value) || 0;
-    if (amt <= 0) { err.textContent = "Enter an amount greater than 0."; return; }
+    var raw = document.getElementById("cash-amount").value;
+    var amt = parseFloat(raw) || 0;
     var btn = document.getElementById("cash-save");
+    // OPENING BALANCE: an ABSOLUTE value (0 is allowed — clears it). Separate
+    // endpoint, no direction. Everything else is a ± movement (must be > 0).
+    if (cashReasonVal === "opening") {
+      if (raw === "" || amt < 0) { err.textContent = "Enter the opening balance (0 or more)."; return; }
+      btn.disabled = true;
+      apiPost("api/opening-cash", { amount: amt })
+        .then(function () {
+          closeCashAdjust();
+          if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+          loadSummary();   // opening shifts cash at hand + net worth.
+        })
+        .catch(function (e) {
+          btn.disabled = false;
+          err.textContent = (e && e.message) || "Could not save the opening balance.";
+        });
+      return;
+    }
+    if (amt <= 0) { err.textContent = "Enter an amount greater than 0."; return; }
     btn.disabled = true;
     apiPost("api/cash-adjust", { amount: amt, direction: cashDirVal, reason: cashReasonVal })
       .then(function () {

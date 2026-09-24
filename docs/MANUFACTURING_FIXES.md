@@ -114,3 +114,15 @@ sale/purchase/expense, and cash is only one part of what the business owns.
 
 Commits: `17f3d1b` (engine + net worth), `0f71b6a` (UI + `/app/api/cash-adjust`
 route → **deploy required**).
+
+### Editable opening cash balance (2026-09-25)
+
+Cash at hand started at "since you began recording" (opening 0). Now the owner
+can set the actual starting cash: the cash-adjust sheet gains a **"🏁 Set
+opening balance"** reason that switches to absolute-value mode (relabelled
+"Opening cash balance", direction hidden, prefilled with the current value) and
+POSTs to **`/app/api/opening-cash`** → `db.update_user_field(user, opening_cash)`.
+`cash_position(opening=user.opening_cash)` already adds it, so both cash at hand
+AND net worth shift by the new opening (0 is allowed — clears it). Summary
+payload now returns `cash.opening`. Verified: opening 100k + 80k sale → cash at
+hand 180k; net worth includes it. New route → **deploy required**.
