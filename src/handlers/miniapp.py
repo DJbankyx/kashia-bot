@@ -1735,6 +1735,7 @@ _PAGE_HTML = """<!doctype html>
         <div class="row" style="gap:8px">
           <input id="rec-qty" type="number" inputmode="decimal" min="0" step="any" value="1" style="flex:2">
           <select id="rec-unit-sel" class="hidden" style="flex:1;padding:11px 8px"></select>
+          <input id="rec-unit-free" class="hidden" placeholder="unit e.g. litres" style="flex:1">
         </div>
         <div class="sub2" id="rec-qty-hint">💡 Counted in this item's unit (set the unit on the product in Catalog). Can be fractional, e.g. 0.5 kg. Stock drops by this amount.</div>
       </div>
@@ -2516,8 +2517,10 @@ _PAGE_HTML = """<!doctype html>
   // ── Records tab: period/date-scoped transaction list + export ──
   var REC_PERIODS = [["today","Today"],["week","Week"],["month","This month"],
                      ["last_month","Last month"]];
+  var recExpFilter = "";   // active expense-name drill (Expenses tab); "" = all
   window.recSetType = function (t) {
     recTabType = t;
+    recExpFilter = "";     // clear any expense drill when switching type
     var tabs = document.getElementById("rec-type-tabs").children;
     for (var i = 0; i < tabs.length; i++) {
       tabs[i].classList.toggle("active", tabs[i].getAttribute("data-rt") === t);
@@ -2586,6 +2589,7 @@ _PAGE_HTML = """<!doctype html>
     return q;
   }
   function loadRecords() {
+    recExpFilter = "";   // a fresh period/type load starts unfiltered
     document.getElementById("rec-msg").textContent = "";
     document.getElementById("rec-list").innerHTML = '<div class="muted">Loading...</div>';
     api("api/records?" + recQuery())
@@ -2604,19 +2608,71 @@ _PAGE_HTML = """<!doctype html>
       document.getElementById("rec-msg").textContent = "";
       return;
     }
+    list.innerHTML = "";
+
+    // Expense analysis: group by name (e.g. Fuel, Rent) so the owner sees where
+    // money goes at a glance and can tap a name to see just those entries. Only
+    // for the Expenses tab; sales/purchases keep the plain chronological list.
+    if (recTabType === "expense" && !recExpFilter) {
+      var groups = {};
+      rows.forEach(function (t) {
+        var name = (t.desc || "Other").trim();
+        var key = name.toLowerCase();
+        if (!groups[key]) groups[key] = { name: name, total: 0, count: 0 };
+        groups[key].total += Number(t.amount || 0);
+        groups[key].count += 1;
+      });
+      var gk = Object.keys(groups);
+      if (gk.length > 1) {   // a single expense name adds no insight
+        gk.sort(function (a, b) { return groups[b].total - groups[a].total; });
+        var seclbl = document.createElement("div");
+        seclbl.className = "seclabel"; seclbl.textContent = "Spend by expense";
+        list.appendChild(seclbl);
+        var gcard = document.createElement("div");
+        gcard.className = "card"; gcard.style.padding = "4px 0";
+        gk.forEach(function (k) {
+          var g = groups[k];
+          var gd = document.createElement("div");
+          gd.className = "item tappable";
+          gd.innerHTML = '<div><div class="name">' + escapeHtml(g.name) +
+            '</div><div class="meta">' + g.count + " entr" + (g.count === 1 ? "y" : "ies") + '</div></div>' +
+            '<div class="right"><div class="stock">' + naira(g.total) + '</div></div>';
+          gd.onclick = (function (nm) { return function () { recExpFilter = nm; renderRecords(d); }; })(g.name);
+          gcard.appendChild(gd);
+        });
+        list.appendChild(gcard);
+        var alllbl = document.createElement("div");
+        alllbl.className = "seclabel"; alllbl.textContent = "All entries";
+        list.appendChild(alllbl);
+      }
+    }
+
+    // Apply an active expense-name filter (set by tapping a group above).
+    var shown = rows;
+    if (recTabType === "expense" && recExpFilter) {
+      var want = recExpFilter.toLowerCase();
+      shown = rows.filter(function (t) { return (t.desc || "").trim().toLowerCase() === want; });
+      var back = document.createElement("div");
+      back.className = "item tappable";
+      back.innerHTML = '<div class="name">\\u2b05\\ufe0f All expenses</div>' +
+        '<div class="right"><div class="meta">' + escapeHtml(recExpFilter) + '</div></div>';
+      back.onclick = function () { recExpFilter = ""; renderRecords(d); };
+      list.appendChild(back);
+    }
+
     var card = document.createElement("div");
     card.className = "card"; card.style.padding = "4px 0";
-    rows.forEach(function (t) {
+    shown.forEach(function (t) {
       var meta = [t.date || ""];
+      if (t.qty) meta.push(String(t.qty));
       if (t.vendor) meta.push(t.vendor);
       var div = document.createElement("div");
       div.className = "item";
       div.innerHTML = '<div><div class="name">' + escapeHtml(t.desc || "?") +
-        '</div><div class="meta">' + escapeHtml(meta.join(" · ")) + '</div></div>' +
+        '</div><div class="meta">' + escapeHtml(meta.join(" \u00b7 ")) + '</div></div>' +
         '<div class="right"><div class="stock">' + naira(t.amount || 0) + '</div></div>';
       card.appendChild(div);
     });
-    list.innerHTML = "";
     list.appendChild(card);
     var note = d.count + " record(s) · " + (d.period_label || "");
     if (d.has_more) note += " · showing " + rows.length + " of " + d.count + " (narrow the date or export for all)";
@@ -3480,8 +3536,28 @@ _PAGE_HTML = """<!doctype html>
     var descInput = document.getElementById("rec-desc");
     descInput.classList.toggle("hidden", !isExpense);
     if (isExpense) descInput.placeholder = "e.g. Fuel, Rent";
-    // Cost + quantity + who only make sense for sale/purchase.
-    document.getElementById("rec-qty-wrap").style.display = isExpense ? "none" : "";
+    // Quantity is useful for ALL types now — an expense like "50 litres fuel"
+    // wants a quantity + a free-text unit (expenses have no catalog product, so
+    // no unit selector; the owner just types the unit). Sale/purchase keep the
+    // catalog-driven unit selector.
+    document.getElementById("rec-qty-wrap").style.display = "";
+    var qtyLabel = document.getElementById("rec-qty-label");
+    if (qtyLabel) qtyLabel.textContent = isExpense ? "Quantity (optional)" : "Quantity";
+    var freeUnit = document.getElementById("rec-unit-free");
+    var unitSel = document.getElementById("rec-unit-sel");
+    if (isExpense) {
+      // Free-text unit for expenses; hide the catalog unit selector.
+      if (unitSel) unitSel.classList.add("hidden");
+      if (freeUnit) freeUnit.classList.remove("hidden");
+      var qh = document.getElementById("rec-qty-hint");
+      if (qh) qh.textContent = "\\uD83D\\uDCA1 Optional \\u2014 e.g. 50 litres of fuel. Helps you analyse spend later.";
+      // Clear the sale default of "1" so expense qty is genuinely optional.
+      var rq = document.getElementById("rec-qty");
+      if (rq && rq.value === "1") rq.value = "";
+    } else {
+      if (freeUnit) { freeUnit.classList.add("hidden"); freeUnit.value = ""; }
+      // unit selector visibility is managed by recPopulateUnits on pick.
+    }
     document.getElementById("rec-cost-wrap").style.display = (t === "sale") ? "" : "none";
     document.getElementById("rec-who-label").textContent =
       t === "purchase" ? _ts.supplier_opt : (t === "sale" ? _ts.customer_opt : "Paid to (optional)");
@@ -3603,6 +3679,16 @@ _PAGE_HTML = """<!doctype html>
       body.quantity = String(qty);
       if (pick.key) { body.catalog_product = pick.key; body.catalog_product_name = pick.name; }
       if (pick.variant) body.variant = pick.variant;
+    } else {
+      // Expense quantity is OPTIONAL. Only send it when the owner actually
+      // typed one (>0). Combine with the free-text unit so "50 litres" is kept
+      // as the quantity string (save_transaction stores the numeric part; the
+      // unit rides along in the string for display/analysis).
+      var eq = parseFloat(document.getElementById("rec-qty").value);
+      if (eq > 0) {
+        var eu = (document.getElementById("rec-unit-free").value || "").trim();
+        body.quantity = eu ? (String(eq) + " " + eu) : String(eq);
+      }
     }
     if (recTypeVal === "sale" && cost > 0) body.landing_cost = cost;
     // P2: a Services business's sale is a job/service, not a stocked product —
