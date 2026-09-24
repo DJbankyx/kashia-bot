@@ -372,4 +372,11 @@ Verified PYC_OK / JS_PARSE_OK / SURR 0. Deployed build 20260924123545.
    raw_material that IS saved under "Raw materials".)
 
 Verified: PYC_OK, PAGE_SURR 0, PAGE_ENCODE_OK, JS_PARSE_OK.
-**DEPLOY IS THE OWNER'S** — run `./deploy.sh dev` when ready.
+**DEPLOY IS THE OWNER'S.** Owner deployed → **build 20260924125655 is LIVE**
+(commit `2dcec0f`; `e15d54a` syncs the template build stamp to it). HEAD =
+`e15d54a`, master = origin/master, fully in sync.
+
+## Standing note
+The AGENT DOES NOT DEPLOY — deployment is the owner's. The agent commits + pushes
+and hands over `./deploy.sh dev`; the owner runs it. The template.yaml build
+stamp in the repo is kept synced to the owner's most recent deploy.
