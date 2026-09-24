@@ -1724,8 +1724,11 @@ _PAGE_HTML = """<!doctype html>
       </div>
       <div class="field" id="rec-qty-wrap">
         <label id="rec-qty-label">Quantity</label>
-        <input id="rec-qty" type="number" inputmode="decimal" min="0" step="any" value="1">
-        <div class="sub2">💡 Counted in this item's unit (set the unit on the product in Catalog). Can be fractional, e.g. 0.5 kg. Stock drops by this amount.</div>
+        <div class="row" style="gap:8px">
+          <input id="rec-qty" type="number" inputmode="decimal" min="0" step="any" value="1" style="flex:2">
+          <select id="rec-unit-sel" class="hidden" style="flex:1;padding:11px 8px"></select>
+        </div>
+        <div class="sub2" id="rec-qty-hint">💡 Counted in this item's unit (set the unit on the product in Catalog). Can be fractional, e.g. 0.5 kg. Stock drops by this amount.</div>
       </div>
       <div class="field" id="rec-cost-wrap">
         <label id="rec-cost-label">Cost of goods (total, \u20a6) — optional</label>
@@ -3326,14 +3329,18 @@ _PAGE_HTML = """<!doctype html>
 
   function pickProduct(p) {
     if (!p.has_variants) {
-      // Simple product — done.
-      pick = { key: p.key, name: p.name, variant: null };
+      // Simple product — done. Keep the unit info so the form can offer a
+      // sale/purchase UNIT selector (bag vs piece) instead of forcing a raw
+      // base-unit number.
+      pick = { key: p.key, name: p.name, variant: null,
+               base_unit: p.base_unit || p.unit || "", unit_defs: p.unit_defs || {} };
       applyPick();
       closePicker();
       return;
     }
     // Variant product — drill the tree.
-    pick = { key: p.key, name: p.name, variant: null };
+    pick = { key: p.key, name: p.name, variant: null,
+             base_unit: p.base_unit || p.unit || "", unit_defs: p.unit_defs || {} };
     pickMode = "tree"; pickPath = [];
     document.getElementById("pick-search").style.display = "none";
     drillTree();
@@ -3386,6 +3393,52 @@ _PAGE_HTML = """<!doctype html>
     var el = document.getElementById("rec-prod-text");
     el.textContent = label;
     el.style.color = "var(--text)";
+    recPopulateUnits();
+  }
+
+  // Populate the qty UNIT selector from the picked product's base_unit +
+  // unit_defs. Base unit is the stored/stock unit (factor 1); each custom unit's
+  // factor (base-per-unit) lets the owner enter e.g. "10 bags" and we convert to
+  // base for stock + COGS. Hidden when the product has no custom units (nothing
+  // to choose) so simple products behave exactly as before.
+  function recPopulateUnits() {
+    var sel = document.getElementById("rec-unit-sel");
+    var hint = document.getElementById("rec-qty-hint");
+    if (!sel) return;
+    sel.innerHTML = "";
+    var base = (pick.base_unit || "").trim();
+    var defs = pick.unit_defs || {};
+    var custom = Object.keys(defs);
+    if (!base || !custom.length) {
+      // No alternative units → plain numeric qty in the product's own unit.
+      sel.classList.add("hidden");
+      return;
+    }
+    // Base first (factor 1), then each custom unit.
+    var opts = [[base, 1]];
+    custom.forEach(function (u) {
+      var f = Number(defs[u]) || 0;
+      if (f > 0) opts.push([u, f]);
+    });
+    opts.forEach(function (o) {
+      var op = document.createElement("option");
+      op.value = String(o[1]);           // factor-to-base
+      op.setAttribute("data-unit", o[0]);
+      op.textContent = o[0];
+      sel.appendChild(op);
+    });
+    sel.value = "1";                      // default to base unit
+    sel.classList.remove("hidden");
+    if (hint) hint.textContent =
+      "\\uD83D\\uDCA1 Choose the unit you're recording in (e.g. bag or piece). " +
+      "Stock & cost are kept in " + base + ".";
+  }
+  // Factor to multiply the typed qty by to get BASE units (1 when no selector).
+  function recUnitFactor() {
+    var sel = document.getElementById("rec-unit-sel");
+    if (!sel || sel.classList.contains("hidden")) return 1;
+    var f = parseFloat(sel.value);
+    return (f > 0) ? f : 1;
   }
 
   function uuid() {
@@ -3425,8 +3478,10 @@ _PAGE_HTML = """<!doctype html>
   }
   window.recType = function (t) {
     recTypeVal = t;
-    // Reset the picked product when switching type.
+    // Reset the picked product (and its unit selector) when switching type.
     pick = { key: null, name: null, variant: null };
+    var _us2 = document.getElementById("rec-unit-sel");
+    if (_us2) { _us2.innerHTML = ""; _us2.classList.add("hidden"); }
     document.getElementById("rec-prod-text").textContent = "Tap to choose a product";
     document.getElementById("rec-prod-text").style.color = "var(--hint)";
     var chips = document.querySelectorAll("#rec-type .chip");
@@ -3462,6 +3517,9 @@ _PAGE_HTML = """<!doctype html>
     document.getElementById("rec-desc").value = "";
     document.getElementById("rec-amount").value = "";
     document.getElementById("rec-qty").value = "1";
+    // No product picked yet → no alternative units to choose.
+    var _us = document.getElementById("rec-unit-sel");
+    if (_us) { _us.innerHTML = ""; _us.classList.add("hidden"); }
     document.getElementById("rec-cost").value = "";
     document.getElementById("rec-who").value = "";
     document.getElementById("rec-deposit").value = "";
@@ -3484,7 +3542,12 @@ _PAGE_HTML = """<!doctype html>
     // Quantity may be fractional (0.5 kg, 2.5 L) — parseFloat, not parseInt.
     // Still at least a positive amount; a blank/0 falls back to 1.
     var qtyRawV = parseFloat(document.getElementById("rec-qty").value);
-    var qty = (qtyRawV > 0) ? qtyRawV : 1;
+    var qtyEntered = (qtyRawV > 0) ? qtyRawV : 1;
+    // Convert the entered qty (in the CHOSEN unit) to BASE units, so stock and
+    // COGS stay in the product's base unit. Factor is 1 when there's no unit
+    // selector (simple product). e.g. 10 bags × 20 = 200 pieces if base=piece,
+    // or 10 bags × 1 = 10 bags if base=bag.
+    var qty = qtyEntered * recUnitFactor();
     var cost = parseFloat(document.getElementById("rec-cost").value) || 0;   // COGS money, kobo
     var who = (document.getElementById("rec-who").value || "").trim();
     var err = document.getElementById("rec-err");
