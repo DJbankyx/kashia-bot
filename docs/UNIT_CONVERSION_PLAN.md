@@ -171,3 +171,77 @@ Base = pieces. Teach in ANY order: `1 bag = 20 pieces`, `200 bags = 1 truck`,
 - Record `2 trucks` → stock +8,000 pieces; `3 bags` → +60; `1 load` → +100.
 - Sell `1.5 bags` → −30 pieces (fractional-safe); per-unit cost stays kobo-precise.
 - `1 kg = 1000 g` works with NO teaching (built-in); `kg → litre` refused.
+
+---
+
+## ✅ PROGRESS LOG — phase COMPLETE (2026-09-23)
+
+All 8 tasks done, verified, committed, and pushed to `origin/master`. **Not
+deployed by the agent** — owner runs the deploy (below).
+
+### What shipped (commits, in order)
+1. **`d28268a`** — `utils/units.py` (the engine) + this plan. Standard library
+   (`_SYSTEMS`: mass/volume/length/time/energy/count — ratio-only, NO temp),
+   `factor_to_base` (self→custom `unit_defs`→standard, same-system),
+   `standard_factor` (None on cross-system → refused), `convert(qty,from,base,
+   defs)->(qty,ok)`, `build_unit_defs(base, edges)->(defs, conflicts)` (multi-hop
+   relaxation, both directions, >0.5% contradiction detection),
+   `parse_rule`/`parse_quantity` (deterministic, plural + number-words).
+2. **`8a4d4f6`** — read-time migration: `upgrade_product_units(product)` +
+   `product_units(product)` upgrade BOTH legacy shapes (Model-A dict values and
+   Model-B str values) to `base_unit` + `unit_defs`; idempotent, non-destructive,
+   base inferred from the rules' RHS. No bulk script.
+3. **`3a9ad53`** — catalog: `update_stock` conversion now one engine call;
+   `_handle_set_conversion` is natural-language rule entry that stores RAW edges
+   (`unit_edges`) and rebuilds `unit_defs` each time (order-independent multi-hop),
+   rejects contradictions, echoes the resolved factor, and NEVER clobbers the base
+   unit. `_apply_conversion`/`_get_standard_conversion_factor` kept as thin shims
+   over the engine (a stock-take caller still uses one).
+4. **`77aab1d`** — production + recipe cost use the engine; DELETED the duplicated
+   `ProductionHandler.STANDARD_CONVERSIONS` table and the cross-import in
+   transactions. Recipe cost/recipe_unit = cost/base × factor_to_base(recipe_unit,
+   base). Added `drum` to the volume system.
+5. **`6d96349`** — `get_catalog_for_ai` serializes `base=… , 1 bag=20 pieces` for
+   the LLM prompt; RETIRED the dead legacy converters (`convert_to_base`,
+   `convert_from_base`, `get_conversions_for_product` — no callers, `//`-truncation);
+   `set_primary_unit` now also sets `base_unit`.
+6. **`307d615`** — mini-app parity: server `set_unit` (base-safe, no rule clobber)
+   + new `set_conversion` action (same engine); `_row_from_product` exposes
+   `base_unit`+`unit_defs`; edit sheet shows current rules and an "Add" box to
+   teach a new one. UTF-8/surrogate scan clean.
+7. **`4c5467d`** — `parse_rule_llm`: deterministic-first, ONE gpt-4o-mini call ONLY
+   when the parser fails, fully defensive (no key/network/bad-json → None), result
+   still validated by `build_unit_defs`. Wired into chat + web rule entry.
+
+### The old system (replaced)
+Three drifted mechanisms are gone/unified: per-product `//`-truncating one-hop
+rules that overwrote the base unit; TWO duplicated + diverged `STANDARD_CONVERSIONS`
+tables; and a dead DB-layer str→str converter that fed the AI. One engine now.
+
+### Verified (acceptance E2E, all green — throwaway harness, deleted)
+Owner's scenario through the REAL `CatalogHandler`/`ProductionHandler`:
+- Rules taught in messy order (`1 load = 5 bags` before `1 bag = 20 pieces`):
+  `bag→20`, `truck→4000`, `load→100` — order-independent multi-hop.
+- `200 bags == 1 truck` consistent (no silent 0 from the old `//`).
+- Record `2 trucks`→8,000; `+3 bags`→8,060; `+1 load`→8,160; `−1.5 bags`→8,130
+  (fractional). Cost `₦400/bag → ₦20/piece` (kobo-precise, single rescale).
+- Contradiction `1 bag = 25 pieces` rejected. Standard `500 g → 0.5 kg` with NO
+  teaching. Recipe `250 g → 0.25 kg`. `kg → litre` refused (cross-system warn).
+- Legacy product (old `conversions`) upgrades on first touch.
+`py_compile` + `check_syntax.py` green each step; mini-app UTF-8/surrogate scan = 0.
+
+### Answers to the owner's questions (captured)
+- **Deterministic parser** = plain code (regex + lookup), same result every time,
+  free/instant/offline. LLM is the fallback only when that fails.
+- **Standard units ship built-in** (weight/volume/length/time/energy/count) — the
+  user never teaches `1 kg = 1000 g`. Only business-specific units (bag, carton,
+  truck) are taught. **Temperature intentionally excluded** (offset math, not a
+  ratio; a stock/finance bot doesn't buy temperatures).
+
+### DEPLOY (owner runs — agent does not deploy)
+Engine + mini-app JS only; no `template.yaml` change in this phase.
+```
+cd ~/projects/kashia-bot
+./deploy.sh dev
+```
+(No `set_telegram_commands.sh` — the command menu did not change.)
