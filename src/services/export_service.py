@@ -561,7 +561,13 @@ class ExportService:
             phone_number, filepath, filename,
             caption=f"{label} - {period_label} ({len(transactions)} transactions)")
         if not ok:
-            return [{"type": "text", "content": "⚠️ I built the Excel but couldn't deliver it. Please try again in a moment."}]
+            # Chat delivery failed (Telegram sometimes times out fetching the S3
+            # URL for xlsx). The file IS built + on S3, so hand back the direct
+            # download URL — callers (e.g. the mini app) can offer it as a link
+            # instead of the dead-end "couldn't deliver".
+            return [{"type": "text",
+                     "content": "⚠️ I built the Excel but couldn't send it to your chat. Use the download link instead.",
+                     "download_url": _url or ""}]
         return [{"type": "text", "content": f"\u2705 Excel exported!\n\n{label} \u2014 {period_label}\n{len(transactions)} transactions | Total: NGN {_m(total)}\n\n\U0001f4ce Check your chat for the file."}]
 
     def _export_filtered_pdf(self, phone_number, transactions, label, period_label, business_name):
@@ -631,7 +637,9 @@ class ExportService:
         ok, _url = self.deliver_file(phone_number, filepath, filename,
                                      caption=f"{label} - {period_label}")
         if not ok:
-            return [{"type": "text", "content": "⚠️ I built the PDF but couldn't deliver it. Please try again in a moment."}]
+            return [{"type": "text",
+                     "content": "⚠️ I built the PDF but couldn't send it to your chat. Use the download link instead.",
+                     "download_url": _url or ""}]
         return [{"type": "text", "content": f"\u2705 PDF exported!\n\n{label} \u2014 {period_label}\n{len(transactions)} transactions | Total: NGN {_m(total)}\n\n\U0001f4ce Check your chat for the file."}]
     def export_full_history_csv(self, phone_number):
         """Export ALL transactions as a CSV file"""

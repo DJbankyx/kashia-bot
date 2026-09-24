@@ -1145,15 +1145,22 @@ def _export(event, user_id: str):
         # handle_filtered_export returns a chat response list; surface a concise,
         # HONEST status to the app (don't claim success on empty/failed delivery).
         txt = ""
+        download_url = ""
         if isinstance(resp, list) and resp:
             txt = (resp[0].get("content") or "")
+            download_url = resp[0].get("download_url") or ""
         empty = ("No " in txt and "to export" in txt)
-        failed = ("couldn't deliver" in txt or "failed" in txt.lower())
+        failed = ("couldn't deliver" in txt or "couldn't send" in txt
+                  or "failed" in txt.lower())
         ok = not empty and not failed and ("exported" in txt.lower())
         return _json(200, {
             "ok": ok,
             "delivered_to_chat": ok,
             "empty": empty,
+            # When chat delivery failed but the file built, hand back the direct
+            # S3 download URL so the app can offer a working link instead of a
+            # dead-end error.
+            "download_url": download_url,
             "message": txt or ("Your %s export was sent to your chat." % tx_type),
         })
     except Exception as e:
@@ -2681,13 +2688,33 @@ _PAGE_HTML = """<!doctype html>
   window.recExport = function (fmt) {
     var msg = document.getElementById("rec-msg");
     msg.textContent = "Preparing " + fmt.toUpperCase() + " export...";
-    api("api/export?" + recQuery() + "&fmt=" + fmt)
-      .then(function (d) {
-        msg.textContent = d.message ||
-          (d.ok ? "Export sent to your chat." : "Nothing to export.");
+    // Read the JSON body even on a non-2xx status, so a structured error (e.g.
+    // the PDF tier gate: 403 {error:'pdf_paywalled', message:'...'}) surfaces
+    // its friendly message instead of a bare "Error 403". Only a 401 (expired
+    // session) keeps the generic reopen hint.
+    fetch(BASE + "/api/export?" + recQuery() + "&fmt=" + fmt,
+          { headers: { "X-Telegram-Init-Data": initData } })
+      .then(function (r) {
+        return r.text().then(function (body) {
+          var d = {};
+          try { d = body ? JSON.parse(body) : {}; } catch (e) { d = {}; }
+          if (r.status === 401) {
+            msg.textContent = "Session expired — close and reopen the app from the \u2630 menu button.";
+            return;
+          }
+          // Chat delivery failed but the file is on S3 → offer a direct link.
+          if (d.download_url) {
+            msg.innerHTML = escapeHtml(d.message || "Ready.") +
+              ' <a href="' + escapeHtml(d.download_url) + '" target="_blank" rel="noopener">Download</a>';
+            return;
+          }
+          if (d.message) { msg.textContent = d.message; return; }
+          if (!r.ok) { msg.textContent = "Export failed (" + r.status + ")."; return; }
+          msg.textContent = d.ok ? "Export sent to your chat." : "Nothing to export.";
+        });
       })
       .catch(function (e) {
-        msg.textContent = e.message || "Export failed.";
+        msg.textContent = (e && e.message) || "Export failed.";
       });
   };
 
