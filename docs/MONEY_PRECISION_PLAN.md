@@ -87,3 +87,84 @@ Unit-test rounding: 0.1+0.2==0.30, 3-way split of 10.00, weighted-avg of odd kob
 - No historical data migration (whole-naira rows are valid).
 - Paystack kobo boundary untouched.
 - Compile + check_syntax + UTF-8/surrogate scan (mini-app) each step.
+
+---
+
+## ✅ PROGRESS LOG — phase COMPLETE (2026-09-23)
+
+All 8 tasks done, verified, committed, and pushed to `origin/master`. **Not yet
+deployed by the agent** — owner runs the deploy (see below).
+
+### What shipped (commits, in order)
+1. **`d7a2582`** — `utils/money.py` + this plan doc. `to_money()` (Decimal from
+   str, strips ₦/commas, bool-guarded), `money_round()` (→ **int when whole**,
+   else 2dp float — the DB sanitizer then stores it losslessly), `money_is_whole`,
+   `fmt_money`. Note: the shipped helper is `money_round` (not `money_num`); it
+   returns the JSON/DB-friendly int-or-float directly.
+2. **`a6042aa`** — database storage boundary: `save_transaction` amount/unit_cost/
+   subtotal/discount/tax, `update_contact_totals`, `record_debt`/`settle_debt`
+   balances → `money_round`. Added module-level `_money_expr()` (int-or-Decimal,
+   boto3-safe) for the server-side `ADD` expression values (boto3 rejects raw
+   float in `ExpressionAttributeValue`).
+3. **`72da5ba`** — catalog: `set_cost_direct`/`set_sale_price`/`get_landing_cost`/
+   leaf cost + `update_stock` weighted-avg (base/variant/leaf, computed in Decimal
+   then rounded once) + conversion-adjust + `cost_history` + chat set-cost &
+   cost-fix handlers + variant-tree leaf edit → `money_round`/`to_money`.
+4. **`fdcc24e`** — transactions: recipe COGS stamp, purchase `unit_cost` +
+   `_apply_stock_for_tx` (`amt/qty` in Decimal, not `//`), `_stamp_sale_cost`,
+   `restamp_sale_cost` (+ nested extra_details), returns COGS pro-rate, landing-
+   cost sale flow (`//` → Decimal `/`), multi-item item_amount, credit-path
+   call sites (removed pre-truncating `int()`), sale margin.
+5. **`195ceb8`** — accounting: `_to_int` **redefined** to be kobo-precise (calls
+   `money_round`) rather than renaming every call site — it's money-only in
+   accounting (quantity uses `_to_num`). COGS/`resolve_sale_cost_now`/`_value_*`
+   line calcs use `to_money` math, rounded once. (Verified `100 × 0.06 = 6`.)
+6. **`baada9d`** — mini-app: server `_transaction_write`/`_product_write` (set_
+   price/set_cost, leaf_cost)/`_debt_payment_write` amounts → `money_round`; JS
+   `parseInt`→`parseFloat` for pay/rec/sheet/leaf money inputs; 7 money `<input>`
+   fields → `inputmode="decimal" step="any"`. UTF-8/surrogate scan clean (0).
+7. **`66ca2e4`** — display surfaces: `pdf_generator.py` + `export_service.py` got
+   a module-level `_m()` (kobo-precise, symbol-less) and every money `int()`/`{:,}`/
+   `item_amount // qty` replaced with `to_money`/`_m`/`money_round`. Excel money
+   format `#,##0` → `#,##0.##` (kobo only when present). `tg_ui` reviewed — only
+   formats integer **presets**, no stored-money display, left as-is.
+   `whatsapp_ui.format_amount` confirmed already decimal-aware, unchanged.
+8. **`e0f25e4`** — recipe/production (the acceptance case). Fixed two truncations
+   the earlier map missed:
+   - `production._save_recipe`: `landing_cost = int(round(recipe_unit_cost()))`
+     → `money_round(...)`. This was the exact bug that would round the owner's
+     electricity recipe (₦0.06/kWh) to **₦0**.
+   - `production.record_production` stored `landing_cost`/tx amount/unit_cost via
+     `int()` → `money_round` (Decimal `total_cost/good_qty`).
+   - recipe-line display strings `f"₦{int(cost):,}"` → `format_amount(cost)`.
+   - `transactions._update_recipe_costs`: `effective_cost = int(stored_cost)` →
+     `float(to_money(stored_cost))` so a sub-naira material cost survives into the
+     recipe (+ added a local `to_money` import).
+
+### Verified (E2E, all green)
+Ran a throwaway `_money_e2e.py` (deleted after) against the real functions:
+- Rounding: `0.1+0.2=0.30`, HALF_UP `2.005→2.01`, whole→int type, `1500.5`
+  preserved, weighted-avg `0.0566→0.06`, `is_whole` correct.
+- **Electricity roll-up** via `ProductionHandler.recipe_unit_cost`:
+  Nylon `0.002 kg × ₦1200` + Electricity `0.5 kWh × ₦0.06` = **₦2.43**, stamped
+  `2.43`. Pure sub-naira recipe (`0.5 × 0.06`) = **₦0.03**, stamped `0.03` and
+  **> 0** (old code stored 0). 
+- P&L round-trip: 100 × cost 2.43 → COGS 243; rev 500; gross 257. Inventory
+  `2.5 × 0.03 = 0.08`.
+- Display: `fmt_money` → `₦0.06`, `₦1,500`, `₦1,500.50`, `₦2.43`.
+- `py_compile` + `check_syntax.py` green on every changed file each step;
+  mini-app UTF-8/surrogate scan = 0 lone surrogates.
+
+### Guardrails honoured
+Quantity helpers untouched. Decimals from str, quantized once at storage.
+No data migration (whole-naira rows already valid). Paystack kobo boundary
+untouched. WhatsApp render path unchanged (uses the already-decimal-aware
+`format_amount`).
+
+### DEPLOY (owner runs — agent does not deploy)
+Engine + mini-app JS only; no `template.yaml` change in this phase.
+```
+cd ~/projects/kashia-bot
+./deploy.sh dev
+```
+(No `set_telegram_commands.sh` needed — the command menu did not change.)
