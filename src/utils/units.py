@@ -377,6 +377,49 @@ def product_units(product: dict):
     return (base, defs or {})
 
 
+def rebase_product(product: dict, new_base: str) -> bool:
+    """Change a product's base_unit and REBUILD unit_defs against the new base.
+
+    Why this exists: unit_defs stores each custom unit's factor-TO-THE-BASE. If
+    the base changes but unit_defs isn't rebuilt, every stored factor silently
+    becomes wrong relative to the new base — e.g. a product taught "1 bag = 20
+    pieces" (base=piece → unit_defs {"bag":20}) that later has its base switched
+    to "bag" would keep {"bag":20}, which now reads as "1 bag = 20 bags" and
+    multiplies quantities/costs by 20. This was the source of a real COGS blow-up.
+
+    Rebuilds strictly from the RAW rules the user taught (unit_edges), which are
+    base-independent, so the graph is always consistent with whatever base is
+    current. Drops any def equal to the base (a self-edge). Mutates `product`
+    in place; keeps primary_unit in sync. Returns True if anything changed.
+    Never raises.
+    """
+    if not isinstance(product, dict):
+        return False
+    try:
+        nb = normalize_unit(new_base)
+        if not nb:
+            return False
+        old_base = normalize_unit(product.get("base_unit", "")) \
+            or normalize_unit(product.get("primary_unit", ""))
+        edges = list(product.get("unit_edges", []) or [])
+        # Rebuild unit_defs from the base-independent raw edges. If there are no
+        # taught edges we can't safely keep any custom defs after a base switch,
+        # so clear them (stale factors are worse than none).
+        new_defs, _conflicts = ({}, [])
+        if edges:
+            new_defs, _conflicts = build_unit_defs(nb, edges)
+        # Never let the base appear as its own custom def (self-edge = ×itself).
+        new_defs = {u: f for u, f in (new_defs or {}).items()
+                    if _canon(u) != _canon(nb)}
+        changed = (old_base != nb) or (product.get("unit_defs") != new_defs)
+        product["base_unit"] = nb
+        product["primary_unit"] = nb
+        product["unit_defs"] = new_defs
+        return changed
+    except Exception:
+        return False
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # DETERMINISTIC PARSERS (no AI)
 # ─────────────────────────────────────────────────────────────────────────

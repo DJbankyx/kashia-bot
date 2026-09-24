@@ -670,12 +670,17 @@ def _product_write(event, user_id: str):
         cat._save_products(user_id, products)
         return _echo(key)
     if action == "set_unit":
-        # Set the canonical BASE unit. Keep primary_unit + base_unit in sync and
-        # DO NOT clobber any custom conversion rules the product already has.
+        # Set the canonical BASE unit. Keep primary_unit + base_unit in sync AND
+        # rebuild unit_defs against the new base from the raw taught rules — a
+        # bare base swap would leave every custom factor pointing at the OLD base
+        # (e.g. a "1 bag = 20 pieces" product switched to base=bag would keep
+        # {"bag":20} = "1 bag = 20 bags" and multiply everything by 20). Rebasing
+        # from unit_edges keeps the graph consistent with the new base.
         from utils import units as _units
         u = _units.normalize_unit(str(data.get("unit", "") or ""))
-        prod["primary_unit"] = u
-        prod["base_unit"] = u
+        if not u:
+            return _json(400, {"error": "a unit is required"})
+        _units.rebase_product(prod, u)
         cat._save_products(user_id, products)
         return _echo(key)
     if action == "set_conversion":

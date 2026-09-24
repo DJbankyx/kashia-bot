@@ -1834,8 +1834,15 @@ class Database:
         products = catalog.get('products', {})
         if product_name in products:
             u = unit.lower().strip()
-            products[product_name]['primary_unit'] = u
-            products[product_name]['base_unit'] = u
+            # Rebuild unit_defs against the new base (rebase) rather than a bare
+            # swap — otherwise stored factors keep pointing at the OLD base and
+            # silently multiply quantities/costs (the bag×20 COGS blow-up).
+            try:
+                from utils import units as _units
+                _units.rebase_product(products[product_name], u)
+            except Exception:
+                products[product_name]['primary_unit'] = u
+                products[product_name]['base_unit'] = u
             self.save_product_catalog(phone_number, catalog)
             return True
         return False

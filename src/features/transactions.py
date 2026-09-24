@@ -1141,12 +1141,25 @@ class TransactionHandler:
             acct = Accounting(self.db, self.session)
             total, unit, source = acct.resolve_sale_cost_now(phone_number, tx_data)
             if total and total > 0:
-                from utils.money import money_round
-                self.db.update_transaction(phone_number, tx_id, {
+                from utils.money import money_round, to_money
+                stamp = {
                     "cost_used_total": money_round(total),   # kobo-precise
                     "cost_unit": money_round(unit),
                     "cost_source": source,
-                })
+                }
+                # Non-blocking sanity flag: COGS that dwarfs the sale amount is
+                # almost always a bad quantity/unit entry (the bag×20×1000 COGS
+                # blow-up). Flag it (never block a genuine clearance/loss sale)
+                # so reports/insights can surface "check this sale" instead of a
+                # silent multi-million loss on the dashboard. Threshold is
+                # deliberately loose (10x) to avoid false positives.
+                try:
+                    amt = to_money(tx_data.get("amount") or 0)
+                    if amt > 0 and to_money(total) > amt * 10:
+                        stamp["cost_sanity"] = "cogs_exceeds_amount"
+                except Exception:
+                    pass
+                self.db.update_transaction(phone_number, tx_id, stamp)
         except Exception as e:
             logger.warning(f"_stamp_sale_cost failed: {e}")
 
