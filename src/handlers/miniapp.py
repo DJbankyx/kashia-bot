@@ -1534,8 +1534,11 @@ _PAGE_HTML = """<!doctype html>
         💡 Use the SAME unit you track this material's stock in (e.g. if you buy nylon in kg, write kg here). Mixing units — kg here but grams in stock — makes the cost and stock deduction wrong.
       </div>
       <div class="field">
-        <label id="rc-cost-label">Cost per unit (optional)</label>
+        <label id="rc-cost-label">Cost of ONE unit of this material (optional)</label>
         <input id="rc-cost" type="number" inputmode="decimal" min="0" step="any" placeholder="uses catalog cost">
+      </div>
+      <div class="sub2" id="rc-cost-hint" style="margin-top:-6px;margin-bottom:12px">
+        💡 Enter the price of ONE unit (e.g. ₦1,200 per kg of nylon), NOT the total for the batch. Leave blank to use the cost already saved on the material. The product's per-unit cost is worked out for you: quantity × this cost.
       </div>
       <div class="sheeterr" id="rc-err"></div>
       <button class="btn save" id="rc-add" style="width:100%" onclick="recipeAddMaterial()">➕ Add to recipe</button>
@@ -2957,21 +2960,27 @@ _PAGE_HTML = """<!doctype html>
   window.openRecipe = function () {
     if (!editing) return;
     recipeKey = editing.key;
-    document.getElementById("rc-title").textContent = "Recipe · " + (editing.name || "");
+    document.getElementById("rc-title").textContent = "Recipe \u00b7 " + (editing.name || "");
     document.getElementById("rc-err").textContent = "";
     document.getElementById("rc-qty").value = "";
     document.getElementById("rc-cost").value = "";
     document.getElementById("rc-unit").value = "";
     document.getElementById("rc-newname").value = "";
     rcNewMatType = "material";
-    document.getElementById("rc-list").innerHTML = '<div class="muted">Loading…</div>';
+    document.getElementById("rc-list").innerHTML = '<div class="muted">Loading\u2026</div>';
+    // Close the edit sheet FIRST — both use the same .overlay/z-index, so if the
+    // edit sheet stays open it renders ON TOP and the recipe screen looks
+    // unresponsive (hidden behind it). Hide it, show the recipe overlay.
+    document.getElementById("overlay").classList.add("hidden");
     document.getElementById("recipeOverlay").classList.remove("hidden");
     loadRecipe();
   };
   window.closeRecipe = function () {
     document.getElementById("recipeOverlay").classList.add("hidden");
     recipeKey = null;
-    // Refresh the catalog + the edit sheet's recipe-cost readout.
+    // Refresh the catalog (recipe cost may have changed). We do NOT reopen the
+    // edit sheet — returning to the catalog grid is the cleaner flow.
+    editing = null;
     invLoaded = false; loadInventory();
   };
   function loadRecipe() {
@@ -3052,9 +3061,14 @@ _PAGE_HTML = """<!doctype html>
     document.getElementById("rc-type-hint").textContent = (mt === "overhead")
       ? "Overhead: a rate × usage with no stock (e.g. electricity in kW, labour in minutes)."
       : "Raw material: stock-tracked and deducted on production (e.g. nylon in kg).";
-    // Cost label follows the type: overhead is a rate.
+    // Cost label follows the type: overhead is a rate per unit of usage.
     document.getElementById("rc-cost-label").textContent =
-      (mt === "overhead") ? "Rate per unit (optional)" : "Cost per unit (optional)";
+      (mt === "overhead") ? "Rate per unit of usage (optional)"
+                          : "Cost of ONE unit of this material (optional)";
+    var ch = document.getElementById("rc-cost-hint");
+    if (ch) ch.textContent = (mt === "overhead")
+      ? "\ud83d\udca1 Enter the rate for ONE unit (e.g. \u20a60.06 per kW of electricity). The cost added is quantity \u00d7 this rate."
+      : "\ud83d\udca1 Enter the price of ONE unit (e.g. \u20a61,200 per kg of nylon), NOT the batch total. Blank = use the material's saved cost. Product cost = quantity \u00d7 this.";
   };
   // React to picker change: show the new-material fields (name + type + unit)
   // only for "New material…". For an existing catalog material, its unit/type
@@ -3080,7 +3094,8 @@ _PAGE_HTML = """<!doctype html>
       unitInput.readOnly = true;   // can't change a catalog material's unit here
       var isOh = opt && opt.getAttribute("data-type") === "overhead";
       document.getElementById("rc-cost-label").textContent =
-        isOh ? "Rate per unit (optional)" : "Cost per unit (optional)";
+        isOh ? "Rate per unit of usage (optional)"
+             : "Cost of ONE unit of this material (optional)";
       costInput.placeholder = "uses catalog cost";
     }
   };
