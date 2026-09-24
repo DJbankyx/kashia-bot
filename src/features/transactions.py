@@ -1336,8 +1336,26 @@ class TransactionHandler:
                         logger.warning(f"web auto-categorize failed: {e}")
             vendor = (tx_data.get("vendor") or "").strip()
             has_credit = bool(tx_data.get("has_credit"))
-            deposit_amount = int(tx_data.get("deposit_amount") or 0)
-            balance_owed = int(tx_data.get("balance_owed") or 0)
+            deposit_amount = money_round(tx_data.get("deposit_amount") or 0)
+            # SERVER-SIDE MONEY GUARD — never trust the client's deposit/balance.
+            # A part-payment deposit must be between 0 and the total amount, and
+            # the balance owed is ALWAYS derived here (amount − deposit), not
+            # taken from the request. This blocks a deposit larger than the sale
+            # (which produced a negative debt) even if the JS guard is bypassed
+            # or an old client posts bad values.
+            if deposit_amount < 0:
+                return {"ok": False, "error": "deposit can't be negative"}
+            if deposit_amount > amount:
+                return {"ok": False,
+                        "error": "the deposit can't be more than the total amount"}
+            # Deposit covering the full amount = fully paid, not a part payment.
+            _is_deposit = str(tx_data.get("payment_method") or "").lower() == "deposit"
+            if _is_deposit and deposit_amount >= amount:
+                tx_data["payment_method"] = "cash"
+                tx_data["has_credit"] = False
+                has_credit = False
+                deposit_amount = 0
+            balance_owed = money_round(amount) - deposit_amount   # AUTHORITATIVE
 
             # A debt needs an owner.
             if has_credit and not vendor:
