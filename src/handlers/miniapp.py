@@ -1634,7 +1634,7 @@ _PAGE_HTML = """<!doctype html>
         <label>Name</label>
         <input id="sh-rename" placeholder="Product name">
       </div>
-      <div class="field">
+      <div class="field" id="sh-stock-wrap">
         <label>Stock</label>
         <input id="sh-stock" type="number" inputmode="decimal" min="0" step="any">
         <div class="steppers">
@@ -1645,12 +1645,12 @@ _PAGE_HTML = """<!doctype html>
           <div class="step" onclick="bump(10)">+10</div>
         </div>
       </div>
-      <div class="field">
+      <div class="field" id="sh-price-wrap">
         <label>Selling price (\u20a6)</label>
         <input id="sh-price" type="number" inputmode="decimal" min="0" step="any">
       </div>
       <div class="field" id="sh-cost-wrap">
-        <label>Cost per unit (\u20a6)</label>
+        <label id="sh-cost-label2">Cost per unit (\u20a6)</label>
         <input id="sh-cost" type="number" inputmode="decimal" min="0" step="any">
       </div>
       <!-- Mfg/Hybrid finished goods: cost is recipe-driven (Decision A). Show
@@ -1667,7 +1667,7 @@ _PAGE_HTML = """<!doctype html>
           <label>Unit</label>
           <input id="sh-unit" placeholder="e.g. piece, kg">
         </div>
-        <div class="field" style="flex:1">
+        <div class="field" style="flex:1" id="sh-reorder-wrap">
           <label>Reorder level</label>
           <input id="sh-reorder" type="number" inputmode="numeric" min="0">
         </div>
@@ -1676,7 +1676,7 @@ _PAGE_HTML = """<!doctype html>
         <label>Category</label>
         <input id="sh-cat" placeholder="e.g. Vehicles">
       </div>
-      <div class="field">
+      <div class="field" id="sh-conv-wrap">
         <label>Units &amp; conversions</label>
         <div class="sub2">Standard units (kg, g, litre, ml...) work automatically. Teach custom ones like a bag or carton.</div>
         <div id="sh-units-list" class="sub2" style="margin:4px 0"></div>
@@ -2670,8 +2670,41 @@ _PAGE_HTML = """<!doctype html>
     // Hide the manual cost input and show the rolled-up recipe cost read-only.
     // Trading + raw materials keep the manual cost field exactly as before.
     applyCostFieldMode(p);
+    // Show only the fields that make sense for this item TYPE (overheads/raw
+    // materials don't sell, overheads aren't stocked, etc.).
+    applyTypeFields(p);
     document.getElementById("overlay").classList.remove("hidden");
   };
+  // Show/hide edit-sheet fields by item type:
+  //   overhead      → rate × usage, not stocked, not sold: hide stock, selling
+  //                   price, reorder, conversions; keep cost(=rate)/unit/category.
+  //   raw_material  → stocked + consumed, not sold: hide selling price; keep
+  //                   stock, cost, unit, reorder, conversions.
+  //   supply        → like raw material (not sold): hide selling price.
+  //   product/""    → everything (sellable).
+  function applyTypeFields(p) {
+    var t = (p.item_type || "").toLowerCase();
+    var isOverhead = (t === "overhead");
+    var isInput = (t === "raw_material" || t === "supply");
+    function show(id, on) {
+      var el = document.getElementById(id);
+      if (el) el.classList.toggle("hidden", !on);
+    }
+    // Selling price: only sellable products.
+    show("sh-price-wrap", !isOverhead && !isInput);
+    // Stock + reorder + conversions: not meaningful for overhead (a rate).
+    show("sh-stock-wrap", !isOverhead);
+    show("sh-reorder-wrap", !isOverhead);
+    show("sh-conv-wrap", !isOverhead);
+    // Cost label reads as a rate for overhead.
+    var cl = document.getElementById("sh-cost-label2");
+    if (cl) cl.textContent = isOverhead
+      ? "Rate per unit of usage (\\u20a6)" : "Cost per unit (\\u20a6)";
+    // Delete button wording (materials/overhead aren't "products").
+    var del = document.getElementById("sh-delete");
+    if (del) del.textContent = "\\ud83d\\uddd1\\ufe0f Delete "
+      + (isOverhead ? "overhead" : isInput ? "material" : "product");
+  }
   // Decide whether the edit sheet shows a manual cost input or a read-only
   // "Cost (from recipe)" display, based on industry + the product's item_type.
   function applyCostFieldMode(p) {
@@ -2880,13 +2913,20 @@ _PAGE_HTML = """<!doctype html>
     var newReorder = reorderRaw === "" ? null : Math.max(0, parseInt(reorderRaw, 10) || 0);
     var newCat = (document.getElementById("sh-cat").value || "").trim();
 
-    // Only send the fields that actually changed.
+    // Which fields are relevant for this item type (mirrors applyTypeFields):
+    var t = (editing.item_type || "").toLowerCase();
+    var isOverhead = (t === "overhead");
+    var isInput = (t === "raw_material" || t === "supply");
+    var canSell = !isOverhead && !isInput;   // only sellable products have a price
+    var canStock = !isOverhead;              // overhead is a rate, not stocked
+
+    // Only send the fields that actually changed AND are relevant to the type.
     var ops = [];
     if (newName && newName !== (editing.name || ""))
       ops.push({ action: "rename", key: key, name: newName });
-    if (newStock !== Number(editing.stock || 0))
+    if (canStock && newStock !== Number(editing.stock || 0))
       ops.push({ action: "set_stock", key: key, value: newStock });
-    if (newPrice !== null && newPrice !== Number(editing.sale_price || 0))
+    if (canSell && newPrice !== null && newPrice !== Number(editing.sale_price || 0))
       ops.push({ action: "set_price", key: key, value: newPrice });
     // Recipe-driven finished goods (mfg/hybrid) never send a manual cost — the
     // cost field is hidden for them and cost comes from the recipe (Decision A).
@@ -2895,7 +2935,7 @@ _PAGE_HTML = """<!doctype html>
       ops.push({ action: "set_cost", key: key, value: newCost });
     if (newUnit !== (editing.unit || ""))
       ops.push({ action: "set_unit", key: key, unit: newUnit });
-    if (newReorder !== null && newReorder !== Number(editing.reorder_level || 0))
+    if (canStock && newReorder !== null && newReorder !== Number(editing.reorder_level || 0))
       ops.push({ action: "set_reorder", key: key, value: newReorder });
     if (newCat !== (editing.category || ""))
       ops.push({ action: "set_category", key: key, category: newCat });
