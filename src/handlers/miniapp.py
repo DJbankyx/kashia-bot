@@ -3411,7 +3411,14 @@ _PAGE_HTML = """<!doctype html>
     var custom = Object.keys(defs);
     if (!base || !custom.length) {
       // No alternative units → plain numeric qty in the product's own unit.
+      // Still NAME that unit in the hint so the owner buys/sells in the same
+      // unit the recipe/stock uses (e.g. Nylon in kg), not a guessed number.
       sel.classList.add("hidden");
+      if (hint && base) {
+        hint.textContent = (recTypeVal === "purchase")
+          ? "\\uD83D\\uDCA1 Quantity in " + base + " (the unit this item is stocked \\u0026 used in)."
+          : "\\uD83D\\uDCA1 Quantity in " + base + ". Stock drops by this amount.";
+      }
       return;
     }
     // Base first (factor 1), then each custom unit.
