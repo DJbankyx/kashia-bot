@@ -242,6 +242,8 @@ def lambda_handler(event, context):
         # ── Writes (Stage 2: recipe/BOM add/remove material) ──
         if method == "POST" and path.endswith("/app/api/recipe"):
             return _recipe_write(event, user_id)
+        if method == "POST" and path.endswith("/app/api/produce"):
+            return _produce_write(event, user_id)
 
         # ── Reads ──
         if method == "GET" and path.endswith("/app/api/recipe"):
@@ -865,6 +867,29 @@ def _recipe_write(event, user_id: str):
 
     if not res.get("ok"):
         # 404 for missing product/material, 400 for bad values.
+        err = str(res.get("error", ""))
+        code = 404 if "not found" in err else 400
+        return _json(code, res)
+    return _json(200, res)
+
+
+def _produce_write(event, user_id: str):
+    """Record a production run from the mini app (stateless). Body:
+    {key: <finished_product_key>, quantity, waste?}. Cost + material deduction +
+    landing_cost restamp + the type='production' transaction all happen in
+    ProductionHandler.produce_web (the engine) — no forked math. Echoes the
+    batch summary so the UI can confirm."""
+    from services.database import Database
+    from features.production import ProductionHandler
+
+    data = _parse_body(event)
+    key = str(data.get("key", "")).strip()
+    if not key:
+        return _json(400, {"error": "product key required"})
+
+    prod = ProductionHandler(None, Database())
+    res = prod.produce_web(user_id, key, data.get("quantity"), data.get("waste"))
+    if not res.get("ok"):
         err = str(res.get("error", ""))
         code = 404 if "not found" in err else 400
         return _json(code, res)
@@ -1760,6 +1785,13 @@ _PAGE_HTML = """<!doctype html>
         <div class="chip active" data-t="sale" onclick="recType('sale')">💰 Sale</div>
         <div class="chip" data-t="purchase" onclick="recType('purchase')">📦 Purchase</div>
         <div class="chip" data-t="expense" onclick="recType('expense')">💸 Expense</div>
+        <div class="chip hidden" data-t="produce" id="rec-type-produce" onclick="recType('produce')">🏭 Produce</div>
+      </div>
+      <!-- Produce: waste field (mfg/hybrid only). Amount/cost are recipe-driven. -->
+      <div class="field hidden" id="rec-waste-wrap">
+        <label>Waste / spoilage (optional)</label>
+        <input id="rec-waste" type="number" inputmode="decimal" min="0" step="any" placeholder="units spoiled">
+        <div class="sub2">💡 Units that came out bad. Cost per good unit is worked out from your recipe.</div>
       </div>
       <!-- Product picker (sale/purchase) — tap to choose from your catalog. -->
       <div class="field" id="rec-prod-wrap">
@@ -3477,6 +3509,10 @@ _PAGE_HTML = """<!doctype html>
         return it === "" || it === "product" || it === "raw_material"
             || it === "supply";
       }
+      if (recTypeVal === "produce") {
+        // You can only PRODUCE a finished good that has a recipe.
+        return (it === "finished_product" || it === "product") && p.has_recipe;
+      }
       return true;  // expense picker is hidden, but never over-filter.
     }
     var rows = (invData || []).filter(function (p) {
@@ -3487,6 +3523,8 @@ _PAGE_HTML = """<!doctype html>
     if (!rows.length) {
       var hint = (recTypeVal === "purchase")
         ? "No raw materials or stock to buy. Add one in Catalog first."
+        : (recTypeVal === "produce")
+        ? "No products with a recipe. Add a recipe to a finished product first."
         : "No sellable products. Add one in Catalog first.";
       list.innerHTML = '<div class="muted">' + hint + '</div>';
       return;
@@ -3641,7 +3679,7 @@ _PAGE_HTML = """<!doctype html>
     if (_pt && !pick.name) _pt.textContent = _ts.pick_hint;
     document.getElementById("rec-amount-label").textContent =
       t === "sale" ? "Amount received (\u20a6)" : (t === "purchase" ? "Amount paid (\u20a6)" : "Amount (\u20a6)");
-    // Sale/purchase pick from the catalog; expense is free text.
+    // Sale/purchase/produce pick from the catalog; expense is free text.
     var isExpense = (t === "expense");
     document.getElementById("rec-prod-btn").classList.toggle("hidden", isExpense);
     var descInput = document.getElementById("rec-desc");
@@ -3677,6 +3715,36 @@ _PAGE_HTML = """<!doctype html>
     var partChip = document.querySelector('#rec-pay .chip[data-p="part"]');
     if (partChip) partChip.classList.toggle("hidden", isExpense);
     if (isExpense && recPayVal === "part") recPay("cash");
+
+    // PRODUCE mode: pick a finished good + quantity produced (+ optional waste).
+    // Amount/cost/customer/payment don't apply — cost comes from the recipe.
+    var isProduce = (t === "produce");
+    // Produce uses the catalog picker (a finished good to make), never free text.
+    if (isProduce) {
+      document.getElementById("rec-prod-btn").classList.remove("hidden");
+      descInput.classList.add("hidden");
+    }
+    // Amount field wrapper is the parent .field of rec-amount.
+    var amountField = document.getElementById("rec-amount").closest(".field");
+    if (amountField) amountField.style.display = isProduce ? "none" : "";
+    // Waste field only for produce.
+    var wasteWrap = document.getElementById("rec-waste-wrap");
+    if (wasteWrap) wasteWrap.classList.toggle("hidden", !isProduce);
+    // Hide customer + payment for produce (internal event, no money in/out).
+    var whoField = document.getElementById("rec-who").closest(".field");
+    if (whoField) whoField.style.display = isProduce ? "none" : "";
+    var payField = document.querySelector('#rec-pay').closest(".field");
+    if (payField) payField.style.display = isProduce ? "none" : "";
+    if (isProduce) {
+      document.getElementById("rec-desc-label").textContent = "What did you produce?";
+      var _pt2 = document.getElementById("rec-prod-text");
+      if (_pt2 && !pick.name) _pt2.textContent = "Tap to choose a product to make";
+      var qtyLabel2 = document.getElementById("rec-qty-label");
+      if (qtyLabel2) qtyLabel2.textContent = "Quantity produced";
+      if (freeUnit) { freeUnit.classList.add("hidden"); freeUnit.value = ""; }
+      var rq2 = document.getElementById("rec-qty");
+      if (rq2 && (rq2.value === "" )) rq2.value = "1";
+    }
   }
   window.recType = function (t) {
     recTypeVal = t;
@@ -3724,6 +3792,8 @@ _PAGE_HTML = """<!doctype html>
     if (_us) { _us.innerHTML = ""; _us.classList.add("hidden"); }
     document.getElementById("rec-cost").value = "";
     document.getElementById("rec-who").value = "";
+    var _rw = document.getElementById("rec-waste");
+    if (_rw) _rw.value = "";
     document.getElementById("rec-deposit").value = "";
     document.getElementById("rec-deposit-wrap").classList.add("hidden");
     document.getElementById("rec-balance-hint").textContent = "";
@@ -3735,6 +3805,33 @@ _PAGE_HTML = """<!doctype html>
     document.getElementById("recOverlay").classList.add("hidden");
   };
   window.saveRecord = function () {
+    var err0 = document.getElementById("rec-err");
+    // PRODUCE: a separate, simpler path — pick a finished good, enter quantity
+    // produced (+ optional waste). Cost is recipe-driven server-side, so no
+    // amount/cost/customer/payment. Calls api/produce (not api/transaction).
+    if (recTypeVal === "produce") {
+      err0.textContent = "";
+      if (!pick.key) { err0.textContent = "Choose a product to produce."; return; }
+      var pQty = parseFloat(document.getElementById("rec-qty").value);
+      if (!(pQty > 0)) { err0.textContent = "Enter how many you produced."; return; }
+      var pWaste = parseFloat(document.getElementById("rec-waste").value) || 0;
+      var pbtn = document.getElementById("rec-save");
+      pbtn.disabled = true;
+      apiPost("api/produce", { key: pick.key, quantity: pQty, waste: pWaste })
+        .then(function () {
+          closeRecord();
+          if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+          loadSummary();
+          invLoaded = false;
+          var cv = document.getElementById("view-cat");
+          if (cv && !cv.classList.contains("hidden")) loadInventory();
+        })
+        .catch(function (e) {
+          pbtn.disabled = false;
+          err0.textContent = (e && e.message) || "Could not record production";
+        });
+      return;
+    }
     var isExpense = (recTypeVal === "expense");
     // Description: expense = free text; sale/purchase = picked product name.
     var desc = isExpense

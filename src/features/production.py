@@ -1703,6 +1703,137 @@ class ProductionHandler:
         self.db.update_user_field(phone_number, "product_catalog", catalog)
         return self.get_recipe(phone_number, product_key)
 
+    def produce_web(self, phone_number: str, product_key: str,
+                    quantity, waste=0) -> dict:
+        """STATELESS production entry for the mini app. Mirrors the chat flow's
+        cost math + side-effects (compute cost from recipe, deduct materials, add
+        good stock, restamp landing_cost, save a type='production' transaction)
+        WITHOUT any session. Single source of the per-unit cost is
+        recipe_unit_cost — web + chat never disagree.
+
+        Returns {ok, batch, produced, good, waste, cost_per_unit, total_cost,
+        materials:[...]} or {ok:False, error}. Never raises.
+        """
+        try:
+            try:
+                quantity = float(quantity)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "enter a valid quantity"}
+            if quantity <= 0:
+                return {"ok": False, "error": "quantity must be greater than 0"}
+            try:
+                waste = float(waste or 0)
+            except (TypeError, ValueError):
+                waste = 0.0
+            if waste < 0 or waste >= quantity:
+                waste = 0.0
+            good_qty = quantity - waste
+
+            user = self.db.get_user(phone_number) or {}
+            catalog = user.get("product_catalog", {}) or {}
+            products = catalog.get("products", {}) or {}
+            product = products.get(product_key)
+            if not isinstance(product, dict):
+                return {"ok": False, "error": "product not found"}
+            recipe = product.get("recipe", []) or []
+            if not recipe:
+                return {"ok": False, "error": "this product has no recipe yet"}
+            product_name = product.get("name") or product_key
+
+            # Cost + material usage — SAME formula as _show_production_confirmation
+            # (materials qty x cost_per_unit + overhead qty x rate, per output
+            # unit, times quantity produced).
+            total_material_cost = 0.0
+            total_overhead_cost = 0.0
+            materials_used = []
+            for mat in recipe:
+                recipe_qty_total = float(mat.get("quantity", 0) or 0) * quantity
+                recipe_unit = mat.get("unit", "units")
+                mat_name = mat.get("material", "")
+                mat_key = mat_name.lower().replace(" ", "_")
+                mat_type = mat.get("type", "material")
+                if mat_type == "overhead":
+                    rate = float(mat.get("rate", mat.get("cost_per_unit", 0)) or 0)
+                    total_overhead_cost += rate * recipe_qty_total
+                    continue
+                cost_per = float(mat.get("cost_per_unit", 0) or 0)
+                total_material_cost += cost_per * recipe_qty_total
+                # Convert the recipe qty into the material's stock unit for the
+                # deduction (reuse the shared engine via _convert_to_stock_unit).
+                conv = self._convert_to_stock_unit(
+                    recipe_qty_total, recipe_unit, products.get(mat_key, {}))
+                materials_used.append({
+                    "material": mat_name,
+                    "material_key": mat_key,
+                    "quantity_needed": conv["stock_qty"],
+                    "unit": conv["stock_unit"] if conv.get("converted") else recipe_unit,
+                    "cost": money_round(cost_per * recipe_qty_total),
+                })
+
+            total_cost = total_material_cost + total_overhead_cost
+            cost_per_unit = (to_money(total_cost) / to_money(good_qty)) if good_qty > 0 else to_money(0)
+
+            # Batch number (per user).
+            last_batch = int(user.get("last_batch_number", 0) or 0)
+            batch_num = f"B{last_batch + 1:04d}"
+
+            # Deduct raw materials from stock (never below 0).
+            for mu in materials_used:
+                mk = mu["material_key"]
+                if mk in products:
+                    cur = float(products[mk].get("stock", products[mk].get("stock_count", 0)) or 0)
+                    products[mk]["stock"] = max(0, cur - float(mu["quantity_needed"] or 0))
+
+            # Add GOOD finished goods + restamp landing_cost (per good unit).
+            if product_key in products:
+                cur = float(products[product_key].get("stock", products[product_key].get("stock_count", 0)) or 0)
+                products[product_key]["stock"] = cur + good_qty
+                if good_qty > 0 and total_cost > 0:
+                    products[product_key]["landing_cost"] = money_round(cost_per_unit)
+
+            catalog["products"] = products
+            self.db.update_user_field(phone_number, "product_catalog", catalog)
+            self.db.update_user_field(phone_number, "last_batch_number", last_batch + 1)
+
+            # Save the production transaction (SAME shape as the chat flow).
+            self.db.save_transaction(
+                phone_number,
+                money_round(total_cost) if total_cost > 0 else 0,
+                "production",
+                f"Batch {batch_num}: {int(quantity) if quantity == int(quantity) else quantity} × {product_name}"
+                + (f" ({int(waste)} waste)" if waste else ""),
+                "Production & Manufacturing",
+                sub_category="Production Run",
+                quantity=str(good_qty),
+                item_name=product_name,
+                unit_cost=money_round(cost_per_unit) if good_qty > 0 and total_cost > 0 else None,
+                extra_details={
+                    "batch_number": batch_num,
+                    "production_quantity": int(quantity) if quantity == int(quantity) else quantity,
+                    "good_quantity": int(good_qty) if good_qty == int(good_qty) else good_qty,
+                    "waste": int(waste) if waste == int(waste) else waste,
+                    "waste_percent": int(waste / quantity * 100) if quantity > 0 and waste else 0,
+                    "product_key": product_key,
+                    "materials_used": materials_used,
+                    "cost_per_unit": float(cost_per_unit),
+                    "source": "miniapp",
+                },
+            )
+
+            return {
+                "ok": True,
+                "batch": batch_num,
+                "produced": quantity,
+                "good": good_qty,
+                "waste": waste,
+                "cost_per_unit": money_round(cost_per_unit),
+                "total_cost": money_round(total_cost),
+                "materials": materials_used,
+            }
+        except Exception as e:
+            logger.error(f"produce_web failed: {e}")
+            return {"ok": False, "error": "could not record production — please try again"}
+
     def web_add_material(self, phone_number: str, product_key: str,
                          material_key: str, quantity, unit: str = "",
                          cost_per_unit=None, mat_type: str = "material",
