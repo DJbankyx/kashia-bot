@@ -1310,7 +1310,30 @@ class TransactionHandler:
             if amount <= 0:
                 return {"ok": False, "error": "amount must be greater than 0"}
             description = (tx_data.get("description") or "Item").strip()
-            category = tx_data.get("category") or "Uncategorized"
+            category = tx_data.get("category")
+            # AUTO-CATEGORISE when the web form didn't supply a category (it has
+            # no category picker). The chat flow categorises via the AI/keyword
+            # categorizer; the web path skipped it, so every web expense/purchase
+            # landed under "Uncategorized". Run the same categorizer here
+            # (keyword fallback works even without OpenAI). Sales are income, not
+            # a spend category, so they keep the income label.
+            if not category:
+                if tx_type == "sale":
+                    category = "Sales & Income"
+                else:
+                    category = "Uncategorized"
+                    try:
+                        cz = self.categorizer
+                        if cz is None:
+                            from services.categorizer import TransactionCategorizer
+                            cz = TransactionCategorizer(self.db)
+                        res = cz.categorize(description, phone_number) or {}
+                        if res.get("category"):
+                            category = res["category"]
+                            if res.get("sub_category"):
+                                tx_data.setdefault("sub_category", res["sub_category"])
+                    except Exception as e:
+                        logger.warning(f"web auto-categorize failed: {e}")
             vendor = (tx_data.get("vendor") or "").strip()
             has_credit = bool(tx_data.get("has_credit"))
             deposit_amount = int(tx_data.get("deposit_amount") or 0)
@@ -1344,6 +1367,7 @@ class TransactionHandler:
                 tx_type,
                 description,
                 category,
+                sub_category=tx_data.get("sub_category", ""),
                 vendor=vendor,
                 quantity=tx_data.get("quantity"),
                 brand=tx_data.get("brand"),
