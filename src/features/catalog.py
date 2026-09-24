@@ -3110,8 +3110,14 @@ class CatalogHandler:
         "stock": 0,
         "landing_cost": 0,        # what you PAY per unit (cost)
         "sale_price": 0,          # what you CHARGE per unit (0 = not set)
-        "primary_unit": "",       # master/base unit (e.g. "piece", "kg")
-        "conversions": {},        # e.g. {"1 bag": "20 pieces"}
+        "primary_unit": "",       # legacy alias of base_unit (kept in sync)
+        "conversions": {},        # legacy shape; upgraded to unit_defs on read
+        # Unit engine (utils/units.py): base_unit = canonical stock/cost unit;
+        # unit_defs = {unit: factor-to-base}; unit_edges = raw taught rules.
+        # These MUST survive normalization or the web/engine lose custom units.
+        "base_unit": "",
+        "unit_defs": {},
+        "unit_edges": [],
         "attributes": {},         # user-named axes: {"Colour": ["Black","White"], ...}
         "variants": [],           # legacy flat variant list (read as one axis)
         "variant_stock": {},      # per-variant stock, keyed by variant/combo
