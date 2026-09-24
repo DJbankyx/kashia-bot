@@ -268,3 +268,28 @@ cd ~/projects/kashia-bot
 If the app still shows "Loading…" after this: it's the documented Telegram
 WebView cache / expired-init case — close and reopen the mini app from the ☰
 Menu button (the HMAC init data is re-issued on reopen).
+
+---
+
+## 🐞 ROOT CAUSE of "Loading… / dead buttons" (2026-09-24, build 20260924111753)
+
+The real bug: **the served mini-app JavaScript had unescaped double-quotes
+inside double-quoted string literals** → a JS parse error → the ENTIRE `<script>`
+failed to execute → every button was dead and no `/api/*` fetch ever fired
+(confirmed: CloudWatch showed only the HTML page load, never a summary call).
+
+Two offending strings (recipe-cost hints), both pre-existing:
+- `applyCostFieldMode`: `"...Tap \"Set / edit recipe\" below..."`
+- `addSetType` hint: `"...tap it → \"📋 Set / edit recipe\"."`
+The `\"` were Python-escaped (correct Python) but emit LITERAL `"` into the JS
+string, closing it early. Fixed by removing the inner quotes from the copy.
+
+Diagnosis method (now the standard check for served JS): `pip install esprima`
+then `esprima.parseScript(extracted_js)` — a full parser, unlike the earlier
+brace/quote balance heuristic which false-positived on regex literals. The whole
+served script now parses (`JS_PARSE_OK`).
+
+**Lesson / guardrail:** any text inside the served-JS string literals in
+`miniapp._PAGE_HTML` must NOT contain unescaped `"`. Prefer single quotes or no
+quotes in copy. ALWAYS run the esprima parse (not just py_compile + UTF-8 scan)
+after editing miniapp.py JS. Deployed build 20260924111753.
