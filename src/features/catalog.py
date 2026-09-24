@@ -1980,7 +1980,9 @@ class CatalogHandler:
         from utils.quantity import fmt_qty
         product_key = context.get("cat_product_key", "")
 
-        rule = _units.parse_rule(text)
+        # Deterministic parse first; fall back to the LLM only if that fails
+        # (handles messy phrasing). The result is validated below either way.
+        rule = _units.parse_rule(text) or _units.parse_rule_llm(text)
         if not rule:
             return [text_response(
                 "📦 I didn't catch that. Type the conversion like:\n\n"

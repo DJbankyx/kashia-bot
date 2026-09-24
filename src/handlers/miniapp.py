@@ -683,7 +683,8 @@ def _product_write(event, user_id: str):
         # product's base, reject contradictions, echo the resolved factor.
         from utils import units as _units
         text = str(data.get("rule", "") or "").strip()
-        rule = _units.parse_rule(text)
+        # Deterministic parse first; LLM fallback only on failure (validated below).
+        rule = _units.parse_rule(text) or _units.parse_rule_llm(text)
         if not rule:
             return _json(400, {"error": "Use a format like '1 bag = 20 pieces'"})
         _units.upgrade_product_units(prod)

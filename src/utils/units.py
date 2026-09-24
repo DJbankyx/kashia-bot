@@ -415,6 +415,54 @@ def parse_rule(text: str):
     return None
 
 
+def parse_rule_llm(text: str):
+    """LLM FALLBACK for a conversion rule — only used when parse_rule() fails.
+
+    Tries the deterministic parser first (free/instant). If that returns None,
+    makes ONE OpenAI call to extract a 4-tuple (qty_a, unit_a, qty_b, unit_b)
+    from messy phrasing like 'a big bag holds about twenty small cups'. The
+    result is STILL validated by the caller (build_unit_defs) before use.
+
+    Returns (qty_a, unit_a, qty_b, unit_b) or None. Fully defensive: any error
+    (no key, network, bad JSON) returns None so the caller degrades gracefully.
+    """
+    got = parse_rule(text)
+    if got:
+        return got
+    if not text or not str(text).strip():
+        return None
+    try:
+        import json as _json
+        from openai import OpenAI
+        from utils.config import get_openai_key
+        key = get_openai_key()
+        if not key:
+            return None
+        client = OpenAI(api_key=key)
+        prompt = (
+            "Extract a unit-conversion rule from the user's text as strict JSON: "
+            '{"qa": <number>, "ua": "<unit>", "qb": <number>, "ub": "<unit>"} '
+            "meaning qa ua = qb ub. Units are singular lowercase words (bag, "
+            "piece, carton, kg). If the text is NOT a unit conversion, return "
+            '{"qa": 0}. Text: ' + str(text).strip()
+        )
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=80,
+            response_format={"type": "json_object"},
+        )
+        data = _json.loads(resp.choices[0].message.content or "{}")
+        qa = to_qty(data.get("qa", 0)); qb = to_qty(data.get("qb", 0))
+        ua = normalize_unit(data.get("ua", "")); ub = normalize_unit(data.get("ub", ""))
+        if qa > 0 and qb > 0 and ua and ub:
+            return (qa, ua, qb, ub)
+    except Exception:
+        return None
+    return None
+
+
 # "2 bags" | "2.5 kg" | "three cartons" | "10 pairs" | ".5 litre"
 _QTY_UNIT = re.compile(r"^\s*([\d.]+|[a-zA-Z]+)\s*([a-zA-Z ]+?)\s*$")
 
