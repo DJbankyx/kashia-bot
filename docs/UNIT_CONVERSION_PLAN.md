@@ -293,3 +293,34 @@ served script now parses (`JS_PARSE_OK`).
 `miniapp._PAGE_HTML` must NOT contain unescaped `"`. Prefer single quotes or no
 quotes in copy. ALWAYS run the esprima parse (not just py_compile + UTF-8 scan)
 after editing miniapp.py JS. Deployed build 20260924111753.
+
+---
+
+## 🐞 TWO MORE FIXES (2026-09-24, build 20260924120558)
+
+Reported: web "Set base unit → bad request", and custom conversions wouldn't
+save. Two real bugs:
+
+1. **`set_conversion` action was never registered.** `_product_write` gates on
+   `action in VALUE_ACTIONS + CRUD_ACTIONS + LEAF_ACTIONS`, and I added the
+   `set_conversion` handler block but forgot to add `"set_conversion"` to
+   `CRUD_ACTIONS` → every rule request 400'd with `{"error":"bad request"}`
+   before reaching the handler. Fixed: added it to `CRUD_ACTIONS`.
+2. **Plural units broke multi-hop resolution.** `build_unit_defs` matched unit
+   names exactly, so `1 crate = 12 bags` (plural) did NOT connect to `1 bag = 20
+   pieces` (singular) — the crate silently vanished. Added `units._canon()`
+   (singularises simple plurals, keeps `pcs`/short tokens) and used it for ALL
+   custom-unit graph keys in `build_unit_defs` + `factor_to_base`. Now
+   `1 crate = 12 bags` → crate = 240 pieces, order-independent; `2 crates` etc.
+   resolve. Standard-lib lookups unchanged (they already alias plurals).
+
+Verified: real `_product_write` calls (set_unit + set_conversion) all return 200;
+plural multi-hop `crate via bags = 240`; `ALL_UNITS_OK`; `JS_PARSE_OK`; SURR 0.
+Deployed build 20260924120558.
+
+### Where to record conversions in the mini app (answer to the owner)
+Open a product → the edit sheet → **"Units & conversions"** section (below
+Category). Set the base **Unit** field first (the canonical stock unit, e.g.
+`pieces`), then type each rule in the box — `1 bag = 20 pieces`, `1 crate = 12
+bags` — and tap **Add**. Standard units (kg, g, litre, ml…) need no rule. Each
+saved rule shows as `1 bag = 20 pieces` under the section.
