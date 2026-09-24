@@ -531,6 +531,46 @@ class Accounting:
             "tx_count": len(txns),
         }
 
+    def cash_position(self, phone_number, opening=0):
+        """ALL-TIME cash at hand — a running balance, NOT a period figure.
+
+        cash_at_hand = opening + (all cash IN) - (all cash OUT), using the SAME
+        paid-only rules as period_cashflow (cash/transfer full, deposit portion,
+        debt collections in; purchases/expenses paid, deposits, debt repayments,
+        paid refunds out; credit moves 0). Combined pool (cash + bank). Ignores
+        the dashboard period filter — a balance is a snapshot of 'right now'.
+
+        Returns {cash_at_hand, cash_in, cash_out, opening}. Never raises.
+        """
+        try:
+            from datetime import date
+            today = date.today().isoformat()
+            txns = self.db.get_transactions_by_period(
+                phone_number, "1970-01-01", today) or []
+            cash_in = 0
+            cash_out = 0
+            for t in txns:
+                ttype = t.get("type")
+                if ttype in ("sale", "income"):
+                    cash_in += _cash_received(t)
+                elif ttype in ("purchase", "expense"):
+                    cash_out += _cash_paid(t)
+                elif ttype == "sale_return":
+                    cash_out += _cash_paid(t)         # refund to customer
+                elif ttype == "purchase_return":
+                    cash_in += _cash_received(t)      # refund from supplier
+                # production moves no cash (internal) — excluded.
+            opening = int(float(opening or 0))
+            return {
+                "cash_at_hand": opening + cash_in - cash_out,
+                "cash_in": cash_in,
+                "cash_out": cash_out,
+                "opening": opening,
+            }
+        except Exception as e:
+            logger.warning(f"cash_position failed: {e}")
+            return {"cash_at_hand": 0, "cash_in": 0, "cash_out": 0, "opening": 0}
+
     def profit_trend(self, phone_number, months=6):
         """Net-profit series over the last `months` calendar months (oldest→
         newest), each computed via period_pnl so it's accrual-correct. Returns

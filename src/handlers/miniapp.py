@@ -369,6 +369,9 @@ def _summary(event, user_id: str):
 
     user = db.get_user(user_id) or {}
     business = user.get("business_name") or "Your business"
+    # All-time cash at hand (snapshot, ignores the period filter). Opening cash
+    # is an optional stored figure (0 by default for now).
+    cashpos = acct.cash_position(user_id, opening=user.get("opening_cash", 0))
 
     # Split payables (what you owe) into real suppliers (goods) vs expense
     # payees (rent, utilities…). Expense_payee is an explicit contact type;
@@ -411,6 +414,8 @@ def _summary(event, user_id: str):
             "in": cf["cash_in"],
             "out": cf["cash_out"],
             "net": cf["net_cash"],
+            # All-time running balance (snapshot). Distinct from net (period).
+            "at_hand": cashpos["cash_at_hand"],
         },
         "debt": {
             "owed_to_me": pos["receivables"],
@@ -1507,6 +1512,7 @@ _PAGE_HTML = """<!doctype html>
     <div class="card"><div class="k">Cash in - out</div><div class="v" id="cash">—</div></div>
 
     <div class="seclabel">Current balances · as of today</div>
+    <div class="card"><div class="k">💵 Cash at hand</div><div class="v" id="cashhand">—</div><div class="sub">Received in, less paid out — all time</div></div>
     <div class="row">
       <div class="card"><div class="k">Owed to you</div><div class="v pos" id="owed">—</div></div>
       <div class="card"><div class="k">You owe</div><div class="v neg" id="iowe">—</div><div class="sub" id="iowebreak"></div></div>
@@ -2213,6 +2219,9 @@ _PAGE_HTML = """<!doctype html>
         if (gpEl) gpEl.textContent = "· margin " + (d.pnl.gross_margin_pct || 0) + "%";
         document.getElementById("opex").textContent = naira(d.pnl.opex);
         setSigned("cash", d.cash.net);
+        // All-time cash at hand (snapshot). Guard: older payloads may omit it.
+        var chEl = document.getElementById("cashhand");
+        if (chEl && d.cash && d.cash.at_hand != null) setSigned("cashhand", d.cash.at_hand);
         document.getElementById("owed").textContent = naira(d.debt.owed_to_me);
         document.getElementById("iowe").textContent = naira(d.debt.i_owe);
         var ib = document.getElementById("iowebreak");
