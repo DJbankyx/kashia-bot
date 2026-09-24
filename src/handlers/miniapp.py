@@ -2214,27 +2214,47 @@ _PAGE_HTML = """<!doctype html>
     var wrap = document.getElementById("catgroups");
     if (!rows.length) { wrap.innerHTML = '<div class="muted">No products.</div>'; return; }
 
-    // Group by category (blank category → "Uncategorized").
-    var groups = {};
+    // TOP-LEVEL grouping by item TYPE so a manufacturer's sellable PRODUCTS are
+    // kept apart from RAW MATERIALS and OVERHEAD (they were all mixed before).
+    // Each type section then lists its items (category shown inline on the row).
+    function typeGroup(p) {
+      var t = (p.item_type || "").toLowerCase();
+      if (t === "raw_material") return "raw";
+      if (t === "supply" || t === "consumable") return "supply";
+      if (t === "overhead") return "overhead";
+      if (t === "service") return "service";
+      return "product";   // finished_product / product / "" (trading)
+    }
+    var TYPE_ORDER = ["product", "raw", "supply", "overhead", "service"];
+    var TYPE_META = {
+      product:  "Products",
+      raw:      "Raw materials",
+      supply:   "Supplies",
+      overhead: "Overheads",
+      service:  "Services"
+    };
+    var byType = {};
     rows.forEach(function (p) {
-      var key = (p.category || "").trim() || "Uncategorized";
-      (groups[key] = groups[key] || []).push(p);
-    });
-    var names = Object.keys(groups).sort(function (a, b) {
-      if (a === "Uncategorized") return 1;
-      if (b === "Uncategorized") return -1;
-      return a.toLowerCase() < b.toLowerCase() ? -1 : 1;
+      var g = typeGroup(p);
+      (byType[g] = byType[g] || []).push(p);
     });
 
     wrap.innerHTML = "";
-    names.forEach(function (cat) {
-      var items = groups[cat];
-      var gUnits = 0, gValue = 0;
-      items.forEach(function (p) { gUnits += Number(p.stock || 0); gValue += Number(p.stock_value || 0); });
+    TYPE_ORDER.forEach(function (g) {
+      var items = byType[g];
+      if (!items || !items.length) return;
+      // sort within a type by category then name for a tidy list
+      items.sort(function (a, b) {
+        var ca = (a.category || "~").toLowerCase(), cb = (b.category || "~").toLowerCase();
+        if (ca !== cb) return ca < cb ? -1 : 1;
+        return (a.name || "").toLowerCase() < (b.name || "").toLowerCase() ? -1 : 1;
+      });
+      var gValue = 0;
+      items.forEach(function (p) { gValue += Number(p.stock_value || 0); });
       var head = document.createElement("div");
       head.className = "k";
-      head.style.margin = "14px 2px 6px";
-      head.textContent = cat + " · " + items.length + " item(s) · " + naira(gValue);
+      head.style.margin = "16px 2px 6px";
+      head.textContent = TYPE_META[g] + " \u00b7 " + items.length + " item(s) \u00b7 " + naira(gValue);
       wrap.appendChild(head);
 
       var card = document.createElement("div");
@@ -2245,14 +2265,15 @@ _PAGE_HTML = """<!doctype html>
         if (p.low_stock) badges += '<span class="badge low">low</span>';
         if (p.has_variants) badges += '<span class="badge var">variants</span>';
         var sub = [];
+        if (p.category) sub.push(escapeHtml(p.category));
         if (p.cost) sub.push("cost " + naira(p.cost));
         if (p.sale_price) sub.push("price " + naira(p.sale_price));
         var div = document.createElement("div");
         div.className = "item tappable";
         div.innerHTML = '<div><div class="name">' + escapeHtml(p.name || "?") + badges +
-          '</div><div class="meta">' + (sub.join(" / ") || "no price/cost set") + '</div></div>' +
+          '</div><div class="meta">' + (sub.join(" \u00b7 ") || "no price/cost set") + '</div></div>' +
           '<div class="right"><div class="stock">' + Number(p.stock||0).toLocaleString() +
-          ' ' + escapeHtml(p.unit || "") + (p.has_variants ? ' ›' : '') + '</div><div class="meta">' +
+          ' ' + escapeHtml(p.unit || "") + (p.has_variants ? ' \u203a' : '') + '</div><div class="meta">' +
           (p.stock_value ? naira(p.stock_value) : "") + '</div></div>';
         div.onclick = p.has_variants
           ? (function (prod) { return function () { openVarView(prod); }; })(p)
@@ -2261,7 +2282,7 @@ _PAGE_HTML = """<!doctype html>
       });
       wrap.appendChild(card);
     });
-    document.getElementById("catmsg").textContent = rows.length + " product(s)";
+    document.getElementById("catmsg").textContent = rows.length + " item(s)";
   };
   // Inventory was merged into Catalog; keep renderInv as an alias so post-write
   // refreshes (edit sheet save) re-render the single Catalog view.
@@ -3067,8 +3088,8 @@ _PAGE_HTML = """<!doctype html>
                           : "Cost of ONE unit of this material (optional)";
     var ch = document.getElementById("rc-cost-hint");
     if (ch) ch.textContent = (mt === "overhead")
-      ? "\ud83d\udca1 Enter the rate for ONE unit (e.g. \u20a60.06 per kW of electricity). The cost added is quantity \u00d7 this rate."
-      : "\ud83d\udca1 Enter the price of ONE unit (e.g. \u20a61,200 per kg of nylon), NOT the batch total. Blank = use the material's saved cost. Product cost = quantity \u00d7 this.";
+      ? "\\ud83d\\udca1 Enter the rate for ONE unit (e.g. \\u20a60.06 per kW of electricity). The cost added is quantity \\u00d7 this rate."
+      : "\\ud83d\\udca1 Enter the price of ONE unit (e.g. \\u20a61,200 per kg of nylon), NOT the batch total. Blank = use the material's saved cost. Product cost = quantity \\u00d7 this.";
   };
   // React to picker change: show the new-material fields (name + type + unit)
   // only for "New material…". For an existing catalog material, its unit/type
