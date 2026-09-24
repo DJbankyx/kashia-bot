@@ -592,7 +592,8 @@ def _product_write(event, user_id: str):
     variant = str(data.get("variant", "") or "").strip()
 
     VALUE_ACTIONS = ("set_price", "set_cost", "set_stock", "set_stock_delta")
-    CRUD_ACTIONS = ("add", "rename", "delete", "set_unit", "set_reorder", "set_category")
+    CRUD_ACTIONS = ("add", "rename", "delete", "set_unit", "set_reorder",
+                    "set_category", "set_conversion")
     LEAF_ACTIONS = ("set_leaf_stock", "set_leaf_cost")
     if action not in VALUE_ACTIONS + CRUD_ACTIONS + LEAF_ACTIONS:
         return _json(400, {"error": "bad request"})

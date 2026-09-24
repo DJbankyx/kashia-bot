@@ -98,12 +98,31 @@ _NUMBER_WORDS = {
 
 
 def normalize_unit(unit) -> str:
-    """Lowercase, strip, singularise a unit token. '' for empty/None."""
+    """Lowercase + strip a unit token. '' for empty/None. Does NOT singularise
+    (that would wrongly collapse 'pcs'); use _canon() for graph-key matching."""
     if not unit:
         return ""
-    u = str(unit).strip().lower()
-    # Strip a trailing plural 's' unless the singular-with-s is a known key
-    # (e.g. keep 'pcs'). We singularise only when it helps a lookup.
+    return str(unit).strip().lower()
+
+
+# Units that legitimately END in 's' and must NOT be de-pluralised.
+_KEEP_S = {"pcs", "gas", "bs"}
+
+
+def _canon(unit: str) -> str:
+    """Canonical key for matching CUSTOM units in the graph — singularises simple
+    plurals so '12 bags' and '1 bag' are the same unit. Keeps known -s words
+    (pcs) and very short tokens intact. Used ONLY for custom-unit graph keys;
+    standard-library lookups handle their own plural/alias forms."""
+    u = normalize_unit(unit)
+    if not u or u in _KEEP_S or len(u) <= 2:
+        return u
+    # Drop a trailing plural 's' (bags -> bag, cartons -> carton, pieces -> piece)
+    if u.endswith("es") and len(u) > 3:
+        # pieces -> piece, boxes -> box; keep it simple: strip just the 's'
+        return u[:-1]
+    if u.endswith("s"):
+        return u[:-1]
     return u
 
 
@@ -158,13 +177,13 @@ def factor_to_base(unit: str, base_unit: str, unit_defs: dict = None):
     b = normalize_unit(base_unit)
     if not u or not b:
         return None
-    if u == b or (u.rstrip("s") == b.rstrip("s")):
+    if u == b or (_canon(u) == _canon(b)):
         return 1.0
     defs = unit_defs or {}
-    # custom edge (case-insensitive, plural-tolerant)
+    # custom edge (case-insensitive, plural-tolerant via canonical form)
+    cu = _canon(u)
     for k, v in defs.items():
-        nk = normalize_unit(k)
-        if nk == u or nk.rstrip("s") == u.rstrip("s"):
+        if _canon(k) == cu:
             try:
                 f = float(v)
                 return f if f > 0 else None
@@ -204,17 +223,19 @@ def build_unit_defs(base_unit: str, edges: list):
     edge forces a unit to a factor that disagrees (>0.5%) with an already-known
     one.
     """
-    base = normalize_unit(base_unit)
+    base = _canon(base_unit)
     known = {base: 1.0}
     conflicts = []
 
-    # Normalise edges to (unit_a, per_a_in_b, unit_b): 1 unit_a = per_a_in_b unit_b
+    # Normalise edges to (unit_a, per_a_in_b, unit_b): 1 unit_a = per_a_in_b unit_b.
+    # Units are CANONICALISED (singular) so "12 bags" and "1 bag" are the same
+    # node — otherwise multi-hop chains through a plural silently break.
     norm_edges = []
     for e in (edges or []):
         try:
             qa, ua, qb, ub = e
             qa = to_qty(qa); qb = to_qty(qb)
-            ua = normalize_unit(ua); ub = normalize_unit(ub)
+            ua = _canon(ua); ub = _canon(ub)
             if not ua or not ub or qa <= 0 or qb <= 0:
                 continue
             # 1 ua = (qb/qa) ub   and   1 ub = (qa/qb) ua
