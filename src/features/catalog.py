@@ -1968,52 +1968,106 @@ class CatalogHandler:
                                           "📦 *Set Conversion*\n\nPick a product:")
 
     def _handle_set_conversion(self, phone_number: str, text: str, context: dict) -> list:
-        """Handle conversion input like '1 carton = 24 pieces'."""
+        """Teach a conversion rule in natural language ('1 carton = 24 pieces',
+        '200 bags = 1 truck', 'a bag is 20 pieces').
+
+        Uses the shared unit engine: parse the rule, add it as an edge, rebuild
+        the product's multi-hop unit graph to the SAME base unit (never clobber
+        the base), detect contradictions, and echo the resolved factor. Standard
+        units (kg/litre/…) need no teaching — this is only for custom units.
+        """
+        from utils import units as _units
+        from utils.quantity import fmt_qty
         product_key = context.get("cat_product_key", "")
 
-        match = re.match(r'(\d+)\s*(.+?)\s*=\s*(\d+)\s*(.*)', text)
-        if not match:
+        rule = _units.parse_rule(text)
+        if not rule:
             return [text_response(
-                "📦 Enter conversion format:\n\n"
+                "📦 I didn't catch that. Type the conversion like:\n\n"
                 "_1 carton = 24 pieces_\n"
-                "_1 dozen = 12 pieces_\n"
-                "_1 crate = 20 bottles_\n\n"
-                "Or type *done* to finish."
+                "_200 bags = 1 truck_\n"
+                "_a crate is 20 bottles_\n\n"
+                "You don't need to teach standard units (kg, g, litre, ml…) — I "
+                "already know those.\n\nOr type *done* to finish."
             )]
 
-        qty_from = int(match.group(1))
-        unit_from = match.group(2).strip().lower()
-        qty_to = int(match.group(3))
-        unit_to = match.group(4).strip().lower() or "pieces"
-
         products = self._get_products(phone_number)
-        if product_key in products:
-            product = products[product_key]
-            conversions = product.setdefault("conversions", {})
-            conv_key = f"{qty_from} {unit_from}"
-            conversions[conv_key] = {"qty": qty_to, "unit": unit_to}
-            # Also set primary unit
-            product["primary_unit"] = unit_to
-            self._save_products(phone_number, products)
-
-            name = product.get("name", product_key)
+        if product_key not in products:
             self.session.reset(phone_number)
-            return [
-                text_response(
-                    f"✅ Conversion saved for *{name}*:\n\n"
-                    f"📦 {qty_from} {unit_from} = {qty_to} {unit_to}\n\n"
-                    f"_Now when you record '{qty_from} {unit_from} of {name}', "
-                    f"stock will update by {qty_to} {unit_to}._"
-                ),
-                button_response("What's next?", [
-                    {"id": "cat_conversion", "title": "📦 Another Conversion"},
-                    {"id": "cat_stock", "title": "📊 View Stock"},
-                    {"id": "record_purchase", "title": "📦 Record Purchase"},
-                ])
-            ]
+            return [text_response("❓ Product not found.")]
 
+        product = products[product_key]
+        _units.upgrade_product_units(product)
+        qa, ua, qb, ub = rule
+
+        # Base unit: keep the product's existing base; if it has none yet, adopt
+        # the rule's right-hand unit as the base (first rule defines it).
+        base_unit = _units.normalize_unit(product.get("base_unit", "")) \
+            or _units.normalize_unit(product.get("primary_unit", "")) \
+            or _units.normalize_unit(ub)
+
+        # Keep the RAW edges the user taught (unit_edges) so a rule that couldn't
+        # resolve yet (e.g. "1 load = 5 bags" taught before "1 bag = 20 pieces")
+        # completes once its dependency is learned. Rebuild unit_defs from ALL
+        # raw edges each time — the resolver is multi-hop + order-independent.
+        prior_edges = list(product.get("unit_edges", []) or [])
+
+        # First: does the NEW rule CONTRADICT what's already known? Build with the
+        # prior edges + the new one WITHOUT dropping anything — build_unit_defs
+        # flags a disagreement (>0.5%). If so, reject and keep the old rules.
+        _, conflicts = _units.build_unit_defs(base_unit, prior_edges + [[qa, ua, qb, ub]])
+        if conflicts:
+            name = product.get("name", product_key)
+            return [text_response(
+                f"⚠️ That conflicts with what *{name}* already knows:\n"
+                f"  • {'; '.join(conflicts)}\n\n"
+                f"Remove or fix the earlier rule first, or re-enter a consistent "
+                f"one. (Type *done* to cancel.)"
+            )]
+
+        # No conflict → this is a new or a consistent restatement. De-dup an exact
+        # prior statement of the same left→right unit pair, then append + rebuild.
+        raw_edges = [e for e in prior_edges
+                     if not (len(e) == 4
+                             and _units.normalize_unit(e[1]) == _units.normalize_unit(ua)
+                             and _units.normalize_unit(e[3]) == _units.normalize_unit(ub))]
+        raw_edges.append([qa, ua, qb, ub])
+
+        defs, _ = _units.build_unit_defs(base_unit, raw_edges)
+
+        # Persist: base_unit + raw edges + rebuilt unit_defs. Keep legacy
+        # primary_unit synced.
+        product["base_unit"] = base_unit
+        product["primary_unit"] = base_unit
+        product["unit_edges"] = raw_edges
+        product["unit_defs"] = defs
+        self._save_products(phone_number, products)
+
+        name = product.get("name", product_key)
         self.session.reset(phone_number)
-        return [text_response("❓ Product not found.")]
+
+        # Echo the resolved factor for the unit just taught (multi-hop aware).
+        taught_unit = _units.normalize_unit(ua)
+        taught_factor = defs.get(taught_unit)
+        if taught_factor is not None:
+            resolved = (f"📦 1 {taught_unit} = {fmt_qty(taught_factor)} {base_unit}"
+                        + (" ✓" if True else ""))
+        else:
+            resolved = f"📦 {int(qa) if qa == int(qa) else qa} {ua} = "\
+                       f"{int(qb) if qb == int(qb) else qb} {ub}"
+
+        return [
+            text_response(
+                f"✅ Conversion saved for *{name}*:\n\n{resolved}\n\n"
+                f"_Base unit: {base_unit}. Record in any known unit and I'll "
+                f"convert to {base_unit} automatically._"
+            ),
+            button_response("What's next?", [
+                {"id": "cat_conversion", "title": "📦 Another Conversion"},
+                {"id": "cat_stock", "title": "📊 View Stock"},
+                {"id": "record_purchase", "title": "📦 Record Purchase"},
+            ])
+        ]
 
     # ─────────────────────────────────────────────────────────
     # SERVICE SUPPLY TEMPLATES
@@ -2657,42 +2711,46 @@ class CatalogHandler:
         product = products[matched_key]
 
         # Apply conversion if quantity_str has a unit
+        # ── UNIT CONVERSION → base unit (single shared engine) ──
+        # Resolve the incoming unit (from quantity_str, e.g. "3 bags") to the
+        # product's canonical base_unit via utils.units: standard library
+        # (kg/g/litre…) first, then the product's own multi-hop custom rules.
+        # One engine, fraction-safe qty, kobo-safe cost — replaces the old
+        # _apply_conversion + _get_standard_conversion_factor double path.
+        from utils.money import to_money, money_round
+        from utils import units as _units
         actual_qty = qty_change
         incoming_unit = ""
-        if quantity_str:
-            converted = self._apply_conversion(product, quantity_str, qty_change)
-            if converted is not None:
-                actual_qty = converted
-            # Extract unit from quantity_str for standard conversion check
-            import re
-            unit_match = re.match(r'^[\d.]+\s+(.+)', str(quantity_str).strip())
-            if unit_match:
-                incoming_unit = unit_match.group(1).strip().lower()
-
-        # ── Standard unit conversion to primary_unit ──
-        from utils.money import to_money, money_round
-        primary_unit = product.get("primary_unit", "").lower().strip()
         _unit_warning = None
-        if primary_unit and incoming_unit and incoming_unit.rstrip("s") != primary_unit.rstrip("s"):
-            # Try to convert incoming unit to primary_unit using standard conversions
-            factor = self._get_standard_conversion_factor(incoming_unit, primary_unit)
-            if factor:
+
+        # Upgrade legacy conversions → base_unit + unit_defs on the fly (persisted
+        # with the rest of this update below).
+        _units.upgrade_product_units(product)
+        base_unit, unit_defs = _units.product_units(product)
+
+        if quantity_str:
+            parsed = _units.parse_quantity(quantity_str)
+            if parsed:
+                incoming_unit = _units.normalize_unit(parsed[1])
+
+        if base_unit and incoming_unit and \
+                incoming_unit.rstrip("s") != base_unit.rstrip("s"):
+            factor = _units.factor_to_base(incoming_unit, base_unit, unit_defs)
+            if factor is not None:
+                # qty into base units (fraction-safe); keep the +/- sign.
+                # NOTE: unit_cost is NOT rescaled here — the landing-cost block
+                # below derives per-base cost from (qty_change vs actual_qty),
+                # which is the single kobo-precise rescale point. Rescaling here
+                # too would double-divide the cost.
                 actual_qty = abs(qty_change) * factor * (1 if qty_change >= 0 else -1)
-                # Also adjust unit_cost to primary_unit (money, kobo-precise).
-                if unit_cost and unit_cost > 0:
-                    # Original cost was per incoming_unit, convert to per primary_unit
-                    # e.g. ₦5/CL → ₦500/litre (factor=0.01 means 1CL=0.01L, so cost×(1/factor)).
-                    # Was int()-truncated — a sub-naira per-unit cost (₦0.06/kWh)
-                    # would round to ₦0 after conversion. Keep it precise.
-                    unit_cost = money_round(to_money(unit_cost) / to_money(factor)) if factor > 0 else unit_cost
             else:
-                # No conversion found — flag unit mismatch warning
+                # Unresolvable / cross-system — add as-is + warn (ask to teach it).
                 _unit_warning = (
                     f"⚠️ *Unit mismatch:* You entered *{incoming_unit}* but "
-                    f"*{product.get('name', matched_key)}* is stored in *{primary_unit}*.\n\n"
+                    f"*{product.get('name', matched_key)}* is stored in *{base_unit}*.\n\n"
                     f"No conversion found — stock was added as-is.\n\n"
-                    f"_To fix: go to Catalog → {product.get('name', matched_key)} → Set Conversion_\n"
-                    f"_e.g. \"1 {incoming_unit} = X {primary_unit}\"_"
+                    f"_To fix: Catalog → {product.get('name', matched_key)} → Set Conversion_\n"
+                    f"_e.g. \"1 {incoming_unit} = X {base_unit}\"_"
                 )
 
         # ── NESTED variant TREE stock update (option 1) ──
@@ -5042,91 +5100,40 @@ class CatalogHandler:
         }
 
     def _apply_conversion(self, product: dict, quantity_str: str, raw_qty: int):
+        """Convert a "<n> <unit>" quantity into the product's base unit.
+
+        Thin shim over the shared unit engine (utils.units) — kept for callers
+        like the stock-take preview. Resolves via the standard library AND the
+        product's custom unit graph (multi-hop). Fraction-safe.
+
+        Returns: converted quantity in the base unit, or None if the unit is the
+        base (no conversion) or unresolvable.
         """
-        Check if quantity_str contains a unit that has a conversion defined.
-        e.g. "3 cartons" with conversion "1 carton = 24 pieces" → returns 72 (or -72)
-        
-        Returns: converted quantity (int) or None if no conversion applies.
-        """
-        conversions = product.get("conversions", {})
-        if not conversions or not quantity_str:
+        from utils import units as _units
+        if not quantity_str:
             return None
-
-        qty_str = str(quantity_str).lower().strip()
-
-        # Extract unit from quantity string (e.g. "3 cartons" → "carton")
-        match = re.match(r'^(\d+)\s+(.+)', qty_str)
-        if not match:
+        parsed = _units.parse_quantity(quantity_str)
+        if not parsed:
             return None
-
-        unit = match.group(2).strip().rstrip("s")  # Remove trailing 's' for plural
-
-        # Check conversions
-        for conv_key, conv_val in conversions.items():
-            # conv_key = "1 carton", conv_val = {"qty": 24, "unit": "pieces"}
-            key_match = re.match(r'^(\d+)\s+(.+)', conv_key)
-            if not key_match:
-                continue
-            conv_unit = key_match.group(2).strip().rstrip("s")
-            conv_from_qty = int(key_match.group(1))
-            conv_to_qty = conv_val.get("qty", 1)
-
-            if unit == conv_unit or unit == conv_unit + "s" or conv_unit == unit + "s":
-                # Match found — calculate
-                # raw_qty is already the number of [units] (e.g. 3 cartons → raw_qty = 3)
-                multiplier = conv_to_qty // conv_from_qty
-                sign = 1 if raw_qty >= 0 else -1
-                return abs(raw_qty) * multiplier * sign
-
-        return None
+        incoming_unit = _units.normalize_unit(parsed[1])
+        if not incoming_unit:
+            return None
+        base_unit, unit_defs = _units.product_units(product)
+        if not base_unit or incoming_unit.rstrip("s") == base_unit.rstrip("s"):
+            return None
+        factor = _units.factor_to_base(incoming_unit, base_unit, unit_defs)
+        if factor is None:
+            return None
+        sign = 1 if raw_qty >= 0 else -1
+        return abs(raw_qty) * factor * sign
 
     def _get_standard_conversion_factor(self, from_unit: str, to_unit: str) -> float:
-        """
-        Get conversion factor between two standard units.
-        Returns the factor to multiply from_unit quantity to get to_unit quantity.
-        e.g. _get_standard_conversion_factor("cl", "litres") → 0.01 (100 CL = 1 litre)
-        Returns 0 if no conversion found.
-        """
-        from_normalized = from_unit.lower().strip().rstrip("s")
-        to_normalized = to_unit.lower().strip().rstrip("s")
-
-        if from_normalized == to_normalized:
-            return 1.0
-
-        # Standard metric conversions (same as production.py STANDARD_CONVERSIONS)
-        CONVERSIONS = {
-            # Volume
-            ("ml", "l"): 0.001, ("ml", "litre"): 0.001, ("ml", "liter"): 0.001,
-            ("l", "ml"): 1000, ("litre", "ml"): 1000, ("liter", "ml"): 1000,
-            ("cl", "ml"): 10, ("ml", "cl"): 0.1,
-            ("cl", "l"): 0.01, ("cl", "litre"): 0.01, ("litre", "cl"): 100, ("l", "cl"): 100,
-            # Weight
-            ("g", "kg"): 0.001, ("kg", "g"): 1000,
-            ("mg", "g"): 0.001, ("g", "mg"): 1000,
-            ("gram", "kg"): 0.001, ("kg", "gram"): 1000,
-            ("tonne", "kg"): 1000, ("kg", "tonne"): 0.001,
-            # Time
-            ("min", "hour"): 1/60, ("hour", "min"): 60,
-            ("minute", "hour"): 1/60, ("hour", "minute"): 60,
-            ("hr", "min"): 60, ("min", "hr"): 1/60,
-            ("hour", "day"): 1/24, ("day", "hour"): 24,
-            # Energy
-            ("kwh", "whr"): 1, ("whr", "kwh"): 1,
-            ("wh", "kwh"): 0.001, ("kwh", "wh"): 1000,
-            # Quantity synonyms
-            ("piece", "unit"): 1, ("unit", "piece"): 1,
-            ("pc", "piece"): 1, ("piece", "pc"): 1,
-            # Volume larger
-            ("gallon", "litre"): 3.785, ("litre", "gallon"): 0.264,
-            ("drum", "litre"): 200, ("litre", "drum"): 0.005,
-        }
-
-        # Try direct match
-        for (f, t), factor in CONVERSIONS.items():
-            if from_normalized == f.rstrip("s") and to_normalized == t.rstrip("s"):
-                return factor
-
-        return 0
+        """Standard-unit conversion factor (from → to) within one measurement
+        system. Delegates to the shared engine. Returns 0 if not both standard
+        or cross-system (preserves the old contract's falsy-on-miss)."""
+        from utils import units as _units
+        f = _units.standard_factor(from_unit, to_unit)
+        return f if f is not None else 0
 
     def _save_products(self, phone_number: str, products: dict):
         """Save products dict to user profile."""
