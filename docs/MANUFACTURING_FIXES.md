@@ -126,3 +126,31 @@ POSTs to **`/app/api/opening-cash`** → `db.update_user_field(user, opening_cas
 AND net worth shift by the new opening (0 is allowed — clears it). Summary
 payload now returns `cash.opening`. Verified: opening 100k + 80k sale → cash at
 hand 180k; net worth includes it. New route → **deploy required**.
+
+### Part-payment guard + delete/void a transaction (2026-09-25)
+
+Owner recorded a part-payment deposit LARGER than the sale and it went through
+(negative debt), and there was no way to fix a mistaken entry.
+
+- **Server-side part-payment guard** (`record_transaction_web`, commit `f67d8c1`):
+  the JS guarded deposit≥amount but the server trusted the client. Now the
+  server validates: deposit must be 0..amount (negative or >amount → 400), the
+  balance owed is ALWAYS derived server-side (amount − deposit), and deposit ≥
+  amount is treated as fully paid (no debt).
+- **Delete / void a transaction** (commit `2a68463`):
+  `transactions.void_transaction_web(phone, tx_id)` reverses side-effects then
+  deletes — sale → add stock back + reduce owed-to-me by the outstanding balance
+  + reverse contact total; purchase → remove stock + reduce i-owe + reverse
+  contact; expense/cash_adjustment → delete only. Production is BLOCKED (unsafe
+  to auto-reverse materials+stock — do it in chat); a sale/purchase that already
+  has a return is blocked (reverse the return first). `POST /app/api/void-transaction`
+  (new route → deploy required); Records rows gained a 🗑 delete with a two-tap
+  confirm; summary + records refresh after.
+- Also: web expenses/purchases now auto-categorise (commit `a72b987`) — the form
+  has no category picker, so the server runs TransactionCategorizer when none is
+  sent (Fuel → Utilities & Services etc.). Deleted 27 Honda/Toyota/Howo
+  car-dealer TEST transactions from the owner's live data (the ₦65M in the chat
+  monthly report was those, not the satchet water — the water sale is ₦65k).
+
+New/updated routes needing deploy: /app/api/produce, /app/api/cash-adjust,
+/app/api/opening-cash, /app/api/void-transaction.
