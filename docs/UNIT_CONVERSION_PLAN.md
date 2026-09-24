@@ -245,3 +245,26 @@ cd ~/projects/kashia-bot
 ./deploy.sh dev
 ```
 (No `set_telegram_commands.sh` — the command menu did not change.)
+
+---
+
+## 🐞 POST-SHIP FIX + DEPLOY (2026-09-24)
+
+**Mini-app showed "Loading…" / no data after the units work.** Investigated:
+- Confirmed the server was healthy — `_summary` and `_inventory` both return 200
+  and encode cleanly (probed with a mocked DB; all imports load fine).
+- Root cause of the units NOT showing in the web: `catalog.normalize_product`
+  only copies keys in `_PRODUCT_DEFAULTS`, so the new `base_unit` / `unit_defs` /
+  `unit_edges` were **stripped** on the inventory read path (the web lost custom
+  units; `_row_from_product` then saw an empty product for unit purposes).
+- **Fix (`d1678c9`):** added `base_unit`, `unit_defs`, `unit_edges` to
+  `_PRODUCT_DEFAULTS` so they survive normalization. Verified: inventory now
+  returns Cement `base=pieces, defs={bag,truck}` and legacy `carton=24` upgrades.
+- The broader "Loading…" was consistent with a stale/incomplete deploy of the
+  units+money batch. **Deployed** `./deploy.sh dev` — build `20260924105552`,
+  "Successfully created/updated stack", all 8 Lambdas updated including
+  MiniAppFunction. The app now serves the current engine.
+
+If the app still shows "Loading…" after this: it's the documented Telegram
+WebView cache / expired-init case — close and reopen the mini app from the ☰
+Menu button (the HMAC init data is re-issued on reopen).
