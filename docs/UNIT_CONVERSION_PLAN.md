@@ -398,3 +398,23 @@ Owner feedback after the item-type grouping shipped:
 
 Verified PYC_OK / PAGE_SURR 0 / PAGE_ENCODE_OK / JS_PARSE_OK. Pushed on
 `16650d3`. **Owner deploys** `./deploy.sh dev`.
+
+---
+
+## 🎯 TYPE-AWARE EDIT SHEET (2026-09-24, commit 78a1ac9 — owner to deploy)
+
+Owner feedback: editing an overhead/raw material exposed fields that don't apply
+(stock, selling price, reorder, conversions for an overhead). The edit sheet now
+shows only what fits the item TYPE (`applyTypeFields()` on open, `saveSheet`
+type-gates the ops so hidden fields never write):
+- **Overhead** (electricity, labour, machine hour — a rate × usage, not stocked,
+  not sold): hides Stock (+steppers), Selling price, Reorder level, Units &
+  conversions. Keeps Unit + Category. Cost field relabelled "Rate per unit of
+  usage". Delete button reads "Delete overhead".
+- **Raw material / Supply** (stocked + consumed, not sold): hides Selling price.
+  Keeps Stock, Cost, Unit, Reorder, Conversions. Delete reads "Delete material".
+- **Product / trading** (sellable): all fields as before.
+
+Added wrapper IDs (sh-stock-wrap, sh-price-wrap, sh-reorder-wrap, sh-conv-wrap)
+so fields can be toggled. Verified PYC_OK / PAGE_SURR 0 / PAGE_ENCODE_OK /
+JS_PARSE_OK. **Owner deploys** `./deploy.sh dev`.
