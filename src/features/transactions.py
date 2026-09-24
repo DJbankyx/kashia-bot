@@ -1509,6 +1509,114 @@ class TransactionHandler:
             logger.error(f"record_cash_adjustment error: {e}")
             return {"ok": False, "error": "could not record — please try again"}
 
+    def void_transaction_web(self, phone_number: str, tx_id: str) -> dict:
+        """Delete a recorded transaction and REVERSE its side-effects so the
+        books stay consistent. Used by the Mini App to fix a mistaken entry.
+
+        Reversal by type:
+          • sale     → add the sold stock BACK; if it was credit/part, reduce the
+                       customer's owed-to-me debt by the outstanding balance;
+                       reverse the contact's received total.
+          • purchase → remove the stock that was added; if credit/part, reduce
+                       the supplier's i-owe debt by the outstanding balance;
+                       reverse the contact's paid total.
+          • expense / cash_adjustment / income → no stock; reverse any debt +
+                       contact total, then delete.
+          • production → BLOCKED (materials + finished stock are interlinked;
+                       auto-reversal is unsafe). Tell the owner to adjust via chat.
+
+        GUARD: a sale/purchase that already has a return against it is blocked
+        (reverse the return first). Returns {ok, reversed:{...}} or {ok:False,
+        error}. Never raises.
+        """
+        try:
+            if not tx_id:
+                return {"ok": False, "error": "no transaction id"}
+            tx = None
+            if hasattr(self.db, "get_transaction"):
+                tx = self.db.get_transaction(phone_number, tx_id)
+            if not tx:
+                for t in (self.db.get_transactions(phone_number, limit=400) or []):
+                    if t.get("transaction_id") == tx_id or t.get("id") == tx_id:
+                        tx = t
+                        break
+            if not tx:
+                return {"ok": False, "error": "transaction not found"}
+
+            ttype = tx.get("type")
+            if ttype == "production":
+                return {"ok": False, "error": "production_blocked",
+                        "message": "A production batch can't be deleted here — "
+                                   "it touches materials and stock. Adjust it in chat."}
+            if ttype in ("sale_return", "purchase_return"):
+                return {"ok": False, "error": "this is a return — reverse it from the original sale/purchase"}
+
+            # A sale/purchase with a return recorded against it must not be voided
+            # (the return copied its cost/stock; deleting would desync).
+            if ttype in ("sale", "purchase") and self.returned_qty_for(phone_number, tx_id) > 0:
+                return {"ok": False, "error": "has_return",
+                        "message": "This has a return recorded against it. Reverse the return first."}
+
+            from utils.money import to_money, money_round
+            extra = tx.get("extra_details") or {}
+            vendor = (tx.get("vendor") or "").strip()
+            amount = money_round(tx.get("amount") or 0)
+            pm = str(tx.get("payment_method") or "").lower()
+            reversed_bits = {}
+
+            # ── Stock reversal (sale added-back, purchase removed) ──
+            if ttype in ("sale", "purchase"):
+                try:
+                    from features.catalog import CatalogHandler
+                    cat = CatalogHandler(self.session, self.db)
+                    desc = tx.get("item_name") or tx.get("description") or ""
+                    brand = tx.get("brand") or ""
+                    search = f"{brand} {desc}".strip() if brand else desc
+                    qty = self._parse_qty(tx.get("quantity", 1) or 1)
+                    variant = extra.get("variant")
+                    if search and qty:
+                        # sale deducted stock → add back (+qty); purchase added
+                        # stock → remove (−qty). cost_mode='keep' leaves the
+                        # weighted average untouched.
+                        delta = qty if ttype == "sale" else -qty
+                        cat.update_stock(phone_number, search, delta,
+                                         variant=variant, cost_mode="keep")
+                        reversed_bits["stock"] = f"{'+' if delta > 0 else ''}{delta} {search}"
+                except Exception as e:
+                    logger.warning(f"void stock reversal failed: {e}")
+
+            # ── Debt reversal (credit / part payment left an outstanding balance) ──
+            if vendor and pm in ("credit", "deposit"):
+                try:
+                    # Outstanding balance recorded as debt = amount (credit) or
+                    # amount − deposit (part). Reduce that debt back down.
+                    if pm == "deposit":
+                        dep = money_round(tx.get("deposit_amount") or extra.get("deposit_amount") or 0)
+                        owed = max(0, money_round(to_money(amount) - to_money(dep)))
+                    else:
+                        owed = amount
+                    if owed > 0:
+                        direction = "i_owe" if ttype in ("purchase", "expense") else "owed_to_me"
+                        self.db.settle_debt(phone_number, vendor, owed, direction)
+                        reversed_bits["debt"] = owed
+                except Exception as e:
+                    logger.warning(f"void debt reversal failed: {e}")
+
+            # ── Contact totals reversal (subtract what this tx added) ──
+            if vendor:
+                try:
+                    self.db.update_contact_totals(phone_number, vendor, -to_money(amount), ttype)
+                    reversed_bits["contact"] = True
+                except Exception as e:
+                    logger.warning(f"void contact reversal failed: {e}")
+
+            # ── Delete the row ──
+            self.db.delete_transaction(phone_number, tx_id)
+            return {"ok": True, "type": ttype, "amount": amount, "reversed": reversed_bits}
+        except Exception as e:
+            logger.error(f"void_transaction_web failed: {e}")
+            return {"ok": False, "error": "could not delete — please try again"}
+
     # ═══════════════════════════════════════════════════════════
     #  RETURNS / REFUNDS  (build #4 — R1 engine core)
     # ═══════════════════════════════════════════════════════════

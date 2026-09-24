@@ -248,6 +248,8 @@ def lambda_handler(event, context):
             return _cash_adjust_write(event, user_id)
         if method == "POST" and path.endswith("/app/api/opening-cash"):
             return _opening_cash_write(event, user_id)
+        if method == "POST" and path.endswith("/app/api/void-transaction"):
+            return _void_transaction_write(event, user_id)
 
         # ── Reads ──
         if method == "GET" and path.endswith("/app/api/recipe"):
@@ -955,6 +957,26 @@ def _opening_cash_write(event, user_id: str):
         return _json(400, {"ok": False, "error": "could not save the opening balance"})
 
 
+def _void_transaction_write(event, user_id: str):
+    """Delete a recorded transaction and reverse its side-effects (stock, debt,
+    contact totals). Body: {tx_id}. Reuses TransactionHandler.void_transaction_web
+    (the engine). Production is blocked (returns 400 with a message)."""
+    from services.database import Database
+    from features.transactions import TransactionHandler
+
+    data = _parse_body(event)
+    tx_id = str(data.get("tx_id", "") or "").strip()
+    if not tx_id:
+        return _json(400, {"error": "transaction id required"})
+    tx = TransactionHandler(None, Database(), None, None)
+    res = tx.void_transaction_web(user_id, tx_id)
+    if not res.get("ok"):
+        err = str(res.get("error", ""))
+        code = 404 if "not found" in err else 400
+        return _json(code, res)
+    return _json(200, res)
+
+
 def _transaction_write(event, user_id: str):
     """M6b — record a full sale/purchase/expense from the web (stateless).
 
@@ -1175,6 +1197,7 @@ def _records(event, user_id: str):
         if is_bad_vendor(vendor):
             vendor = ""
         row = {
+            "id": str(t.get("transaction_id") or t.get("id") or ""),
             "desc": _desc(t),
             "amount": int(t.get("amount", 0) or 0),
             "vendor": str(vendor or ""),
@@ -1519,6 +1542,9 @@ _PAGE_HTML = """<!doctype html>
   .datebox .apply { padding: 9px 14px; border-radius: 9px; border: none;
     background: var(--accent); color: var(--btntext); font-weight: 700; cursor: pointer; }
   .hidden { display: none; }
+  .linkbtn { background: none; border: none; cursor: pointer; font-size: 16px;
+    padding: 2px 4px; margin-top: 4px; opacity: .7; }
+  .linkbtn:active { opacity: 1; }
 </style>
 </head>
 <body>
@@ -2985,9 +3011,20 @@ _PAGE_HTML = """<!doctype html>
       if (t.vendor) meta.push(t.vendor);
       var div = document.createElement("div");
       div.className = "item";
+      // A 🗑 delete affordance per row (two-tap confirm). Deleting reverses the
+      // transaction's stock/debt/contact effects server-side, then removes it.
+      var delBtn = t.id
+        ? '<button class="linkbtn recdel" data-id="' + escapeHtml(t.id) +
+          '" title="Delete">🗑️</button>'
+        : '';
       div.innerHTML = '<div><div class="name">' + escapeHtml(t.desc || "?") +
         '</div><div class="meta">' + escapeHtml(meta.join(" \u00b7 ")) + '</div></div>' +
-        '<div class="right"><div class="stock">' + naira(t.amount || 0) + '</div></div>';
+        '<div class="right"><div class="stock">' + naira(t.amount || 0) + '</div>' +
+        delBtn + '</div>';
+      var btn = div.querySelector(".recdel");
+      if (btn) btn.onclick = (function (id, label) {
+        return function (ev) { ev.stopPropagation(); recDelete(id, label); };
+      })(t.id, t.desc || "this entry");
       card.appendChild(div);
     });
     list.appendChild(card);
@@ -2995,6 +3032,31 @@ _PAGE_HTML = """<!doctype html>
     if (d.has_more) note += " · showing " + rows.length + " of " + d.count + " (narrow the date or export for all)";
     document.getElementById("rec-msg").textContent = note;
   }
+  // Delete a recorded transaction (two-tap confirm). First tap arms; a second
+  // tap within a few seconds confirms. Reversal happens server-side.
+  var recPendingDelete = null;
+  window.recDelete = function (id, label) {
+    var msg = document.getElementById("rec-msg");
+    if (recPendingDelete === id) {
+      recPendingDelete = null;
+      msg.textContent = "Deleting…";
+      apiPost("api/void-transaction", { tx_id: id })
+        .then(function () {
+          if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+          loadRecords();
+          loadSummary();   // stock/debt/cash may have moved.
+        })
+        .catch(function (e) {
+          msg.textContent = (e && e.message) || "Could not delete.";
+        });
+      return;
+    }
+    recPendingDelete = id;
+    msg.textContent = "Tap 🗑 again to permanently delete " + label + ".";
+    setTimeout(function () {
+      if (recPendingDelete === id) { recPendingDelete = null; msg.textContent = ""; }
+    }, 4000);
+  };
   window.recExport = function (fmt) {
     var msg = document.getElementById("rec-msg");
     msg.textContent = "Preparing " + fmt.toUpperCase() + " export...";
