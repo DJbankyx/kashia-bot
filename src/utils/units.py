@@ -52,6 +52,7 @@ _SYSTEMS = {
             "cl": 10.0, "centilitre": 10.0, "centiliter": 10.0,
             "l": 1000.0, "litre": 1000.0, "liter": 1000.0,
             "gallon": 3785.41, "gal": 3785.41,
+            "drum": 200000.0,   # 1 drum = 200 litres (common industrial drum)
         },
     },
     "length": {

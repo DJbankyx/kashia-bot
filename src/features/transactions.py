@@ -2616,28 +2616,25 @@ class TransactionHandler:
                 for mat in recipe:
                     mat_name = mat.get("material", "").lower()
                     if mat_name in mat_lower or mat_lower in mat_name:
-                        # Recipe cost_per_unit = cost per recipe unit
-                        # If recipe unit matches material's primary_unit, use landing_cost directly
-                        # If they differ, convert using standard conversions
+                        # Recipe cost_per_unit = cost per recipe unit. effective_cost
+                        # is per the material's BASE unit; convert to per recipe_unit
+                        # via the shared engine (standard + custom, multi-hop):
+                        #   cost/recipe_unit = cost/base × (base per recipe_unit).
+                        from utils import units as _units
                         recipe_unit = mat.get("unit", "").lower().strip()
-                        primary_unit = products.get(mat_key, {}).get("primary_unit", "").lower().strip()
+                        base_unit, unit_defs = _units.product_units(products.get(mat_key, {}))
 
-                        if primary_unit and recipe_unit and recipe_unit.rstrip("s") != primary_unit.rstrip("s"):
-                            # Recipe unit differs from storage unit — need conversion
-                            from features.production import ProductionHandler
-                            factor = None
-                            for (from_u, to_u), f in ProductionHandler.STANDARD_CONVERSIONS.items():
-                                if primary_unit.rstrip("s") == from_u.rstrip("s") and recipe_unit.rstrip("s") == to_u.rstrip("s"):
-                                    factor = f
-                                    break
-                            if factor:
-                                # e.g. landing_cost=₦100/litre, recipe uses CL, factor=100 (1L=100CL)
-                                # cost per CL = ₦100 / 100 = ₦1/CL
-                                mat["cost_per_unit"] = float(effective_cost) / factor if factor > 0 else float(effective_cost)
+                        if base_unit and recipe_unit and \
+                                recipe_unit.rstrip("s") != base_unit.rstrip("s"):
+                            factor = _units.factor_to_base(recipe_unit, base_unit, unit_defs)
+                            if factor and factor > 0:
+                                # e.g. ₦100/litre, recipe uses cl → factor(cl→litre)=0.01
+                                # → cost per cl = 100 × 0.01 = ₦1.
+                                mat["cost_per_unit"] = float(effective_cost) * factor
                             else:
                                 mat["cost_per_unit"] = float(effective_cost)
                         else:
-                            # Same unit (or no primary_unit set) — direct assignment
+                            # Same unit (or no base set) — direct assignment.
                             mat["cost_per_unit"] = float(effective_cost)
                         updated = True
 

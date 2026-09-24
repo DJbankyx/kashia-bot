@@ -813,45 +813,11 @@ class ProductionHandler:
     # UNIT CONVERSION HELPERS
     # ─────────────────────────────────────────────────────────
 
-    # Standard metric conversions (bidirectional)
-    STANDARD_CONVERSIONS = {
-        # Volume
-        ("ml", "l"): 0.001, ("ml", "litre"): 0.001, ("ml", "litres"): 0.001, ("ml", "liter"): 0.001,
-        ("l", "ml"): 1000, ("litre", "ml"): 1000, ("litres", "ml"): 1000, ("liter", "ml"): 1000,
-        ("cl", "ml"): 10, ("ml", "cl"): 0.1,
-        ("cl", "l"): 0.01, ("l", "cl"): 100, ("cl", "litre"): 0.01, ("litre", "cl"): 100,
-        ("cl", "litres"): 0.01, ("litres", "cl"): 100,
-        # Weight
-        ("g", "kg"): 0.001, ("kg", "g"): 1000,
-        ("mg", "g"): 0.001, ("g", "mg"): 1000,
-        ("gram", "kg"): 0.001, ("kg", "gram"): 1000,
-        ("grams", "kg"): 0.001, ("kg", "grams"): 1000,
-        ("tonne", "kg"): 1000, ("kg", "tonne"): 0.001,
-        ("tonnes", "kg"): 1000, ("kg", "tonnes"): 0.001,
-        # Time
-        ("min", "hour"): 1/60, ("hour", "min"): 60,
-        ("minute", "hour"): 1/60, ("hour", "minute"): 60,
-        ("minutes", "hours"): 1/60, ("hours", "minutes"): 60,
-        ("hr", "min"): 60, ("min", "hr"): 1/60,
-        ("hour", "day"): 1/24, ("day", "hour"): 24,
-        # Quantity synonyms (treat as same)
-        ("piece", "pieces"): 1, ("pieces", "piece"): 1,
-        ("unit", "units"): 1, ("units", "unit"): 1,
-        ("piece", "units"): 1, ("units", "piece"): 1,
-        ("pieces", "units"): 1, ("units", "pieces"): 1,
-        ("pc", "pieces"): 1, ("pieces", "pc"): 1,
-        ("pcs", "pieces"): 1, ("pieces", "pcs"): 1,
-        # Volume larger
-        ("gallon", "litre"): 3.785, ("litre", "gallon"): 0.264,
-        ("gallon", "litres"): 3.785, ("litres", "gallon"): 0.264,
-        ("drum", "litre"): 200, ("litre", "drum"): 0.005,
-        ("drum", "litres"): 200, ("litres", "drum"): 0.005,
-        ("drum", "l"): 200, ("l", "drum"): 0.005,
-        # Energy
-        ("kwh", "whr"): 1, ("whr", "kwh"): 1,
-        ("kw", "kwh"): 1, ("kwh", "kw"): 1,
-        ("watt", "kw"): 0.001, ("kw", "watt"): 1000,
-    }
+    # NOTE: the old STANDARD_CONVERSIONS table lived here and was DUPLICATED in
+    # catalog.py (and had drifted). It's been replaced by the single shared
+    # engine utils/units.py (standard library + per-product custom rules,
+    # multi-hop). All conversion now goes through utils.units.factor_to_base /
+    # standard_factor. Do not reintroduce a local table.
 
     def _convert_to_stock_unit(self, recipe_qty: float, recipe_unit: str,
                                 material_product: dict) -> dict:
@@ -872,78 +838,41 @@ class ProductionHandler:
                 "warning": str or None,  # warning if units don't match and no conversion
             }
         """
-        stock_unit = material_product.get("primary_unit", "").lower().strip()
-        recipe_unit_lower = recipe_unit.lower().strip().rstrip("s")  # normalize plural
-        stock_unit_normalized = stock_unit.rstrip("s")
+        # Shared unit engine: resolve recipe_unit → the material's base (stock)
+        # unit via the standard library AND the material's custom rules (multi-hop).
+        from utils import units as _units
+        from utils.quantity import fmt_qty
+        stock_unit, unit_defs = _units.product_units(material_product)
+        recipe_unit_lower = _units.normalize_unit(recipe_unit)
+        stock_unit_normalized = _units.normalize_unit(stock_unit).rstrip("s")
 
-        # If no primary_unit set on material, or units match — no conversion needed
-        if not stock_unit or recipe_unit_lower == stock_unit_normalized:
+        # If no base unit set on material, or units match — no conversion needed
+        if not stock_unit or recipe_unit_lower.rstrip("s") == stock_unit_normalized:
             return {
                 "stock_qty": recipe_qty,
                 "stock_unit": recipe_unit,
                 "converted": False,
-                "display": f"{recipe_qty:.1f} {recipe_unit}" if recipe_qty != int(recipe_qty) else f"{int(recipe_qty)} {recipe_unit}",
+                "display": f"{fmt_qty(recipe_qty)} {recipe_unit}",
                 "warning": None,
             }
 
-        # Try standard metric conversion
-        for (from_u, to_u), factor in self.STANDARD_CONVERSIONS.items():
-            if recipe_unit_lower == from_u.rstrip("s") and stock_unit_normalized == to_u.rstrip("s"):
-                converted_qty = recipe_qty * factor
-                display = f"{converted_qty:.2f} {stock_unit}" if converted_qty != int(converted_qty) else f"{int(converted_qty)} {stock_unit}"
-                return {
-                    "stock_qty": converted_qty,
-                    "stock_unit": stock_unit,
-                    "converted": True,
-                    "display": display,
-                    "warning": None,
-                }
+        factor = _units.factor_to_base(recipe_unit_lower, stock_unit, unit_defs)
+        if factor is not None:
+            converted_qty = recipe_qty * factor
+            return {
+                "stock_qty": converted_qty,
+                "stock_unit": stock_unit,
+                "converted": True,
+                "display": f"{fmt_qty(converted_qty)} {stock_unit}",
+                "warning": None,
+            }
 
-        # Try user-defined conversions on the material
-        conversions = material_product.get("conversions", {})
-        for conv_key, conv_val in conversions.items():
-            # conv_key = "1 carton", conv_val = {"qty": 24, "unit": "pieces"}
-            import re as _re
-            key_match = _re.match(r'^(\d+)\s+(.+)', conv_key)
-            if not key_match:
-                continue
-            conv_from_qty = float(key_match.group(1))
-            conv_from_unit = key_match.group(2).strip().rstrip("s").lower()
-            conv_to_qty = float(conv_val.get("qty", 1))
-            conv_to_unit = conv_val.get("unit", "").rstrip("s").lower()
-
-            # Check if recipe unit matches the "from" side
-            if recipe_unit_lower == conv_from_unit:
-                # Convert: recipe_qty [from_unit] → stock [to_unit]
-                converted_qty = recipe_qty * (conv_to_qty / conv_from_qty)
-                display = f"{converted_qty:.1f} {conv_val.get('unit', stock_unit)}" if converted_qty != int(converted_qty) else f"{int(converted_qty)} {conv_val.get('unit', stock_unit)}"
-                return {
-                    "stock_qty": converted_qty,
-                    "stock_unit": conv_val.get("unit", stock_unit),
-                    "converted": True,
-                    "display": display,
-                    "warning": None,
-                }
-
-            # Check reverse: recipe unit matches the "to" side
-            if recipe_unit_lower == conv_to_unit:
-                # Convert: recipe_qty [to_unit] → stock [from_unit]
-                converted_qty = recipe_qty * (conv_from_qty / conv_to_qty)
-                display = f"{converted_qty:.2f} {conv_key.split(' ', 1)[1]}" if converted_qty != int(converted_qty) else f"{int(converted_qty)} {conv_key.split(' ', 1)[1]}"
-                return {
-                    "stock_qty": converted_qty,
-                    "stock_unit": conv_key.split(' ', 1)[1] if ' ' in conv_key else stock_unit,
-                    "converted": True,
-                    "display": display,
-                    "warning": None,
-                }
-
-        # No conversion found — units don't match
+        # No conversion found — units don't match (add as-is + warn).
         return {
             "stock_qty": recipe_qty,  # deduct as-is (best effort)
             "stock_unit": recipe_unit,
             "converted": False,
-            "display": f"{recipe_qty:.1f} {recipe_unit}" if recipe_qty != int(recipe_qty) else f"{int(recipe_qty)} {recipe_unit}",
+            "display": f"{fmt_qty(recipe_qty)} {recipe_unit}",
             "warning": f"⚠️ Unit mismatch: recipe uses *{recipe_unit}* but stock is in *{stock_unit}*. Set a conversion in Catalog → Set Conversion.",
         }
 
@@ -1611,21 +1540,20 @@ class ProductionHandler:
                 if landing_cost <= 0:
                     continue  # No cost data — skip
 
-                primary_unit = mat_product.get("primary_unit", "").lower().strip()
+                # Convert landing_cost (per base unit) to cost per recipe_unit via
+                # the shared engine (standard + custom, multi-hop).
+                from utils import units as _units
+                base_unit, unit_defs = _units.product_units(mat_product)
 
-                # Convert landing_cost (per primary_unit) to cost per recipe_unit
                 new_cost = landing_cost
-                if primary_unit and recipe_unit and recipe_unit.rstrip("s") != primary_unit.rstrip("s"):
-                    # Need conversion: landing_cost is per primary_unit, recipe needs per recipe_unit
-                    factor = None
-                    for (from_u, to_u), f in self.STANDARD_CONVERSIONS.items():
-                        if primary_unit.rstrip("s") == from_u.rstrip("s") and recipe_unit.rstrip("s") == to_u.rstrip("s"):
-                            factor = f
-                            break
+                if base_unit and recipe_unit and \
+                        recipe_unit.rstrip("s") != base_unit.rstrip("s"):
+                    # cost/recipe_unit = cost/base × (base per recipe_unit)
+                    # e.g. ₦100/litre, recipe uses cl → factor(cl→litre)=0.01 →
+                    # cost per cl = 100 × 0.01 = ₦1.
+                    factor = _units.factor_to_base(recipe_unit, base_unit, unit_defs)
                     if factor and factor > 0:
-                        # e.g. landing_cost=₦100/litre, recipe uses CL, factor=100
-                        # cost per CL = ₦100 / 100 = ₦1
-                        new_cost = landing_cost / factor
+                        new_cost = landing_cost * factor
 
                 old_cost = float(mat.get("cost_per_unit", 0))
                 if new_cost != old_cost and new_cost > 0:
