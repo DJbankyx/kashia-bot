@@ -1023,6 +1023,16 @@ def _contacts(event, user_id: str):
     })
 
 
+def _num_or_str(v):
+    """Return a number as int (when whole) or float, else the original string.
+    Keeps production quantities clean for JSON ('400' not '400.0', '0.5' kept)."""
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return str(v or "")
+    return int(n) if n == int(n) else n
+
+
 def _records(event, user_id: str):
     """Period/date-scoped transaction LIST for the Records view. Same window
     resolver as the dashboard (_resolve_range: named period OR custom from/to,
@@ -1033,7 +1043,7 @@ def _records(event, user_id: str):
 
     qs = event.get("queryStringParameters") or {}
     tx_type = (qs.get("type") or "sale").lower()
-    if tx_type not in ("sale", "purchase", "expense"):
+    if tx_type not in ("sale", "purchase", "expense", "production"):
         tx_type = "sale"
     period = (qs.get("period") or "month").lower()
     if period not in VALID_PERIODS:
@@ -1080,13 +1090,38 @@ def _records(event, user_id: str):
         vendor = t.get("vendor", "") or ""
         if is_bad_vendor(vendor):
             vendor = ""
-        out.append({
+        row = {
             "desc": _desc(t),
             "amount": int(t.get("amount", 0) or 0),
             "vendor": str(vendor or ""),
             "date": str(t.get("date", "") or ""),
             "qty": str(t.get("quantity", "") or ""),
-        })
+        }
+        # Production rows carry a rich batch summary in extra_details — surface
+        # it so the web Records view mirrors the chat production summary (batch #,
+        # good/waste, cost per unit, materials used).
+        if tx_type == "production":
+            ed = t.get("extra_details") or {}
+            mats = []
+            for m in (ed.get("materials_used") or []):
+                if not isinstance(m, dict):
+                    continue
+                mats.append({
+                    "material": str(m.get("material") or ""),
+                    "qty": _num_or_str(m.get("quantity_needed", m.get("recipe_qty", ""))),
+                    "unit": str(m.get("unit") or ""),
+                    "cost": int(float(m.get("cost") or 0)),
+                })
+            row["production"] = {
+                "batch": str(ed.get("batch_number") or ""),
+                "produced": _num_or_str(ed.get("production_quantity", t.get("quantity", ""))),
+                "good": _num_or_str(ed.get("good_quantity", "")),
+                "waste": _num_or_str(ed.get("waste", 0)),
+                "waste_percent": int(float(ed.get("waste_percent") or 0)),
+                "cost_per_unit": int(float(ed.get("cost_per_unit") or t.get("unit_cost") or 0)),
+                "materials": mats,
+            }
+        out.append(row)
 
     return _json(200, {
         "type": tx_type, "period": period, "period_label": label,
@@ -1609,6 +1644,7 @@ _PAGE_HTML = """<!doctype html>
       <div class="chip active" data-rt="sale" onclick="recSetType('sale')">💰 Sales</div>
       <div class="chip" data-rt="purchase" onclick="recSetType('purchase')">📦 Purchases</div>
       <div class="chip" data-rt="expense" onclick="recSetType('expense')">💸 Expenses</div>
+      <div class="chip hidden" data-rt="production" id="rec-tab-production" onclick="recSetType('production')">🏭 Production</div>
     </div>
     <div class="chips" id="rec-chips"></div>
     <div class="chips hidden" id="rec-more-panel" style="flex-wrap:wrap"></div>
@@ -1619,7 +1655,7 @@ _PAGE_HTML = """<!doctype html>
       <div class="sheeterr" id="rec-date-err" style="flex-basis:100%"></div>
     </div>
     <div class="card"><div class="k" id="rec-total-k">Total</div><div class="v" id="rec-total">—</div></div>
-    <div class="row">
+    <div class="row" id="rec-export-row">
       <button class="btn save" style="flex:1" onclick="recExport('excel')">⬇️ Excel</button>
       <button class="btn cancel" style="flex:1" onclick="recExport('pdf')">🧾 PDF</button>
     </div>
@@ -1922,6 +1958,14 @@ _PAGE_HTML = """<!doctype html>
     // CRM directory tab — Customers vs Clients.
     var crmCust = document.querySelector('#crm-dir-tabs .chip[data-cd="customers"]');
     if (crmCust) crmCust.textContent = "\\ud83d\\udc64 " + t("customers");
+    // Production is a manufacturing/hybrid concept — reveal its Records tab +
+    // the "Produce" record type only for those industries.
+    if (usesRecipes()) {
+      var pTab = document.getElementById("rec-tab-production");
+      if (pTab) pTab.classList.remove("hidden");
+      var pRec = document.getElementById("rec-type-produce");
+      if (pRec) pRec.classList.remove("hidden");
+    }
   }
 
   // ── Catalog-first setup nudge (Stage 4) ─────────────────────────────
@@ -2536,8 +2580,15 @@ _PAGE_HTML = """<!doctype html>
     // Industry wording (param 't' shadows the term helper here, so read the
     // TERMS set directly). Lower-cased to read naturally after "Total".
     var _ts = TERMS[APP.industry] || TERMS.trading;
-    var _word = (t === "sale" ? _ts.sales : (t === "purchase" ? _ts.purchases : "expenses"));
+    var _word = (t === "sale" ? _ts.sales
+                 : t === "purchase" ? _ts.purchases
+                 : t === "production" ? "production cost"
+                 : "expenses");
     k.textContent = "Total " + String(_word).toLowerCase();
+    // Export (Excel/PDF) covers sale/purchase/expense only — hide it for the
+    // Production tab (the exporter has no production filter).
+    var exRow = document.getElementById("rec-export-row");
+    if (exRow) exRow.style.display = (t === "production") ? "none" : "";
     loadRecords();
   };
   function recRenderChips() {
@@ -2616,6 +2667,39 @@ _PAGE_HTML = """<!doctype html>
       return;
     }
     list.innerHTML = "";
+
+    // Production records get their own richer layout (batch #, good/waste,
+    // cost/unit, materials used) mirroring the chat production summary.
+    if (recTabType === "production") {
+      rows.forEach(function (t) {
+        var p = t.production || {};
+        var card = document.createElement("div");
+        card.className = "card";
+        var head = '<div class="item" style="border:none;padding:6px 0">' +
+          '<div><div class="name">' + (p.batch ? escapeHtml(p.batch) + " \u00b7 " : "") +
+          escapeHtml(t.desc || "?") + '</div><div class="meta">' + escapeHtml(t.date || "") +
+          (p.good !== "" && p.good != null ? " \u00b7 " + p.good + " good" : "") +
+          (Number(p.waste) > 0 ? " \u00b7 " + p.waste + " waste (" + p.waste_percent + "%)" : "") +
+          '</div></div><div class="right"><div class="stock">' + naira(t.amount || 0) +
+          '</div><div class="meta">' + (p.cost_per_unit ? naira(p.cost_per_unit) + "/unit" : "") +
+          '</div></div></div>';
+        var matsHtml = "";
+        (p.materials || []).forEach(function (m) {
+          matsHtml += '<div class="meta" style="padding:2px 0">\u2022 ' +
+            escapeHtml(m.material) + ": " + (m.qty !== "" ? m.qty + " " : "") +
+            escapeHtml(m.unit || "") + (m.cost ? " \u00b7 " + naira(m.cost) : "") + '</div>';
+        });
+        card.innerHTML = head + (matsHtml
+          ? '<div style="border-top:1px solid var(--line);margin-top:4px;padding-top:6px">' +
+            '<div class="k" style="margin-bottom:4px">Materials used</div>' + matsHtml + '</div>'
+          : "");
+        list.appendChild(card);
+      });
+      var pnote = d.count + " batch(es) \u00b7 " + (d.period_label || "");
+      if (d.has_more) pnote += " \u00b7 showing " + rows.length + " of " + d.count;
+      document.getElementById("rec-msg").textContent = pnote;
+      return;
+    }
 
     // Expense analysis: group by name (e.g. Fuel, Rent) so the owner sees where
     // money goes at a glance and can tap a name to see just those entries. Only
