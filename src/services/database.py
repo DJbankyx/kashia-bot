@@ -80,19 +80,43 @@ class Database:
     # ==========================================
 
     def create_user(self, phone_number, business_type="trading", business_name=""):
-        """Create a new user after onboarding"""
+        """Create a new user after onboarding.
+
+        ANTI-BYPASS: this is a full put_item, and it also runs when a user
+        RE-ONBOARDS after a Full Reset. We must NOT let that restart the free
+        trial. `trial_started_at` is an IMMUTABLE clock set ONCE at first-ever
+        creation and preserved across re-onboarding, Clear/Full Reset, and
+        Transfer/Recover. The trial gate (tier_manager._trial_status) reads it
+        (falling back to created_at for legacy rows). So wiping data or moving it
+        to a new account can never hand out a fresh trial.
+        """
+        now = datetime.now().isoformat()
+        existing = {}
+        try:
+            existing = self.users.get_item(Key={'phone_number': phone_number}).get('Item') or {}
+        except Exception:
+            existing = {}
+        # Preserve the ORIGINAL trial clock + creation date if this identity has
+        # existed before (re-onboarding). Only a truly first-time account gets now().
+        trial_started_at = existing.get('trial_started_at') or existing.get('created_at') or now
+        created_at = existing.get('created_at') or now
         item = {
             'phone_number': phone_number,
             'business_type': business_type,
             'business_name': business_name,
-            'tier': 'free',
+            'tier': existing.get('tier', 'free'),
             'onboarding_complete': True,
             'transaction_count': 0,
             'custom_categories': [],
-            'created_at': datetime.now().isoformat(),
+            'created_at': created_at,
+            'trial_started_at': trial_started_at,
         }
+        # Carry over subscription state so a paid user re-onboarding isn't demoted.
+        for k in ('subscription_ends', 'subscription_period', 'subscription_started'):
+            if existing.get(k) is not None:
+                item[k] = existing[k]
         self.users.put_item(Item=self._sanitize_for_dynamo(item))
-        logger.info(f"Created user: {phone_number}")
+        logger.info(f"Created user: {phone_number} (trial_started_at={trial_started_at})")
         return item
 
     def add_custom_category(self, phone_number, category_name):

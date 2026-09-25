@@ -144,14 +144,20 @@ class TierManager:
         """Return (trial_days, days_left) for a user's free trial.
 
         days_left is:
-          * > 0  while still inside the 14-day window,
+          * > 0  while still inside the trial window,
           * 0    once the trial has ended,
-          * None if we can't tell (no created_at) — caller treats None as
+          * None if we can't tell (no clock) — caller treats None as
             "no trial bypass" so we fail safe to the normal cap.
+
+        ANTI-BYPASS: read `trial_started_at` FIRST — an immutable clock set once
+        at first-ever account creation that survives Clear/Full Reset, re-
+        onboarding, and Transfer/Recover. Only fall back to `created_at` for
+        legacy rows that predate it. This means wiping data or moving it to a new
+        Telegram account can NOT hand out a fresh trial.
         Never raises."""
         try:
             user = self.db.get_user(phone_number) or {}
-            created = user.get("created_at")
+            created = user.get("trial_started_at") or user.get("created_at")
             if not created:
                 return self.TRIAL_DAYS, None
             created_dt = datetime.fromisoformat(str(created))
