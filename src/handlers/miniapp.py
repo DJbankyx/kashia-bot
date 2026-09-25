@@ -260,6 +260,8 @@ def lambda_handler(event, context):
             return _inventory(event, user_id)
         if method == "GET" and path.endswith("/app/api/contacts"):
             return _contacts(event, user_id)
+        if method == "GET" and path.endswith("/app/api/contact-detail"):
+            return _contact_detail(event, user_id)
         if method == "GET" and path.endswith("/app/api/records"):
             return _records(event, user_id)
         if method == "GET" and path.endswith("/app/api/export"):
@@ -1129,6 +1131,70 @@ def _contacts(event, user_id: str):
     })
 
 
+def _contact_detail(event, user_id: str):
+    """Full detail for ONE contact: their transaction HISTORY (last 20,
+    newest first) + rolled-up stats. Query: ?name=<contact name>. Transactions
+    are matched by their `vendor` field (normalised, case-insensitive) — the
+    same value the record flow stores. Works for customers, suppliers and
+    expense payees alike. Read-only."""
+    from services.database import Database
+    from utils.money import money_round
+    db = Database()
+
+    qs = event.get("queryStringParameters") or {}
+    name = str(qs.get("name") or "").strip()
+    if not name:
+        return _json(400, {"error": "contact name required"})
+    want = name.lower().strip()
+
+    # Pull a generous recent window and filter to this contact by vendor.
+    try:
+        txns = db.get_transactions(user_id, limit=400) or []
+    except Exception:
+        txns = []
+    mine = [t for t in txns
+            if str(t.get("vendor") or "").strip().lower() == want]
+    # Newest first.
+    mine.sort(key=lambda t: t.get("created_at", t.get("date", "")), reverse=True)
+
+    total_in = 0    # money they paid me (sales/income)
+    total_out = 0   # money I paid them (purchase/expense)
+    for t in mine:
+        amt = int(t.get("amount", 0) or 0)
+        if t.get("type") in ("sale", "income", "purchase_return"):
+            total_in += amt
+        elif t.get("type") in ("purchase", "expense", "sale_return"):
+            total_out += amt
+
+    rows = []
+    for t in mine[:20]:
+        item = (t.get("item_name") or t.get("description") or "").strip()
+        rows.append({
+            "type": t.get("type", ""),
+            "amount": int(t.get("amount", 0) or 0),
+            "item": item[:40],
+            "date": str(t.get("date", "") or ""),
+            "qty": str(t.get("quantity", "") or ""),
+            "payment": str(t.get("payment_method", "") or ""),
+        })
+
+    dates = [t.get("date") for t in mine if t.get("date")]
+    contact = db.get_contact_by_name(user_id, name) or {}
+    return _json(200, {
+        "name": name,
+        "type": (contact.get("type") or "contact").lower().strip(),
+        "total_in": total_in,
+        "total_out": total_out,
+        "owes_me": money_round(contact.get("debt_owed_to_me", 0) or 0),
+        "i_owe": money_round(contact.get("debt_i_owe", 0) or 0),
+        "count": len(mine),
+        "first_date": min(dates) if dates else "",
+        "last_date": max(dates) if dates else "",
+        "transactions": rows,
+        "has_more": len(mine) > 20,
+    })
+
+
 def _num_or_str(v):
     """Return a number as int (when whole) or float, else the original string.
     Keeps production quantities clean for JSON ('400' not '400.0', '0.5' kept)."""
@@ -1744,6 +1810,8 @@ _PAGE_HTML = """<!doctype html>
         <div class="k" id="cd-debt-k">Balance</div><div class="v" id="cd-debt">—</div>
       </div>
       <div class="sub2 hidden" id="cd-phone"></div>
+      <div class="seclabel">Transactions</div>
+      <div id="cd-txlist"><div class="muted">Loading…</div></div>
       <div class="actions">
         <button class="btn cancel" onclick="closeContact()">Close</button>
         <button class="btn save hidden" id="cd-pay" onclick="cdRecordPayment()">💵 Record payment</button>
@@ -2655,8 +2723,50 @@ _PAGE_HTML = """<!doctype html>
     if (c.phone) { phoneEl.textContent = "📞 " + c.phone; phoneEl.classList.remove("hidden"); }
     else { phoneEl.classList.add("hidden"); }
 
+    // Load this contact's transaction history (last 20) + fuller stats.
+    var txbox = document.getElementById("cd-txlist");
+    txbox.innerHTML = '<div class="muted">Loading…</div>';
+    api("api/contact-detail?name=" + encodeURIComponent(c.name || ""))
+      .then(function (d) { cdRenderTx(d); })
+      .catch(function () { txbox.innerHTML = '<div class="muted">Could not load transactions.</div>'; });
+
     document.getElementById("cdOverlay").classList.remove("hidden");
   };
+  function cdRenderTx(d) {
+    var box = document.getElementById("cd-txlist");
+    var rows = (d && d.transactions) || [];
+    // Enrich the header stats now that we have first/last + count from history.
+    if (d && d.first_date && d.last_date) {
+      document.getElementById("cd-last").textContent =
+        (d.first_date === d.last_date) ? d.last_date : (d.first_date + " → " + d.last_date);
+    }
+    if (d && d.count != null) document.getElementById("cd-txns").textContent = d.count;
+    if (!rows.length) { box.innerHTML = '<div class="muted">No transactions yet.</div>'; return; }
+    box.innerHTML = "";
+    var card = document.createElement("div");
+    card.className = "card"; card.style.padding = "4px 0";
+    var ICON = { sale: "💰", purchase: "📦", expense: "💸",
+                 sale_return: "↩️", purchase_return: "↩️", income: "💰" };
+    rows.forEach(function (t) {
+      var ic = ICON[t.type] || "•";
+      var meta = [t.date || ""];
+      if (t.qty) meta.push(String(t.qty));
+      if (t.payment) meta.push(t.payment);
+      var div = document.createElement("div");
+      div.className = "item";
+      div.innerHTML = '<div><div class="name">' + ic + " " + escapeHtml(t.item || t.type || "?") +
+        '</div><div class="meta">' + escapeHtml(meta.join(" · ")) + '</div></div>' +
+        '<div class="right"><div class="stock">' + naira(t.amount || 0) + '</div></div>';
+      card.appendChild(div);
+    });
+    box.appendChild(card);
+    if (d.has_more) {
+      var more = document.createElement("div");
+      more.className = "muted";
+      more.textContent = "Showing latest 20 of " + d.count + ". Use Records or export for all.";
+      box.appendChild(more);
+    }
+  }
   window.closeContact = function () {
     document.getElementById("cdOverlay").classList.add("hidden");
     cdCtx = null;
