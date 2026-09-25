@@ -175,3 +175,96 @@ New/updated routes needing deploy: /app/api/produce, /app/api/cash-adjust,
 Routes needing deploy this batch: /app/api/contact-detail, /app/api/edit-transaction
 (plus the earlier /app/api/produce, /app/api/cash-adjust, /app/api/opening-cash,
 /app/api/void-transaction).
+
+
+---
+
+# Testing round 2 — bug fixes + UX + prepaid expenses (2026-09-26)
+
+_Second owner-testing pass ("Banky Water" manufacturing). All committed + pushed;
+**owner runs `./deploy.sh dev`** — two NEW API-Gateway routes were added
+(`/app/api/restore-transaction`, `/app/api/prepaid-expense`), so a deploy IS
+required. Owner chose to SKIP the one-off live-data cleanup and re-test with fresh
+data; instead we hardened the product model for ALL users._
+
+## Bug fixes
+- **Power "no cost set" (commit e58a78b).** `catalog.normalize_product` coerced
+  money with `_as_int`, truncating a sub-naira cost (₦0.50 → ₦0). Now uses
+  `money_round` for `landing_cost`/`sale_price` (kobo-precise); `reorder_level`
+  stays an int count.
+- **Edit didn't refresh Records/Production (e58a78b).** `recSaveEdit` reloaded
+  records but not the inventory cache → stale numbers. Added `invLoaded=false` +
+  conditional `loadInventory()` (mirrors `saveRecord`).
+- **Overhead showed a stock quantity (e58a78b).** Overhead is a rate, not a
+  physical count — `appendRow` now prints the unit/rate only, no "0 unit".
+- **Produce picker empty on first tap (e58a78b).** Fixed-delay `setTimeout` race
+  replaced: `loadInventory()` returns its promise and the picker renders in
+  `.then`.
+- **Recipe-cost recalc corrupted overhead lines (8a703c2).** `_recalculate_all_costs`
+  stamped `cost_per_unit` onto overhead lines (which carry `rate`). Now detects
+  overhead (type / `rate` key / catalog `item_type`) and writes the right field,
+  kobo-precise. NOTE: the recalc FACTOR formula was already correct in both
+  directions (verified: nylon kg→kg=20, ₦100/litre→cl=1, ₦0.5/ml→litre=500) —
+  the earlier "wrong direction" hypothesis was wrong.
+
+## The pieces/packs profit bug — root cause (NOT a code bug)
+Producing in "pieces" while the recipe was authored **per pack** (12 bottles for
+"1 piece") stamped a whole pack's cost onto a single piece → ~12× COGS inflation,
+so profit shrank the more was recorded. The engine math was correct; the recipe
+DATA was per-pack on a per-piece base (owner had set base_unit=pieces by mistake).
+Two fixes, both for every user:
+- **Produce unit selector (0d6ac77).** `produce_web(…, unit="")` converts the
+  entered qty (e.g. "5 pack") to BASE units via the shared units engine BEFORE
+  any cost/stock math, so producing in packs yields the right per-piece cost.
+  Front-end reuses the existing `rec-unit-sel`; produce sends the chosen unit.
+- **Produce sanity hint (200ce24).** On picking a product to produce, the form
+  shows "≈ ₦X to make 1 <base>" + the pack-equivalent "(1 pack = 12 pieces →
+  ₦Y/pack)", so a per-pack-on-per-piece recipe is visibly wrong before saving.
+
+## Guardrails (410eb4a) — soft, confirmable (HTTP 409 needs_confirm → two-tap)
+- **Sell out-of-stock / no-recipe:** `_sale_stock_warning` warns before selling a
+  finished good with no recipe or a (non-service) product at 0 stock. Runs in the
+  handler BEFORE `claim_web_submit` (else the confirm-retry would dedupe away).
+- **Produce beyond raw materials:** `produce_web(confirm=False)` checks every
+  material need>have and returns a shortfall warning BEFORE any deduction.
+- `apiPost` now carries the parsed error body to callers; sale/produce saves show
+  "tap Save again to proceed" (no `confirm()` dialog — unsupported in Telegram).
+
+## UX
+- **Sale/purchase form shows picked product stock + selling price / cost (7ece661).**
+- **Walk-in + Skip quick buttons + contact-name autocomplete (52d8657).** `rec-who`
+  gets a `<datalist>` from existing contacts (dedupe same person under different
+  names); Walk-in records "Walk-in customer", Skip leaves it blank. Sale-only.
+- **Unit field in the records edit sheet (52d8657).** Edit splits a stored
+  "5 pack" into number + unit and recombines on save.
+- **One-tap Undo after delete (c075642).** Delete is a hard delete, so undo
+  RE-CREATES: `void_transaction_web` returns the full `voided_tx`;
+  `restore_transaction_web` re-inserts it verbatim (same id/date/amount via new
+  `db.save_transaction_row`) and re-applies stock/debt/contact effects (inverse of
+  `_reverse_tx_effects`). Toast in the records list offers "Undo" for ~7s.
+  Verified live: record→void→gone→restore(same id+date)→cleanup.
+
+## Prepaid / periodic expenses (b857e46) — Design A
+Pay the full amount now but spread the EXPENSE across N periods so one month's
+profit isn't crushed (e.g. a year's rent paid upfront).
+- `record_prepaid_expense_web(tx_data, periods, cadence)` writes ONE
+  `cash_adjustment` (direction=out) for the FULL amount today (cash leaves now,
+  EXCLUDED from P&L) + N `expense` rows dated the 1st of each period,
+  `payment_method="prepaid"`, each = amount/N (kobo-exact split, last row absorbs
+  the remainder).
+- `_cash_paid`/`_cash_received` treat `payment_method=="prepaid"` as **0 cash**
+  (recognition-only); `period_pnl` still sums each row's amount as opex in its own
+  period → the expense spreads correctly.
+- `period_cashflow` now also counts `cash_adjustment` (it previously only did in
+  `cash_position`) so the prepaid pay-date outflow shows in the period cash card —
+  this also fixes a pre-existing gap where owner withdrawals didn't show in period
+  cash flow.
+- Cadence: month / quarter / year; UI offers 3/6/12 months, custom months, or a
+  custom quarter count (expense form, expense-only).
+- Verified live: ₦1,200,000 over 12 months → 12×₦100,000 rows summing EXACTLY to
+  1.2M; this-month opex +₦100k (not 1.2M); this-month cash_out +₦1.2M. Test data
+  cleaned up.
+
+## Commits this round (all pushed to origin/master; owner deploys)
+e58a78b · 8a703c2 · 0d6ac77 · 410eb4a · 7ece661 · 200ce24 · 52d8657 · c075642 ·
+b857e46 · f232851 (template routes).
