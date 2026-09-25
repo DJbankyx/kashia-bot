@@ -1720,7 +1720,7 @@ class ProductionHandler:
         return self.get_recipe(phone_number, product_key)
 
     def produce_web(self, phone_number: str, product_key: str,
-                    quantity, waste=0, unit: str = "") -> dict:
+                    quantity, waste=0, unit: str = "", confirm: bool = False) -> dict:
         """STATELESS production entry for the mini app. Mirrors the chat flow's
         cost math + side-effects (compute cost from recipe, deduct materials, add
         good stock, restamp landing_cost, save a type='production' transaction)
@@ -1819,6 +1819,31 @@ class ProductionHandler:
 
             total_cost = total_material_cost + total_overhead_cost
             cost_per_unit = (to_money(total_cost) / to_money(good_qty)) if good_qty > 0 else to_money(0)
+
+            # ── MATERIAL SHORTFALL GUARDRAIL (soft, confirmable) ──
+            # Before deducting, check every raw material has enough on hand for
+            # this run. If not, return a warning the client can confirm through
+            # (confirm=True) — mirrors the chat "Insufficient Stock" warn, which
+            # also lets the owner proceed and zero-out the short materials.
+            if not confirm:
+                short = []
+                for mu in materials_used:
+                    mk = mu["material_key"]
+                    need = float(mu.get("quantity_needed") or 0)
+                    if need <= 0 or mk not in products:
+                        continue
+                    have = float(products[mk].get("stock", products[mk].get("stock_count", 0)) or 0)
+                    if need > have:
+                        u = mu.get("unit", "") or ""
+                        _fn = lambda n: (f"{int(n)}" if float(n) == int(n) else f"{float(n):.2f}")
+                        short.append(f"{mu['material']}: need {_fn(need)}{(' ' + u) if u else ''}, "
+                                     f"have {_fn(have)}")
+                if short:
+                    warn = ("Not enough raw materials for this run — "
+                            + "; ".join(short) + ". Produce anyway?")
+                    return {"ok": False, "error": warn,
+                            "needs_confirm": True, "warning": warn,
+                            "shortfalls": short}
 
             # Batch number (per user).
             last_batch = int(user.get("last_batch_number", 0) or 0)

@@ -909,10 +909,16 @@ def _produce_write(event, user_id: str):
 
     prod = ProductionHandler(None, Database())
     res = prod.produce_web(user_id, key, data.get("quantity"), data.get("waste"),
-                           unit=str(data.get("unit", "") or ""))
+                           unit=str(data.get("unit", "") or ""),
+                           confirm=bool(data.get("confirm")))
     if not res.get("ok"):
         err = str(res.get("error", ""))
-        code = 404 if "not found" in err else 400
+        # A soft, confirmable guardrail (not enough materials) → 409 so the
+        # client can re-send with confirm:true; a real failure → 400/404.
+        if res.get("needs_confirm"):
+            code = 409
+        else:
+            code = 404 if "not found" in err else 400
         return _json(code, res)
     return _json(200, res)
 
@@ -1032,6 +1038,23 @@ def _transaction_write(event, user_id: str):
 
     db = Database()
 
+    # ── SALE GUARDRAIL (soft, confirmable) — run BEFORE claiming the submit_id.
+    # If we claimed first, the confirm retry (same submit_id) would come back as
+    # a duplicate and the sale would never record. Checking here keeps the
+    # submit_id unclaimed until the owner confirms. 409 => client re-sends with
+    # confirm:true. Only sales, only when not already confirmed.
+    if tx_type == "sale" and not data.get("confirm") and not data.get("is_service_job"):
+        _guard_tx = TransactionHandler(None, db, None, None)
+        _warn = _guard_tx._sale_stock_warning(user_id, {
+            "type": "sale",
+            "description": (data.get("description") or "").strip(),
+            "brand": data.get("brand"),
+            "catalog_product": data.get("catalog_product"),
+        })
+        if _warn:
+            return _json(409, {"ok": False, "error": _warn,
+                               "needs_confirm": True, "warning": _warn})
+
     # Idempotency: claim the submit_id BEFORE any side effect. A retry/double
     # POST short-circuits here and returns the original result.
     claimed, prior_tx = db.claim_web_submit(user_id, submit_id)
@@ -1058,6 +1081,9 @@ def _transaction_write(event, user_id: str):
         "has_credit": bool(data.get("has_credit")),
         "deposit_amount": data.get("deposit_amount"),
         "balance_owed": data.get("balance_owed"),
+        # The handler already ran the (pre-claim) sale guardrail above, so tell
+        # the engine's defense-in-depth guard not to re-block this call.
+        "confirm": True,
         "_name_handled": True,
     }
 
@@ -3394,7 +3420,12 @@ _PAGE_HTML = """<!doctype html>
         var j = null;
         try { j = t ? JSON.parse(t) : null; } catch (e) { j = null; }
         if (!r.ok || !(j && j.ok)) {
-          if (j && j.error) throw new Error(j.error);
+          if (j && j.error) {
+            var e2 = new Error(j.error);
+            e2.body = j;               // carry needs_confirm/warning etc. to caller
+            e2.status = r.status;
+            throw e2;
+          }
           if (r.status === 401 || r.status === 403)
             throw new Error("Session expired — close and reopen from the ☰ Menu button.");
           throw new Error("Couldn't reach the server (error " + r.status +
@@ -4371,19 +4402,30 @@ _PAGE_HTML = """<!doctype html>
       var pUnit = recUnitName();   // e.g. "pack" — server converts to base units
       var pbtn = document.getElementById("rec-save");
       pbtn.disabled = true;
-      apiPost("api/produce", { key: pick.key, quantity: pQty, waste: pWaste, unit: pUnit })
-        .then(function () {
-          closeRecord();
-          if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
-          loadSummary();
-          invLoaded = false;
-          var cv = document.getElementById("view-cat");
-          if (cv && !cv.classList.contains("hidden")) loadInventory();
-        })
-        .catch(function (e) {
-          pbtn.disabled = false;
-          err0.textContent = (e && e.message) || "Could not record production";
-        });
+      var pBody = { key: pick.key, quantity: pQty, waste: pWaste, unit: pUnit };
+      // Two-tap "produce anyway" when materials are short (409 needs_confirm).
+      function sendProduce() {
+        apiPost("api/produce", pBody)
+          .then(function () {
+            closeRecord();
+            if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+            loadSummary();
+            invLoaded = false;
+            var cv = document.getElementById("view-cat");
+            if (cv && !cv.classList.contains("hidden")) loadInventory();
+          })
+          .catch(function (e) {
+            pbtn.disabled = false;
+            if (e && e.body && e.body.needs_confirm && !pBody.confirm) {
+              pBody.confirm = true;
+              err0.textContent = (e.body.warning || e.message) + " — tap Save again to proceed.";
+              if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("warning");
+            } else {
+              err0.textContent = (e && e.message) || "Could not record production";
+            }
+          });
+      }
+      sendProduce();
       return;
     }
     var isExpense = (recTypeVal === "expense");
@@ -4460,21 +4502,33 @@ _PAGE_HTML = """<!doctype html>
     if (recTypeVal === "sale" && isServices()) body.is_service_job = true;
     var btn = document.getElementById("rec-save");
     btn.disabled = true;
-    apiPost("api/transaction", body)
-      .then(function () {
-        closeRecord();
-        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
-        // Refresh dashboard + catalog so the new numbers show. (Inventory was
-        // merged into Catalog; guard the element in case a view is absent.)
-        loadSummary();
-        invLoaded = false;
-        var catView = document.getElementById("view-cat");
-        if (catView && !catView.classList.contains("hidden")) loadInventory();
-      })
-      .catch(function (e) {
-        btn.disabled = false;
-        err.textContent = e.message || "Could not record";
-      });
+    // sendSale posts the sale; on a soft guardrail (409 needs_confirm) it relabels
+    // the Save button so a second tap re-posts with confirm:true (the two-tap
+    // "proceed anyway" pattern — no confirm() dialog, unsupported in Telegram).
+    function sendSale() {
+      apiPost("api/transaction", body)
+        .then(function () {
+          closeRecord();
+          if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+          // Refresh dashboard + catalog so the new numbers show. (Inventory was
+          // merged into Catalog; guard the element in case a view is absent.)
+          loadSummary();
+          invLoaded = false;
+          var catView = document.getElementById("view-cat");
+          if (catView && !catView.classList.contains("hidden")) loadInventory();
+        })
+        .catch(function (e) {
+          btn.disabled = false;
+          if (e && e.body && e.body.needs_confirm && !body.confirm) {
+            body.confirm = true;
+            err.textContent = (e.body.warning || e.message) + " — tap Save again to proceed.";
+            if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("warning");
+          } else {
+            err.textContent = (e && e.message) || "Could not record";
+          }
+        });
+    }
+    sendSale();
   };
 
   if (!initData) {

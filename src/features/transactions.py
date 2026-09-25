@@ -1361,6 +1361,19 @@ class TransactionHandler:
             if has_credit and not vendor:
                 return {"ok": False, "error": "a credit/part sale needs a customer name"}
 
+            # ── SALE GUARDRAIL (soft, confirmable) ──
+            # Warn before selling a PRODUCT that is out of stock, or a finished/
+            # manufactured good that has NO recipe (its cost/stock can't be
+            # trusted). This is a soft block: the client re-sends confirm:true to
+            # proceed (mirrors the catalog-delete needs_confirm precedent). Never
+            # blocks a service job (no stock) or an already-confirmed request.
+            if tx_type == "sale" and not tx_data.get("confirm") \
+                    and not tx_data.get("is_service_job"):
+                warn = self._sale_stock_warning(phone_number, tx_data)
+                if warn:
+                    return {"ok": False, "error": warn,
+                            "needs_confirm": True, "warning": warn}
+
             # Build extra_details (mirror the chat normal-save assembly).
             extra = {}
             if tx_data.get("details"):
@@ -1450,6 +1463,50 @@ class TransactionHandler:
         except Exception as e:
             logger.error(f"record_transaction_web error: {e}\n{traceback.format_exc()}")
             return {"ok": False, "error": "could not record — please try again"}
+
+    def _sale_stock_warning(self, phone_number: str, tx_data: dict):
+        """Return a friendly warning string if this sale is questionable — the
+        item is OUT OF STOCK, or it is a finished/manufactured good with NO
+        recipe (its cost can't be derived). Returns None when the sale looks
+        fine. Read-only; never raises (a lookup failure = no warning, so a real
+        sale is never blocked by a transient error)."""
+        try:
+            from features.catalog import CatalogHandler
+            cat = CatalogHandler(self.session, self.db)
+            products = cat._get_products(phone_number) or {}
+
+            key = tx_data.get("catalog_product")
+            if not (key and key in products):
+                brand = (tx_data.get("brand") or "").strip()
+                desc = (tx_data.get("description") or "").strip()
+                search_name = f"{brand} {desc}".strip() or desc
+                key = cat._find_product_key(products, search_name) if search_name else None
+            if not key or key not in products:
+                return None   # unknown item (free-text sale) — don't second-guess
+
+            prod = products[key] or {}
+            name = prod.get("name") or key
+            item_type = str(prod.get("item_type", "")).lower()
+            has_recipe = bool(prod.get("recipe"))
+            try:
+                stock = float(prod.get("stock", prod.get("stock_count", 0)) or 0)
+            except (TypeError, ValueError):
+                stock = 0.0
+
+            # Finished good with no recipe → its cost/stock is untrustworthy.
+            if item_type in ("finished_product", "product") and not has_recipe \
+                    and item_type == "finished_product":
+                return (f"\u201c{name}\u201d is a made product but has no recipe set, "
+                        f"so its cost can\u2019t be worked out. Sell anyway?")
+
+            # Out of stock (only meaningful for stocked goods, not services).
+            if item_type != "service" and stock <= 0:
+                return (f"\u201c{name}\u201d shows 0 in stock. Record this sale anyway?")
+
+            return None
+        except Exception as e:
+            logger.warning(f"_sale_stock_warning failed (allowing sale): {e}")
+            return None
 
     def record_cash_adjustment(self, phone_number: str, amount, direction: str,
                                reason: str = "") -> dict:
