@@ -2090,6 +2090,8 @@ _PAGE_HTML = """<!doctype html>
           <span id="rec-prod-text" style="color:var(--hint)">Tap to choose a product</span>
         </div>
         <input id="rec-desc" class="hidden" placeholder="e.g. Hilux">
+        <!-- Live stock + price for the picked product (sale/purchase). -->
+        <div class="sub2 hidden" id="rec-prod-info" style="margin-top:6px"></div>
       </div>
       <div class="field">
         <label id="rec-amount-label">Amount received (\u20a6)</label>
@@ -4121,14 +4123,18 @@ _PAGE_HTML = """<!doctype html>
       // sale/purchase UNIT selector (bag vs piece) instead of forcing a raw
       // base-unit number.
       pick = { key: p.key, name: p.name, variant: null,
-               base_unit: p.base_unit || p.unit || "", unit_defs: p.unit_defs || {} };
+               base_unit: p.base_unit || p.unit || "", unit_defs: p.unit_defs || {},
+               stock: Number(p.stock || 0), sale_price: Number(p.sale_price || 0),
+               cost: Number(p.cost || 0), unit: p.unit || "" };
       applyPick();
       closePicker();
       return;
     }
     // Variant product — drill the tree.
     pick = { key: p.key, name: p.name, variant: null,
-             base_unit: p.base_unit || p.unit || "", unit_defs: p.unit_defs || {} };
+             base_unit: p.base_unit || p.unit || "", unit_defs: p.unit_defs || {},
+             stock: Number(p.stock || 0), sale_price: Number(p.sale_price || 0),
+             cost: Number(p.cost || 0), unit: p.unit || "" };
     pickMode = "tree"; pickPath = [];
     document.getElementById("pick-search").style.display = "none";
     drillTree();
@@ -4182,6 +4188,24 @@ _PAGE_HTML = """<!doctype html>
     el.textContent = label;
     el.style.color = "var(--text)";
     recPopulateUnits();
+    // Show what's in stock (+ selling price on a sale) for the picked product,
+    // so the owner sees availability and their set price without leaving the
+    // form. Hidden for produce/expense and when there's nothing to show.
+    var info = document.getElementById("rec-prod-info");
+    if (info) {
+      var parts = [];
+      if (recTypeVal === "sale" || recTypeVal === "purchase") {
+        var u = pick.unit || pick.base_unit || "";
+        parts.push("📦 " + Number(pick.stock || 0).toLocaleString() +
+                   (u ? " " + u : "") + " in stock");
+        if (recTypeVal === "sale" && pick.sale_price > 0)
+          parts.push("🏷️ price " + naira(pick.sale_price));
+        if (recTypeVal === "purchase" && pick.cost > 0)
+          parts.push("cost " + naira(pick.cost));
+      }
+      if (parts.length) { info.textContent = parts.join("  \u00b7  "); info.classList.remove("hidden"); }
+      else { info.textContent = ""; info.classList.add("hidden"); }
+    }
   }
 
   // Populate the qty UNIT selector from the picked product's base_unit +
@@ -4367,6 +4391,8 @@ _PAGE_HTML = """<!doctype html>
     pick = { key: null, name: null, variant: null };
     document.getElementById("rec-prod-text").textContent = "Tap to choose a product";
     document.getElementById("rec-prod-text").style.color = "var(--hint)";
+    var _pi = document.getElementById("rec-prod-info");
+    if (_pi) { _pi.textContent = ""; _pi.classList.add("hidden"); }
     recType("sale"); recPay("cash");
     document.getElementById("rec-desc").value = "";
     document.getElementById("rec-amount").value = "";
