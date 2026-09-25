@@ -1557,58 +1557,8 @@ class TransactionHandler:
                 return {"ok": False, "error": "has_return",
                         "message": "This has a return recorded against it. Reverse the return first."}
 
-            from utils.money import to_money, money_round
-            extra = tx.get("extra_details") or {}
-            vendor = (tx.get("vendor") or "").strip()
-            amount = money_round(tx.get("amount") or 0)
-            pm = str(tx.get("payment_method") or "").lower()
-            reversed_bits = {}
-
-            # ── Stock reversal (sale added-back, purchase removed) ──
-            if ttype in ("sale", "purchase"):
-                try:
-                    from features.catalog import CatalogHandler
-                    cat = CatalogHandler(self.session, self.db)
-                    desc = tx.get("item_name") or tx.get("description") or ""
-                    brand = tx.get("brand") or ""
-                    search = f"{brand} {desc}".strip() if brand else desc
-                    qty = self._parse_qty(tx.get("quantity", 1) or 1)
-                    variant = extra.get("variant")
-                    if search and qty:
-                        # sale deducted stock → add back (+qty); purchase added
-                        # stock → remove (−qty). cost_mode='keep' leaves the
-                        # weighted average untouched.
-                        delta = qty if ttype == "sale" else -qty
-                        cat.update_stock(phone_number, search, delta,
-                                         variant=variant, cost_mode="keep")
-                        reversed_bits["stock"] = f"{'+' if delta > 0 else ''}{delta} {search}"
-                except Exception as e:
-                    logger.warning(f"void stock reversal failed: {e}")
-
-            # ── Debt reversal (credit / part payment left an outstanding balance) ──
-            if vendor and pm in ("credit", "deposit"):
-                try:
-                    # Outstanding balance recorded as debt = amount (credit) or
-                    # amount − deposit (part). Reduce that debt back down.
-                    if pm == "deposit":
-                        dep = money_round(tx.get("deposit_amount") or extra.get("deposit_amount") or 0)
-                        owed = max(0, money_round(to_money(amount) - to_money(dep)))
-                    else:
-                        owed = amount
-                    if owed > 0:
-                        direction = "i_owe" if ttype in ("purchase", "expense") else "owed_to_me"
-                        self.db.settle_debt(phone_number, vendor, owed, direction)
-                        reversed_bits["debt"] = owed
-                except Exception as e:
-                    logger.warning(f"void debt reversal failed: {e}")
-
-            # ── Contact totals reversal (subtract what this tx added) ──
-            if vendor:
-                try:
-                    self.db.update_contact_totals(phone_number, vendor, -to_money(amount), ttype)
-                    reversed_bits["contact"] = True
-                except Exception as e:
-                    logger.warning(f"void contact reversal failed: {e}")
+            reversed_bits = self._reverse_tx_effects(phone_number, tx)
+            amount = int(float(tx.get("amount") or 0))
 
             # ── Delete the row ──
             self.db.delete_transaction(phone_number, tx_id)
@@ -1616,6 +1566,177 @@ class TransactionHandler:
         except Exception as e:
             logger.error(f"void_transaction_web failed: {e}")
             return {"ok": False, "error": "could not delete — please try again"}
+
+    def _reverse_tx_effects(self, phone_number: str, tx: dict) -> dict:
+        """Undo a transaction's stock/debt/contact side-effects (WITHOUT deleting
+        the row). Shared by void (delete) and edit (reverse-then-reapply). Returns
+        a dict describing what was reversed. Never raises."""
+        from utils.money import to_money, money_round
+        ttype = tx.get("type")
+        extra = tx.get("extra_details") or {}
+        vendor = (tx.get("vendor") or "").strip()
+        amount = money_round(tx.get("amount") or 0)
+        pm = str(tx.get("payment_method") or "").lower()
+        reversed_bits = {}
+
+        # ── Stock reversal (sale added-back, purchase removed) ──
+        if ttype in ("sale", "purchase"):
+            try:
+                from features.catalog import CatalogHandler
+                cat = CatalogHandler(self.session, self.db)
+                desc = tx.get("item_name") or tx.get("description") or ""
+                brand = tx.get("brand") or ""
+                search = f"{brand} {desc}".strip() if brand else desc
+                qty = self._parse_qty(tx.get("quantity", 1) or 1)
+                variant = extra.get("variant")
+                if search and qty:
+                    delta = qty if ttype == "sale" else -qty
+                    cat.update_stock(phone_number, search, delta,
+                                     variant=variant, cost_mode="keep")
+                    reversed_bits["stock"] = f"{'+' if delta > 0 else ''}{delta} {search}"
+            except Exception as e:
+                logger.warning(f"reverse stock failed: {e}")
+
+        # ── Debt reversal (credit / part payment left an outstanding balance) ──
+        if vendor and pm in ("credit", "deposit"):
+            try:
+                if pm == "deposit":
+                    dep = money_round(tx.get("deposit_amount") or extra.get("deposit_amount") or 0)
+                    owed = max(0, money_round(to_money(amount) - to_money(dep)))
+                else:
+                    owed = amount
+                if owed > 0:
+                    direction = "i_owe" if ttype in ("purchase", "expense") else "owed_to_me"
+                    self.db.settle_debt(phone_number, vendor, owed, direction)
+                    reversed_bits["debt"] = owed
+            except Exception as e:
+                logger.warning(f"reverse debt failed: {e}")
+
+        # ── Contact totals reversal (subtract what this tx added) ──
+        if vendor:
+            try:
+                self.db.update_contact_totals(phone_number, vendor, -to_money(amount), ttype)
+                reversed_bits["contact"] = True
+            except Exception as e:
+                logger.warning(f"reverse contact failed: {e}")
+        return reversed_bits
+
+    def edit_transaction_web(self, phone_number: str, tx_id: str,
+                             fields: dict) -> dict:
+        """Edit a recorded sale/purchase/expense IN PLACE and keep the books
+        consistent: REVERSE the old side-effects (stock/debt/contact), write the
+        new field values on the SAME row, then RE-APPLY the effects with the new
+        values. Editable: amount, quantity, description, vendor (who), date,
+        payment_method. Same transaction_id is kept.
+
+        Guards (same as void): production is blocked; a sale/purchase that has a
+        return against it is blocked (reverse the return first). Part-payment
+        deposit re-validated (0..amount). Never raises.
+        """
+        try:
+            if not tx_id:
+                return {"ok": False, "error": "no transaction id"}
+            tx = None
+            if hasattr(self.db, "get_transaction"):
+                tx = self.db.get_transaction(phone_number, tx_id)
+            if not tx:
+                for t in (self.db.get_transactions(phone_number, limit=400) or []):
+                    if t.get("transaction_id") == tx_id or t.get("id") == tx_id:
+                        tx = t
+                        break
+            if not tx:
+                return {"ok": False, "error": "transaction not found"}
+            ttype = tx.get("type")
+            if ttype == "production":
+                return {"ok": False, "error": "production_blocked",
+                        "message": "A production batch can't be edited here — adjust it in chat."}
+            if ttype not in ("sale", "purchase", "expense", "income"):
+                return {"ok": False, "error": "only sales, purchases and expenses can be edited here"}
+            if ttype in ("sale", "purchase") and self.returned_qty_for(phone_number, tx_id) > 0:
+                return {"ok": False, "error": "has_return",
+                        "message": "This has a return recorded against it. Reverse the return first."}
+
+            from utils.money import money_round, to_money
+
+            # New values (fall back to the existing ones when a field is omitted).
+            new_amount = money_round(fields["amount"]) if fields.get("amount") not in (None, "") \
+                else money_round(tx.get("amount") or 0)
+            if new_amount <= 0:
+                return {"ok": False, "error": "amount must be greater than 0"}
+            new_desc = str(fields.get("description") or tx.get("item_name") or tx.get("description") or "Item").strip()
+            new_vendor = fields.get("vendor")
+            new_vendor = str(new_vendor).strip() if new_vendor is not None else (tx.get("vendor") or "")
+            new_qty = fields.get("quantity")
+            if new_qty in (None, ""):
+                new_qty = tx.get("quantity")
+            new_pm = str(fields.get("payment_method") or tx.get("payment_method") or "cash").lower()
+            new_date = str(fields.get("date") or tx.get("date") or "").strip()
+
+            # Part-payment guard on the NEW values.
+            new_deposit = money_round(fields.get("deposit_amount")
+                                      or tx.get("deposit_amount")
+                                      or (tx.get("extra_details") or {}).get("deposit_amount") or 0)
+            if new_pm == "deposit":
+                if new_deposit < 0:
+                    return {"ok": False, "error": "deposit can't be negative"}
+                if new_deposit > new_amount:
+                    return {"ok": False, "error": "the deposit can't be more than the total amount"}
+                if new_deposit >= new_amount:
+                    new_pm = "cash"; new_deposit = 0
+            has_credit = new_pm in ("credit", "deposit")
+            if has_credit and not new_vendor:
+                return {"ok": False, "error": "a credit/part transaction needs a customer/supplier name"}
+
+            # 1) REVERSE the old effects.
+            self._reverse_tx_effects(phone_number, tx)
+
+            # 2) UPDATE the row in place (same transaction_id).
+            updates = {
+                "amount": new_amount,
+                "item_name": new_desc,
+                "description": new_desc,
+                "quantity": new_qty if new_qty is not None else "",
+                "vendor": new_vendor,
+                "payment_method": new_pm,
+            }
+            if new_date:
+                updates["date"] = new_date
+            if new_pm == "deposit":
+                updates["deposit_amount"] = new_deposit
+            self.db.update_transaction(phone_number, tx_id, updates)
+
+            # 3) RE-APPLY effects with the new values, via the shared helpers.
+            new_tx = dict(tx)
+            new_tx.update(updates)
+            new_tx["type"] = ttype
+            # Stock (sale deducts / purchase adds) + weighted-avg on purchase.
+            if ttype in ("sale", "purchase"):
+                self._apply_stock_for_tx(phone_number, new_tx)
+            # COGS re-stamp for a sale.
+            if ttype == "sale":
+                self._stamp_sale_cost(phone_number, tx_id, new_tx)
+            # Contact totals (add the new amount under the new vendor).
+            if new_vendor:
+                try:
+                    self.db.update_contact_totals(phone_number, new_vendor, new_amount, ttype)
+                except Exception as e:
+                    logger.warning(f"edit contact re-apply failed: {e}")
+            # Debt (credit / part) on the new values.
+            if has_credit and new_vendor:
+                direction = "i_owe" if ttype in ("purchase", "expense") else "owed_to_me"
+                owed = new_amount if new_pm == "credit" else max(0, money_round(to_money(new_amount) - to_money(new_deposit)))
+                if owed > 0:
+                    try:
+                        self.db.record_debt(phone_number, new_vendor, owed, direction,
+                                            f"Edited {ttype}: {new_desc}", source_type=ttype)
+                    except Exception as e:
+                        logger.warning(f"edit debt re-apply failed: {e}")
+
+            return {"ok": True, "transaction_id": tx_id, "type": ttype,
+                    "amount": new_amount}
+        except Exception as e:
+            logger.error(f"edit_transaction_web failed: {e}\n{traceback.format_exc()}")
+            return {"ok": False, "error": "could not save the edit — please try again"}
 
     # ═══════════════════════════════════════════════════════════
     #  RETURNS / REFUNDS  (build #4 — R1 engine core)

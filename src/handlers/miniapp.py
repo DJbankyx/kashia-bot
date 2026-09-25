@@ -250,6 +250,8 @@ def lambda_handler(event, context):
             return _opening_cash_write(event, user_id)
         if method == "POST" and path.endswith("/app/api/void-transaction"):
             return _void_transaction_write(event, user_id)
+        if method == "POST" and path.endswith("/app/api/edit-transaction"):
+            return _edit_transaction_write(event, user_id)
 
         # ── Reads ──
         if method == "GET" and path.endswith("/app/api/recipe"):
@@ -979,6 +981,26 @@ def _void_transaction_write(event, user_id: str):
     return _json(200, res)
 
 
+def _edit_transaction_write(event, user_id: str):
+    """Edit a recorded transaction in place (reverse old effects → update →
+    re-apply). Body: {tx_id, amount?, quantity?, description?, vendor?, date?,
+    payment_method?, deposit_amount?}. Reuses TransactionHandler.edit_transaction_web."""
+    from services.database import Database
+    from features.transactions import TransactionHandler
+
+    data = _parse_body(event)
+    tx_id = str(data.get("tx_id", "") or "").strip()
+    if not tx_id:
+        return _json(400, {"error": "transaction id required"})
+    tx = TransactionHandler(None, Database(), None, None)
+    res = tx.edit_transaction_web(user_id, tx_id, data)
+    if not res.get("ok"):
+        err = str(res.get("error", ""))
+        code = 404 if "not found" in err else 400
+        return _json(code, res)
+    return _json(200, res)
+
+
 def _transaction_write(event, user_id: str):
     """M6b — record a full sale/purchase/expense from the web (stateless).
 
@@ -1269,6 +1291,8 @@ def _records(event, user_id: str):
             "vendor": str(vendor or ""),
             "date": str(t.get("date", "") or ""),
             "qty": str(t.get("quantity", "") or ""),
+            # Editable-field context for the Records edit sheet.
+            "payment": str(t.get("payment_method", "") or ""),
         }
         # Production rows carry a rich batch summary in extra_details — surface
         # it so the web Records view mirrors the chat production summary (batch #,
@@ -1892,6 +1916,47 @@ _PAGE_HTML = """<!doctype html>
       <div class="actions">
         <button class="btn cancel" onclick="closeCashAdjust()">Cancel</button>
         <button class="btn save" id="cash-save" onclick="saveCashAdjust()">Record</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit a recorded transaction (Records) -->
+  <div id="recEditOverlay" class="overlay hidden">
+    <div class="sheet">
+      <h2>Edit transaction</h2>
+      <div class="sub2">Changes update your stock, debt and cash to match.</div>
+      <div class="field">
+        <label id="re-desc-label">Description</label>
+        <input id="re-desc" placeholder="what it was">
+      </div>
+      <div class="field">
+        <label>Amount (\u20a6)</label>
+        <input id="re-amount" type="number" inputmode="decimal" min="0" step="any">
+      </div>
+      <div class="field" id="re-qty-wrap">
+        <label>Quantity</label>
+        <input id="re-qty" type="number" inputmode="decimal" min="0" step="any">
+      </div>
+      <div class="field">
+        <label id="re-who-label">Customer / supplier (optional)</label>
+        <input id="re-who" placeholder="name">
+      </div>
+      <div class="field">
+        <label>Date</label>
+        <input id="re-date" type="date">
+      </div>
+      <div class="field">
+        <label>Payment</label>
+        <div class="chips" id="re-pay">
+          <div class="chip" data-p="cash" onclick="reSetPay('cash')">💵 Cash</div>
+          <div class="chip" data-p="transfer" onclick="reSetPay('transfer')">🏦 Transfer</div>
+          <div class="chip" data-p="credit" onclick="reSetPay('credit')">📝 Credit</div>
+        </div>
+      </div>
+      <div class="sheeterr" id="re-err"></div>
+      <div class="actions">
+        <button class="btn cancel" onclick="recCloseEdit()">Cancel</button>
+        <button class="btn save" id="re-save" onclick="recSaveEdit()">Save changes</button>
       </div>
     </div>
   </div>
@@ -3121,16 +3186,20 @@ _PAGE_HTML = """<!doctype html>
       if (t.vendor) meta.push(t.vendor);
       var div = document.createElement("div");
       div.className = "item";
-      // A 🗑 delete affordance per row (two-tap confirm). Deleting reverses the
-      // transaction's stock/debt/contact effects server-side, then removes it.
+      // ✏️ edit + 🗑 delete affordances per row. Edit opens a prefilled sheet
+      // and re-applies effects server-side; delete reverses + removes.
+      var editBtn = t.id
+        ? '<button class="linkbtn recedit" title="Edit">✏️</button>' : '';
       var delBtn = t.id
-        ? '<button class="linkbtn recdel" data-id="' + escapeHtml(t.id) +
-          '" title="Delete">🗑️</button>'
-        : '';
+        ? '<button class="linkbtn recdel" title="Delete">🗑️</button>' : '';
       div.innerHTML = '<div><div class="name">' + escapeHtml(t.desc || "?") +
         '</div><div class="meta">' + escapeHtml(meta.join(" \u00b7 ")) + '</div></div>' +
         '<div class="right"><div class="stock">' + naira(t.amount || 0) + '</div>' +
-        delBtn + '</div>';
+        '<div>' + editBtn + delBtn + '</div></div>';
+      var eb = div.querySelector(".recedit");
+      if (eb) eb.onclick = (function (row) {
+        return function (ev) { ev.stopPropagation(); recOpenEdit(row); };
+      })(t);
       var btn = div.querySelector(".recdel");
       if (btn) btn.onclick = (function (id, label) {
         return function (ev) { ev.stopPropagation(); recDelete(id, label); };
@@ -3166,6 +3235,64 @@ _PAGE_HTML = """<!doctype html>
     setTimeout(function () {
       if (recPendingDelete === id) { recPendingDelete = null; msg.textContent = ""; }
     }, 4000);
+  };
+  // ── Edit a recorded transaction ──
+  var reEditId = null, rePayVal = "cash";
+  window.recOpenEdit = function (row) {
+    reEditId = row.id;
+    rePayVal = (row.payment || "cash").toLowerCase();
+    if (rePayVal === "deposit") rePayVal = "credit";  // part edits simplified to credit here
+    document.getElementById("re-desc").value = row.desc || "";
+    document.getElementById("re-amount").value = row.amount || "";
+    var qn = parseFloat(row.qty);
+    document.getElementById("re-qty").value = (qn > 0) ? qn : "";
+    document.getElementById("re-who").value = row.vendor || "";
+    document.getElementById("re-date").value = row.date || "";
+    reSetPay(rePayVal);
+    document.getElementById("re-err").textContent = "";
+    document.getElementById("re-save").disabled = false;
+    document.getElementById("recEditOverlay").classList.remove("hidden");
+  };
+  window.recCloseEdit = function () {
+    document.getElementById("recEditOverlay").classList.add("hidden");
+    reEditId = null;
+  };
+  window.reSetPay = function (p) {
+    rePayVal = p;
+    var chips = document.querySelectorAll("#re-pay .chip");
+    chips.forEach(function (c) { c.classList.toggle("active", c.getAttribute("data-p") === p); });
+  };
+  window.recSaveEdit = function () {
+    var err = document.getElementById("re-err");
+    err.textContent = "";
+    if (!reEditId) return;
+    var amount = parseFloat(document.getElementById("re-amount").value) || 0;
+    if (amount <= 0) { err.textContent = "Enter an amount greater than 0."; return; }
+    var who = (document.getElementById("re-who").value || "").trim();
+    if ((rePayVal === "credit") && !who) { err.textContent = "A credit entry needs a name."; return; }
+    var qraw = parseFloat(document.getElementById("re-qty").value);
+    var body = {
+      tx_id: reEditId,
+      amount: amount,
+      description: (document.getElementById("re-desc").value || "").trim(),
+      vendor: who,
+      date: document.getElementById("re-date").value || "",
+      payment_method: rePayVal,
+    };
+    if (qraw > 0) body.quantity = String(qraw);
+    var btn = document.getElementById("re-save");
+    btn.disabled = true;
+    apiPost("api/edit-transaction", body)
+      .then(function () {
+        recCloseEdit();
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+        loadRecords();
+        loadSummary();
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        err.textContent = (e && e.message) || "Could not save the edit.";
+      });
   };
   window.recExport = function (fmt) {
     var msg = document.getElementById("rec-msg");
