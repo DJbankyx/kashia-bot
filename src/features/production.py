@@ -1533,8 +1533,19 @@ class ProductionHandler:
                 mat_key = mat_name.lower().replace(" ", "_")
                 recipe_unit = mat.get("unit", "").lower().strip()
 
-                # Look up current landing_cost from the material's catalog entry
+                # Overhead lines carry their cost in `rate`, NOT `cost_per_unit`.
+                # Detect them by the catalog item_type OR the presence of a rate
+                # key so we sync the correct field and never inject a stray
+                # `cost_per_unit` onto an overhead (which double-counted cost).
                 mat_product = products.get(mat_key, {})
+                is_overhead = (
+                    str(mat.get("type", "")).lower() == "overhead"
+                    or "rate" in mat
+                    or str(mat_product.get("item_type", "")).lower() == "overhead"
+                )
+                cost_field = "rate" if is_overhead else "cost_per_unit"
+
+                # Look up current landing_cost from the material's catalog entry
                 landing_cost = float(mat_product.get("landing_cost", 0))
 
                 if landing_cost <= 0:
@@ -1542,22 +1553,27 @@ class ProductionHandler:
 
                 # Convert landing_cost (per base unit) to cost per recipe_unit via
                 # the shared engine (standard + custom, multi-hop).
+                #   cost/recipe_unit = cost/base × (base per recipe_unit)
+                #   = landing_cost × factor_to_base(recipe_unit, base_unit).
+                # factor_to_base returns "how many base units make 1 recipe unit"
+                # so this holds in BOTH directions (recipe unit larger OR smaller
+                # than base) — e.g. ₦100/litre with recipe in cl → factor 0.01 →
+                # ₦1/cl; ₦0.5/ml with recipe in litre → factor 1000 → ₦500/litre.
                 from utils import units as _units
+                from utils.money import money_round
                 base_unit, unit_defs = _units.product_units(mat_product)
 
                 new_cost = landing_cost
                 if base_unit and recipe_unit and \
                         recipe_unit.rstrip("s") != base_unit.rstrip("s"):
-                    # cost/recipe_unit = cost/base × (base per recipe_unit)
-                    # e.g. ₦100/litre, recipe uses cl → factor(cl→litre)=0.01 →
-                    # cost per cl = 100 × 0.01 = ₦1.
                     factor = _units.factor_to_base(recipe_unit, base_unit, unit_defs)
                     if factor and factor > 0:
                         new_cost = landing_cost * factor
+                new_cost = money_round(new_cost)   # kobo-precise (sub-naira survives)
 
-                old_cost = float(mat.get("cost_per_unit", 0))
+                old_cost = float(mat.get(cost_field, 0) or 0)
                 if new_cost != old_cost and new_cost > 0:
-                    mat["cost_per_unit"] = new_cost
+                    mat[cost_field] = new_cost
                     updated_count += 1
                     if mat_name not in updated_materials:
                         updated_materials.append(mat_name)
