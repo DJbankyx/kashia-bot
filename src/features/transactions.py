@@ -1617,12 +1617,86 @@ class TransactionHandler:
             reversed_bits = self._reverse_tx_effects(phone_number, tx)
             amount = int(float(tx.get("amount") or 0))
 
-            # ── Delete the row ──
-            self.db.delete_transaction(phone_number, tx_id)
-            return {"ok": True, "type": ttype, "amount": amount, "reversed": reversed_bits}
+            # ── Delete the row ── (delete_transaction returns the deleted row)
+            deleted = self.db.delete_transaction(phone_number, tx_id)
+            # Hand the full row back so the client can offer a one-tap UNDO that
+            # restores it verbatim (same id/date/amount) via restore_transaction_web.
+            voided_tx = deleted if isinstance(deleted, dict) else tx
+            return {"ok": True, "type": ttype, "amount": amount,
+                    "reversed": reversed_bits, "voided_tx": voided_tx}
         except Exception as e:
             logger.error(f"void_transaction_web failed: {e}")
             return {"ok": False, "error": "could not delete — please try again"}
+
+    def restore_transaction_web(self, phone_number: str, tx: dict) -> dict:
+        """UNDO a void: re-insert the exact deleted row and RE-APPLY its
+        stock/debt/contact effects (the inverse of _reverse_tx_effects). Reuses
+        the same engine helpers as a normal record so the books match. Idempotent-
+        ish: if the row already exists again it just re-puts it. Never raises."""
+        try:
+            if not isinstance(tx, dict) or not tx.get("transaction_id"):
+                return {"ok": False, "error": "nothing to restore"}
+            tx_id = tx.get("transaction_id")
+            ttype = tx.get("type")
+            # Production/returns were never voidable here, so never restorable here.
+            if ttype in ("production", "sale_return", "purchase_return"):
+                return {"ok": False, "error": "this type can't be restored here"}
+
+            # 1) Re-insert the row verbatim (same id/date/amount/extra).
+            if not self.db.save_transaction_row(phone_number, tx):
+                return {"ok": False, "error": "could not restore — please try again"}
+
+            # 2) Re-apply side-effects — the exact inverse of _reverse_tx_effects.
+            from utils.money import to_money, money_round
+            from features.catalog import CatalogHandler
+            extra = tx.get("extra_details") or {}
+            vendor = (tx.get("vendor") or "").strip()
+            amount = money_round(tx.get("amount") or 0)
+            pm = str(tx.get("payment_method") or "").lower()
+
+            # Stock: a sale re-DEDUCTS; a purchase re-ADDS (opposite of reversal).
+            if ttype in ("sale", "purchase"):
+                try:
+                    cat = CatalogHandler(self.session, self.db)
+                    desc = tx.get("item_name") or tx.get("description") or ""
+                    brand = tx.get("brand") or ""
+                    search = f"{brand} {desc}".strip() if brand else desc
+                    qty = self._parse_qty(tx.get("quantity", 1) or 1)
+                    variant = extra.get("variant")
+                    if search and qty:
+                        delta = -qty if ttype == "sale" else qty
+                        cat.update_stock(phone_number, search, delta,
+                                         variant=variant, cost_mode="keep")
+                except Exception as e:
+                    logger.warning(f"restore stock failed: {e}")
+
+            # Debt: re-record the outstanding balance a credit/part entry created.
+            if vendor and pm in ("credit", "deposit"):
+                try:
+                    if pm == "deposit":
+                        dep = money_round(tx.get("deposit_amount") or extra.get("deposit_amount") or 0)
+                        owed = max(0, money_round(to_money(amount) - to_money(dep)))
+                    else:
+                        owed = amount
+                    if owed > 0:
+                        direction = "i_owe" if ttype in ("purchase", "expense") else "owed_to_me"
+                        self.db.record_debt(phone_number, vendor, owed, direction,
+                                            f"Restored {ttype}: {tx.get('description', '')}",
+                                            source_type=ttype)
+                except Exception as e:
+                    logger.warning(f"restore debt failed: {e}")
+
+            # Contact totals: re-add what this tx contributed.
+            if vendor:
+                try:
+                    self.db.update_contact_totals(phone_number, vendor, amount, ttype)
+                except Exception as e:
+                    logger.warning(f"restore contact failed: {e}")
+
+            return {"ok": True, "transaction_id": tx_id, "type": ttype}
+        except Exception as e:
+            logger.error(f"restore_transaction_web failed: {e}")
+            return {"ok": False, "error": "could not restore — please try again"}
 
     def _reverse_tx_effects(self, phone_number: str, tx: dict) -> dict:
         """Undo a transaction's stock/debt/contact side-effects (WITHOUT deleting

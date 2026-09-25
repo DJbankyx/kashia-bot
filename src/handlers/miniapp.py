@@ -250,6 +250,8 @@ def lambda_handler(event, context):
             return _opening_cash_write(event, user_id)
         if method == "POST" and path.endswith("/app/api/void-transaction"):
             return _void_transaction_write(event, user_id)
+        if method == "POST" and path.endswith("/app/api/restore-transaction"):
+            return _restore_transaction_write(event, user_id)
         if method == "POST" and path.endswith("/app/api/edit-transaction"):
             return _edit_transaction_write(event, user_id)
 
@@ -986,6 +988,22 @@ def _void_transaction_write(event, user_id: str):
         code = 404 if "not found" in err else 400
         return _json(code, res)
     return _json(200, res)
+
+
+def _restore_transaction_write(event, user_id: str):
+    """UNDO a just-deleted transaction. Body: {tx: <the voided_tx row returned by
+    void-transaction>}. Re-inserts the row verbatim + re-applies its effects via
+    TransactionHandler.restore_transaction_web (the engine)."""
+    from services.database import Database
+    from features.transactions import TransactionHandler
+
+    data = _parse_body(event)
+    tx = data.get("tx")
+    if not isinstance(tx, dict) or not tx.get("transaction_id"):
+        return _json(400, {"error": "nothing to restore"})
+    handler = TransactionHandler(None, Database(), None, None)
+    res = handler.restore_transaction_web(user_id, tx)
+    return _json(200 if res.get("ok") else 400, res)
 
 
 def _edit_transaction_write(event, user_id: str):
@@ -3274,10 +3292,13 @@ _PAGE_HTML = """<!doctype html>
       recPendingDelete = null;
       msg.textContent = "Deleting…";
       apiPost("api/void-transaction", { tx_id: id })
-        .then(function () {
+        .then(function (res) {
           if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
           loadRecords();
           loadSummary();   // stock/debt/cash may have moved.
+          // Offer a one-tap UNDO for a few seconds — restores the deleted row
+          // verbatim (same id/date/amount) and re-applies its effects.
+          if (res && res.voided_tx) recShowUndo(res.voided_tx, label);
         })
         .catch(function (e) {
           msg.textContent = (e && e.message) || "Could not delete.";
@@ -3289,6 +3310,37 @@ _PAGE_HTML = """<!doctype html>
     setTimeout(function () {
       if (recPendingDelete === id) { recPendingDelete = null; msg.textContent = ""; }
     }, 4000);
+  };
+  // ── Undo-after-delete toast ──
+  var recUndoTx = null, recUndoTimer = null;
+  function recShowUndo(tx, label) {
+    recUndoTx = tx;
+    var msg = document.getElementById("rec-msg");
+    if (!msg) return;
+    msg.innerHTML = "Deleted " + escapeHtml(label || "entry") +
+      '. <a href="#" onclick="recUndo();return false;" style="color:var(--accent);font-weight:600">Undo</a>';
+    if (recUndoTimer) clearTimeout(recUndoTimer);
+    recUndoTimer = setTimeout(function () {
+      recUndoTx = null;
+      if (msg.textContent.indexOf("Deleted") === 0) msg.textContent = "";
+    }, 7000);
+  }
+  window.recUndo = function () {
+    if (!recUndoTx) return;
+    var tx = recUndoTx; recUndoTx = null;
+    if (recUndoTimer) { clearTimeout(recUndoTimer); recUndoTimer = null; }
+    var msg = document.getElementById("rec-msg");
+    if (msg) msg.textContent = "Restoring…";
+    apiPost("api/restore-transaction", { tx: tx })
+      .then(function () {
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+        if (msg) msg.textContent = "";
+        loadRecords();
+        loadSummary();
+      })
+      .catch(function (e) {
+        if (msg) msg.textContent = (e && e.message) || "Could not undo.";
+      });
   };
   // ── Edit a recorded transaction ──
   var reEditId = null, rePayVal = "cash";

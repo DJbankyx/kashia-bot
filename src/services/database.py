@@ -346,6 +346,27 @@ class Database:
         logger.info(f"Saved transaction: {phone_number} | ₦{amount:,} | {category}")
         return item
 
+    def save_transaction_row(self, phone_number, row):
+        """Re-insert a PRE-BUILT transaction row VERBATIM (same transaction_id,
+        date, amount, extra_details). Used by UNDO/restore after a delete so the
+        row comes back exactly as it was — no new id, no date drift. Does NOT
+        bump transaction_count (the count was never decremented on delete, so a
+        restore must not double it). Never raises on a bad row shape."""
+        try:
+            if not isinstance(row, dict) or not row.get("transaction_id"):
+                return False
+            item = dict(row)
+            item["phone_number"] = phone_number
+            item.pop("deleted", None)
+            item.pop("deleted_at", None)
+            item.pop("retain_until", None)
+            self.transactions.put_item(Item=self._sanitize_for_dynamo(item))
+            logger.info(f"Restored transaction row: {row.get('transaction_id')}")
+            return True
+        except Exception as e:
+            logger.error(f"save_transaction_row failed: {e}")
+            return False
+
     def claim_web_submit(self, phone_number, submit_id):
         """Idempotency guard for the Mini App's stateless transaction POST.
 
