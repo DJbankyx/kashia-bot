@@ -4194,14 +4194,28 @@ _PAGE_HTML = """<!doctype html>
     var info = document.getElementById("rec-prod-info");
     if (info) {
       var parts = [];
+      var u = pick.unit || pick.base_unit || "";
       if (recTypeVal === "sale" || recTypeVal === "purchase") {
-        var u = pick.unit || pick.base_unit || "";
         parts.push("📦 " + Number(pick.stock || 0).toLocaleString() +
                    (u ? " " + u : "") + " in stock");
         if (recTypeVal === "sale" && pick.sale_price > 0)
           parts.push("🏷️ price " + naira(pick.sale_price));
         if (recTypeVal === "purchase" && pick.cost > 0)
           parts.push("cost " + naira(pick.cost));
+      } else if (recTypeVal === "produce") {
+        // Sanity hint: show the recipe's cost per ONE base unit so an inflated
+        // per-unit cost (e.g. a per-pack recipe left on a per-piece base) is
+        // obvious BEFORE producing. If a custom unit exists (pack), also show
+        // what a whole pack works out to, so "per piece or per pack?" is clear.
+        if (pick.cost > 0) parts.push("≈ " + naira(pick.cost) + " to make 1 " + (pick.base_unit || u || "unit"));
+        var defs = pick.unit_defs || {};
+        var packKeys = Object.keys(defs);
+        if (pick.cost > 0 && packKeys.length) {
+          var uk = packKeys[0];
+          var f = Number(defs[uk]) || 0;
+          if (f > 1) parts.push("(1 " + uk + " = " + f + " " + (pick.base_unit || "") +
+                                " → " + naira(pick.cost * f) + "/" + uk + ")");
+        }
       }
       if (parts.length) { info.textContent = parts.join("  \u00b7  "); info.classList.remove("hidden"); }
       else { info.textContent = ""; info.classList.add("hidden"); }
