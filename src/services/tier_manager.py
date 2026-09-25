@@ -18,7 +18,7 @@ TIERS = {
         "name": "Free",
         "price": 0,
         "limits": {
-            "transactions_per_month": 30,
+            "transactions_per_month": 5,
             "exports_per_month": 5,
             "invoices_per_month": 0,
             "pdf_statements": False,
@@ -102,9 +102,9 @@ class TierManager:
         if max_transactions >= 999999:
             return True, None
 
-        # ── 14-DAY FULL-ACCESS TRIAL (retention) ──
+        # ── FULL-ACCESS TRIAL (retention), length = TRIAL_DAYS ──
         # A hard transaction wall on day 3 kills the daily-logging habit before it
-        # forms. Instead, every new (free) account gets 14 days of UNLIMITED
+        # forms. Instead, every new (free) account gets TRIAL_DAYS of UNLIMITED
         # recording. We convert on value realised, not a random count. After the
         # trial the soft monthly cap applies — but we NEVER block viewing history
         # or reports (those are separate paths and stay open regardless).
@@ -138,7 +138,7 @@ class TierManager:
         return True, None
 
     # Trial length for a new free account (days of unlimited recording).
-    TRIAL_DAYS = 14
+    TRIAL_DAYS = 10
 
     def _trial_status(self, phone_number):
         """Return (trial_days, days_left) for a user's free trial.
@@ -362,8 +362,8 @@ class TierManager:
             "💎 *Kashia Plans*\n\n"
             "━━━━━━━━━━━━━━━━━━\n"
             f"🆓 *FREE*{cur('free')}\n"
-            "  • 14 days FREE unlimited to start\n"
-            "  • Then log up to 30 sales a month\n"
+            "  • 10 days FREE unlimited to start\n"
+            "  • Then log up to 5 sales a month\n"
             "  • 5 exports/month\n"
             "  • Basic text reports\n"
             "  • Your full history is always visible\n\n"
