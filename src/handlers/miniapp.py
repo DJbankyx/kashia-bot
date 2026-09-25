@@ -1293,6 +1293,8 @@ def _records(event, user_id: str):
             "qty": str(t.get("quantity", "") or ""),
             # Editable-field context for the Records edit sheet.
             "payment": str(t.get("payment_method", "") or ""),
+            "deposit": int(float(t.get("deposit_amount",
+                             (t.get("extra_details") or {}).get("deposit_amount") or 0) or 0)),
         }
         # Production rows carry a rich batch summary in extra_details — surface
         # it so the web Records view mirrors the chat production summary (batch #,
@@ -1931,7 +1933,7 @@ _PAGE_HTML = """<!doctype html>
       </div>
       <div class="field">
         <label>Amount (\u20a6)</label>
-        <input id="re-amount" type="number" inputmode="decimal" min="0" step="any">
+        <input id="re-amount" type="number" inputmode="decimal" min="0" step="any" oninput="reBalanceHint()">
       </div>
       <div class="field" id="re-qty-wrap">
         <label>Quantity</label>
@@ -1951,7 +1953,13 @@ _PAGE_HTML = """<!doctype html>
           <div class="chip" data-p="cash" onclick="reSetPay('cash')">💵 Cash</div>
           <div class="chip" data-p="transfer" onclick="reSetPay('transfer')">🏦 Transfer</div>
           <div class="chip" data-p="credit" onclick="reSetPay('credit')">📝 Credit</div>
+          <div class="chip" data-p="deposit" onclick="reSetPay('deposit')">💳 Part</div>
         </div>
+      </div>
+      <div class="field hidden" id="re-deposit-wrap">
+        <label>Deposit paid now (\u20a6)</label>
+        <input id="re-deposit" type="number" inputmode="decimal" min="0" step="any" placeholder="amount paid so far" oninput="reBalanceHint()">
+        <div class="sub2" id="re-balance-hint"></div>
       </div>
       <div class="sheeterr" id="re-err"></div>
       <div class="actions">
@@ -3241,14 +3249,16 @@ _PAGE_HTML = """<!doctype html>
   window.recOpenEdit = function (row) {
     reEditId = row.id;
     rePayVal = (row.payment || "cash").toLowerCase();
-    if (rePayVal === "deposit") rePayVal = "credit";  // part edits simplified to credit here
     document.getElementById("re-desc").value = row.desc || "";
     document.getElementById("re-amount").value = row.amount || "";
     var qn = parseFloat(row.qty);
     document.getElementById("re-qty").value = (qn > 0) ? qn : "";
     document.getElementById("re-who").value = row.vendor || "";
     document.getElementById("re-date").value = row.date || "";
+    // Prefill the deposit for a part payment so it can be edited too.
+    document.getElementById("re-deposit").value = (row.deposit > 0) ? row.deposit : "";
     reSetPay(rePayVal);
+    reBalanceHint();
     document.getElementById("re-err").textContent = "";
     document.getElementById("re-save").disabled = false;
     document.getElementById("recEditOverlay").classList.remove("hidden");
@@ -3261,6 +3271,17 @@ _PAGE_HTML = """<!doctype html>
     rePayVal = p;
     var chips = document.querySelectorAll("#re-pay .chip");
     chips.forEach(function (c) { c.classList.toggle("active", c.getAttribute("data-p") === p); });
+    // Deposit field only for a Part payment.
+    document.getElementById("re-deposit-wrap").classList.toggle("hidden", p !== "deposit");
+    if (p === "deposit") reBalanceHint();
+  };
+  window.reBalanceHint = function () {
+    var amount = parseFloat(document.getElementById("re-amount").value) || 0;
+    var dep = parseFloat(document.getElementById("re-deposit").value) || 0;
+    var hint = document.getElementById("re-balance-hint");
+    if (rePayVal !== "deposit" || !amount) { hint.textContent = ""; return; }
+    if (dep >= amount) { hint.textContent = "Fully paid — will record as paid, not part."; return; }
+    hint.textContent = "Balance owed: " + naira(Math.max(0, amount - dep));
   };
   window.recSaveEdit = function () {
     var err = document.getElementById("re-err");
@@ -3269,7 +3290,15 @@ _PAGE_HTML = """<!doctype html>
     var amount = parseFloat(document.getElementById("re-amount").value) || 0;
     if (amount <= 0) { err.textContent = "Enter an amount greater than 0."; return; }
     var who = (document.getElementById("re-who").value || "").trim();
-    if ((rePayVal === "credit") && !who) { err.textContent = "A credit entry needs a name."; return; }
+    var isPart = (rePayVal === "deposit");
+    var deposit = isPart ? (parseFloat(document.getElementById("re-deposit").value) || 0) : 0;
+    if (isPart) {
+      if (deposit > amount) { err.textContent = "The deposit can't be more than the total."; return; }
+      if (deposit <= 0) { err.textContent = "Enter the deposit paid now (or choose Credit)."; return; }
+    }
+    if ((rePayVal === "credit" || isPart) && !who) {
+      err.textContent = "A credit/part entry needs a name."; return;
+    }
     var qraw = parseFloat(document.getElementById("re-qty").value);
     var body = {
       tx_id: reEditId,
@@ -3279,6 +3308,7 @@ _PAGE_HTML = """<!doctype html>
       date: document.getElementById("re-date").value || "",
       payment_method: rePayVal,
     };
+    if (isPart) body.deposit_amount = deposit;
     if (qraw > 0) body.quantity = String(qraw);
     var btn = document.getElementById("re-save");
     btn.disabled = true;
