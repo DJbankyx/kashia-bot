@@ -2529,9 +2529,11 @@ _PAGE_HTML = """<!doctype html>
       .catch(function () { /* charts optional — ignore */ });
   }
 
+  // Returns the fetch promise so callers (e.g. the produce/sale picker) can
+  // render off the .then instead of racing a fixed setTimeout.
   function loadInventory() {
     invLoaded = true;
-    api("api/inventory")
+    return api("api/inventory")
       .then(function (d) { invData = d.products || []; renderCatalog(); })
       .catch(function (e) {
         document.getElementById("catmsg").innerHTML =
@@ -2623,12 +2625,19 @@ _PAGE_HTML = """<!doctype html>
       var sub = [];
       if (p.cost) sub.push("cost " + naira(p.cost));
       if (p.sale_price) sub.push("price " + naira(p.sale_price));
+      // OVERHEAD is a rate/allocation (e.g. rent, electricity per unit), not a
+      // physical count — showing "0 unit" reads like out-of-stock. Show the
+      // unit/rate label only, no quantity number.
+      var isOverhead = typeGroup(p) === "overhead";
+      var stockLine = isOverhead
+        ? escapeHtml(p.unit || "")
+        : (Number(p.stock||0).toLocaleString() + ' ' + escapeHtml(p.unit || ""));
       var div = document.createElement("div");
       div.className = "item tappable";
       div.innerHTML = '<div><div class="name">' + escapeHtml(p.name || "?") + badges +
         '</div><div class="meta">' + (sub.join(" \u00b7 ") || "no price/cost set") + '</div></div>' +
-        '<div class="right"><div class="stock">' + Number(p.stock||0).toLocaleString() +
-        ' ' + escapeHtml(p.unit || "") + (p.has_variants ? ' \u203a' : '') + '</div><div class="meta">' +
+        '<div class="right"><div class="stock">' + stockLine +
+        (p.has_variants ? ' \u203a' : '') + '</div><div class="meta">' +
         (p.stock_value ? naira(p.stock_value) : "") + '</div></div>';
       div.onclick = p.has_variants
         ? (function (prod) { return function () { openVarView(prod); }; })(p)
@@ -3318,6 +3327,12 @@ _PAGE_HTML = """<!doctype html>
         if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
         loadRecords();
         loadSummary();
+        // Editing a sale/purchase reverses+reapplies stock and COGS, so the
+        // cached catalog/inventory is now stale — invalidate it and refresh
+        // the catalog view if it is on screen (mirrors saveRecord).
+        invLoaded = false;
+        var catView = document.getElementById("view-cat");
+        if (catView && !catView.classList.contains("hidden")) loadInventory();
       })
       .catch(function (e) {
         btn.disabled = false;
@@ -4003,8 +4018,13 @@ _PAGE_HTML = """<!doctype html>
     document.getElementById("pick-search").value = "";
     document.getElementById("pick-search").style.display = "";
     document.getElementById("pickOverlay").classList.remove("hidden");
-    if (!invData) { loadInventory(); setTimeout(renderPickerProducts, 400); }
-    else renderPickerProducts();
+    // Render only AFTER inventory has actually arrived (no fixed-delay race
+    // that left the dropdown empty on the first tap).
+    if (!invData) {
+      document.getElementById("pick-list").innerHTML =
+        '<div class="muted">Loading products\u2026</div>';
+      loadInventory().then(renderPickerProducts);
+    } else renderPickerProducts();
   };
   window.closePicker = function () {
     document.getElementById("pickOverlay").classList.add("hidden");

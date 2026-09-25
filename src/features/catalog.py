@@ -3164,11 +3164,15 @@ class CatalogHandler:
                 norm[k] = product[k]
 
         # Coerce numerics safely (stored values are sometimes strings/Decimals).
-        # STOCK may be fractional (0.5 kg) → _as_num. MONEY stays integer naira
-        # → _as_int. reorder_level is a count → int.
+        # STOCK may be fractional (0.5 kg) → _as_num. MONEY is kobo-precise
+        # (a raw material can cost ₦0.5/ml) → money_round, NOT _as_int (int()
+        # would truncate ₦0.50 to ₦0 and show "no cost set"). reorder_level is
+        # a plain count → _as_int.
+        from utils.money import money_round
         norm["stock"] = self._as_num(norm.get("stock"), 0)
-        for num_key in ("landing_cost", "sale_price", "reorder_level"):
-            norm[num_key] = self._as_int(norm.get(num_key), 0)
+        for money_key in ("landing_cost", "sale_price"):
+            norm[money_key] = money_round(norm.get(money_key))
+        norm["reorder_level"] = self._as_int(norm.get("reorder_level"), 0)
 
         # If no display name, fall back to the key (slug → Title Case).
         if not norm["name"]:
@@ -3185,7 +3189,7 @@ class CatalogHandler:
         norm["_is_low_stock"] = (
             norm["reorder_level"] > 0 and norm["stock"] <= norm["reorder_level"]
         )
-        norm["_stock_value"] = norm["stock"] * norm["landing_cost"]
+        norm["_stock_value"] = money_round(norm["stock"] * norm["landing_cost"])
         norm["_key"] = key
         return norm
 
