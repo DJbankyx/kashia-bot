@@ -1720,15 +1720,24 @@ class ProductionHandler:
         return self.get_recipe(phone_number, product_key)
 
     def produce_web(self, phone_number: str, product_key: str,
-                    quantity, waste=0) -> dict:
+                    quantity, waste=0, unit: str = "") -> dict:
         """STATELESS production entry for the mini app. Mirrors the chat flow's
         cost math + side-effects (compute cost from recipe, deduct materials, add
         good stock, restamp landing_cost, save a type='production' transaction)
         WITHOUT any session. Single source of the per-unit cost is
         recipe_unit_cost — web + chat never disagree.
 
-        Returns {ok, batch, produced, good, waste, cost_per_unit, total_cost,
-        materials:[...]} or {ok:False, error}. Never raises.
+        `unit` (optional) is the unit the owner PRODUCED in — e.g. "pack" when
+        the product's base unit is "pieces". The entered quantity is converted to
+        BASE units via the product's own unit_defs BEFORE any cost/stock math, so
+        recipe quantities (authored per base unit) and the per-unit cost stay
+        correct. Producing "5 packs" of a 12-per-pack product yields 60 pieces of
+        stock and a per-PIECE cost — not a per-pack cost stamped onto one piece
+        (the bug that inflated cost ~12× and shrank profit).
+
+        Returns {ok, batch, produced, produced_unit, base_produced, good, waste,
+        cost_per_unit, total_cost, materials:[...]} or {ok:False, error}.
+        Never raises.
         """
         try:
             try:
@@ -1741,9 +1750,6 @@ class ProductionHandler:
                 waste = float(waste or 0)
             except (TypeError, ValueError):
                 waste = 0.0
-            if waste < 0 or waste >= quantity:
-                waste = 0.0
-            good_qty = quantity - waste
 
             user = self.db.get_user(phone_number) or {}
             catalog = user.get("product_catalog", {}) or {}
@@ -1755,6 +1761,31 @@ class ProductionHandler:
             if not recipe:
                 return {"ok": False, "error": "this product has no recipe yet"}
             product_name = product.get("name") or product_key
+
+            # ── Convert the ENTERED quantity/waste into BASE units ──
+            # Recipe quantities are authored per ONE base unit; produce math and
+            # the per-unit cost must therefore run on base units. If the owner
+            # produced in a bigger unit (e.g. "pack"), scale up first.
+            from utils import units as _units
+            base_unit, unit_defs = _units.product_units(product)
+            entered_unit = (unit or "").strip()
+            produced_unit = entered_unit or base_unit or ""
+            if entered_unit and base_unit and \
+                    entered_unit.rstrip("s").lower() != base_unit.rstrip("s").lower():
+                base_qty, ok = _units.convert(quantity, entered_unit, base_unit, unit_defs)
+                if not ok or base_qty <= 0:
+                    return {"ok": False,
+                            "error": f"cannot convert {entered_unit} to {base_unit} — "
+                                     f"set up that conversion first"}
+                base_waste, wok = _units.convert(waste, entered_unit, base_unit, unit_defs)
+                if not wok:
+                    base_waste = 0.0
+                quantity = base_qty
+                waste = base_waste
+
+            if waste < 0 or waste >= quantity:
+                waste = 0.0
+            good_qty = quantity - waste
 
             # Cost + material usage — SAME formula as _show_production_confirmation
             # (materials qty x cost_per_unit + overhead qty x rate, per output
@@ -1839,7 +1870,9 @@ class ProductionHandler:
             return {
                 "ok": True,
                 "batch": batch_num,
-                "produced": quantity,
+                "produced": quantity,          # in BASE units (after conversion)
+                "produced_unit": base_unit or produced_unit,
+                "base_produced": good_qty,
                 "good": good_qty,
                 "waste": waste,
                 "cost_per_unit": money_round(cost_per_unit),

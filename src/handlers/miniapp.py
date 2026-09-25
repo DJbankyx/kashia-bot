@@ -908,7 +908,8 @@ def _produce_write(event, user_id: str):
         return _json(400, {"error": "product key required"})
 
     prod = ProductionHandler(None, Database())
-    res = prod.produce_web(user_id, key, data.get("quantity"), data.get("waste"))
+    res = prod.produce_web(user_id, key, data.get("quantity"), data.get("waste"),
+                           unit=str(data.get("unit", "") or ""))
     if not res.get("ok"):
         err = str(res.get("error", ""))
         code = 404 if "not found" in err else 400
@@ -4203,6 +4204,15 @@ _PAGE_HTML = """<!doctype html>
     var f = parseFloat(sel.value);
     return (f > 0) ? f : 1;
   }
+  // Name of the unit currently chosen in the qty selector ("" when none shown).
+  // Produce sends this to the server so the engine converts to base units and
+  // stamps a per-BASE-unit cost (produce "5 packs" -> 60 pieces, cost/piece).
+  function recUnitName() {
+    var sel = document.getElementById("rec-unit-sel");
+    if (!sel || sel.classList.contains("hidden")) return "";
+    var op = sel.options[sel.selectedIndex];
+    return op ? (op.getAttribute("data-unit") || "") : "";
+  }
 
   function uuid() {
     return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
@@ -4358,9 +4368,10 @@ _PAGE_HTML = """<!doctype html>
       var pQty = parseFloat(document.getElementById("rec-qty").value);
       if (!(pQty > 0)) { err0.textContent = "Enter how many you produced."; return; }
       var pWaste = parseFloat(document.getElementById("rec-waste").value) || 0;
+      var pUnit = recUnitName();   // e.g. "pack" — server converts to base units
       var pbtn = document.getElementById("rec-save");
       pbtn.disabled = true;
-      apiPost("api/produce", { key: pick.key, quantity: pQty, waste: pWaste })
+      apiPost("api/produce", { key: pick.key, quantity: pQty, waste: pWaste, unit: pUnit })
         .then(function () {
           closeRecord();
           if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
