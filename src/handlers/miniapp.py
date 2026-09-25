@@ -252,6 +252,8 @@ def lambda_handler(event, context):
             return _void_transaction_write(event, user_id)
         if method == "POST" and path.endswith("/app/api/restore-transaction"):
             return _restore_transaction_write(event, user_id)
+        if method == "POST" and path.endswith("/app/api/prepaid-expense"):
+            return _prepaid_expense_write(event, user_id)
         if method == "POST" and path.endswith("/app/api/edit-transaction"):
             return _edit_transaction_write(event, user_id)
 
@@ -1003,6 +1005,28 @@ def _restore_transaction_write(event, user_id: str):
         return _json(400, {"error": "nothing to restore"})
     handler = TransactionHandler(None, Database(), None, None)
     res = handler.restore_transaction_web(user_id, tx)
+    return _json(200 if res.get("ok") else 400, res)
+
+
+def _prepaid_expense_write(event, user_id: str):
+    """Record a PREPAID / periodic expense. Body: {amount, description, vendor?,
+    category?, periods, cadence?('month'|'quarter'|'year')}. Full cash leaves now;
+    the expense is spread across `periods` periods. Reuses
+    TransactionHandler.record_prepaid_expense_web (the engine)."""
+    from services.database import Database
+    from features.transactions import TransactionHandler
+
+    data = _parse_body(event)
+    periods = data.get("periods")
+    cadence = str(data.get("cadence", "month") or "month")
+    tx = TransactionHandler(None, Database(), None, None)
+    res = tx.record_prepaid_expense_web(user_id, {
+        "amount": data.get("amount"),
+        "description": (data.get("description") or "").strip(),
+        "vendor": (data.get("vendor") or "").strip(),
+        "category": data.get("category"),
+        "details": data.get("details"),
+    }, periods, cadence)
     return _json(200 if res.get("ok") else 400, res)
 
 
@@ -2117,6 +2141,23 @@ _PAGE_HTML = """<!doctype html>
       <div class="field">
         <label id="rec-amount-label">Amount received (\u20a6)</label>
         <input id="rec-amount" type="number" inputmode="decimal" min="0" step="any" oninput="recBalanceHint()">
+      </div>
+      <!-- Prepaid / periodic spread (EXPENSE only): pay the full amount now but
+           spread the expense across N periods so one month's profit isn't
+           crushed (e.g. a year's rent paid upfront). -->
+      <div class="field hidden" id="rec-spread-wrap">
+        <label>Spread this expense over</label>
+        <select id="rec-spread" onchange="recSpreadHint()" style="width:100%;padding:11px 8px">
+          <option value="">Don't spread — count it all now</option>
+          <option value="3:month">3 months</option>
+          <option value="6:month">6 months</option>
+          <option value="12:month">12 months (1 year)</option>
+          <option value="1:quarter">Each quarter (custom count below)</option>
+          <option value="custom">Custom number of months…</option>
+        </select>
+        <input id="rec-spread-n" type="number" inputmode="numeric" min="2" max="60" step="1"
+               class="hidden" placeholder="how many months (e.g. 9)" style="margin-top:6px">
+        <div class="sub2" id="rec-spread-hint"></div>
       </div>
       <div class="field" id="rec-qty-wrap">
         <label id="rec-qty-label">Quantity</label>
@@ -4413,6 +4454,9 @@ _PAGE_HTML = """<!doctype html>
     var partChip = document.querySelector('#rec-pay .chip[data-p="part"]');
     if (partChip) partChip.classList.toggle("hidden", isExpense);
     if (isExpense && recPayVal === "part") recPay("cash");
+    // Prepaid/periodic spread is an EXPENSE-only option.
+    var spreadWrap = document.getElementById("rec-spread-wrap");
+    if (spreadWrap) spreadWrap.classList.toggle("hidden", !isExpense);
 
     // PRODUCE mode: pick a finished good + quantity produced (+ optional waste).
     // Amount/cost/customer/payment don't apply — cost comes from the recipe.
@@ -4483,6 +4527,12 @@ _PAGE_HTML = """<!doctype html>
     document.getElementById("rec-prod-text").style.color = "var(--hint)";
     var _pi = document.getElementById("rec-prod-info");
     if (_pi) { _pi.textContent = ""; _pi.classList.add("hidden"); }
+    var _sp = document.getElementById("rec-spread");
+    if (_sp) _sp.value = "";
+    var _spn = document.getElementById("rec-spread-n");
+    if (_spn) { _spn.value = ""; _spn.classList.add("hidden"); }
+    var _sph = document.getElementById("rec-spread-hint");
+    if (_sph) _sph.textContent = "";
     recType("sale"); recPay("cash");
     document.getElementById("rec-desc").value = "";
     document.getElementById("rec-amount").value = "";
@@ -4505,6 +4555,40 @@ _PAGE_HTML = """<!doctype html>
   window.closeRecord = function () {
     document.getElementById("recOverlay").classList.add("hidden");
   };
+  // Prepaid spread: resolve the chosen option into {periods, cadence} or null.
+  window.recSpreadHint = function () {
+    var sel = document.getElementById("rec-spread");
+    var nBox = document.getElementById("rec-spread-n");
+    var hint = document.getElementById("rec-spread-hint");
+    if (!sel) return;
+    var v = sel.value;
+    var showN = (v === "custom" || v === "1:quarter");
+    if (nBox) nBox.classList.toggle("hidden", !showN);
+    if (!hint) return;
+    var res = recSpreadValue();
+    if (!res) { hint.textContent = ""; return; }
+    var amt = parseFloat(document.getElementById("rec-amount").value) || 0;
+    var per = amt > 0 ? naira(Math.round(amt / res.periods)) : "";
+    var word = res.cadence === "quarter" ? "quarter" : (res.cadence === "year" ? "year" : "month");
+    hint.textContent = amt > 0
+      ? ("Pay the full amount now; the expense shows " + per + " per " + word +
+         " for " + res.periods + " " + word + (res.periods > 1 ? "s" : "") + ".")
+      : ("Full amount leaves now; the expense is spread over " + res.periods + " " + word + "s.");
+  };
+  function recSpreadValue() {
+    var sel = document.getElementById("rec-spread");
+    if (!sel || !sel.value) return null;
+    if (sel.value === "custom") {
+      var n = parseInt(document.getElementById("rec-spread-n").value, 10);
+      return (n >= 2) ? { periods: n, cadence: "month" } : null;
+    }
+    if (sel.value === "1:quarter") {
+      var q = parseInt(document.getElementById("rec-spread-n").value, 10);
+      return (q >= 2) ? { periods: q, cadence: "quarter" } : null;
+    }
+    var parts = sel.value.split(":");
+    return { periods: parseInt(parts[0], 10), cadence: parts[1] || "month" };
+  }
   // Walk-in / Skip quick buttons for the customer/supplier field.
   //   walkin → records a generic "Walk-in customer" so it still shows on records
   //   skip   → leaves the name blank (records nothing for who)
@@ -4601,6 +4685,28 @@ _PAGE_HTML = """<!doctype html>
     if (!isExpense && !pick.key) { err.textContent = "Please choose a product."; return; }
     if (isExpense && !desc) { err.textContent = "Please enter what it was for."; return; }
     if (amount <= 0) { err.textContent = "Please enter an amount."; return; }
+
+    // PREPAID / periodic EXPENSE: pay full now, spread the expense over N periods.
+    // Goes to the dedicated engine endpoint (full cash out today + N recognition
+    // rows), not the normal single-row save.
+    var spread = isExpense ? recSpreadValue() : null;
+    if (spread) {
+      var sbtn = document.getElementById("rec-save");
+      sbtn.disabled = true;
+      apiPost("api/prepaid-expense", {
+        amount: amount, description: desc,
+        vendor: (document.getElementById("rec-who").value || "").trim(),
+        periods: spread.periods, cadence: spread.cadence
+      }).then(function () {
+        closeRecord();
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+        loadSummary();
+      }).catch(function (e) {
+        sbtn.disabled = false;
+        err.textContent = (e && e.message) || "Could not record the prepaid expense";
+      });
+      return;
+    }
 
     // Part payment = deposit now + balance owed. If the deposit covers the full
     // amount, treat it as a normal (paid) transfer — mirrors the chat flow.

@@ -117,6 +117,11 @@ def _cash_received(tx):
     pm = _payment_method(tx)
     if pm == "credit":
         return 0
+    # A prepaid RECOGNITION row moves NO cash — the cash left in full on the
+    # payment date (recorded separately as a cash_adjustment). These rows exist
+    # only to spread the EXPENSE across periods in the P&L.
+    if pm == "prepaid":
+        return 0
     if pm == "deposit":
         return int(float(tx.get("deposit_amount", 0)))
     return int(float(tx.get("amount", 0)))
@@ -129,6 +134,8 @@ def _cash_paid(tx):
     pm = _payment_method(tx)
     if pm == "credit":
         return 0
+    if pm == "prepaid":
+        return 0   # recognition-only row; cash already left on the pay date
     if pm == "deposit":
         return int(float(tx.get("deposit_amount", 0)))
     return int(float(tx.get("amount", 0)))
@@ -516,6 +523,19 @@ class Accounting:
                 amt = _cash_received(t)
                 cash_in += amt
                 refunds_in += amt
+            elif ttype == "cash_adjustment":
+                # Manual cash move (owner withdrawal / capital injection /
+                # bank<->cash transfer / a prepaid expense's full pay-date
+                # outflow). Cash-only — NOT a P&L event. Mirror cash_position so
+                # the period cash-flow card and the all-time balance agree.
+                ed = t.get("extra_details") or {}
+                direction = str(ed.get("direction")
+                                or t.get("cash_direction") or "in").lower()
+                amt = int(float(t.get("amount", 0) or 0))
+                if direction == "out":
+                    cash_out += amt
+                else:
+                    cash_in += amt
 
         return {
             "label": label,

@@ -1464,6 +1464,119 @@ class TransactionHandler:
             logger.error(f"record_transaction_web error: {e}\n{traceback.format_exc()}")
             return {"ok": False, "error": "could not record — please try again"}
 
+    def record_prepaid_expense_web(self, phone_number: str, tx_data: dict,
+                                   periods: int, cadence: str = "month") -> dict:
+        """PREPAID / PERIODIC expense: the owner paid the FULL amount now but the
+        EXPENSE should be recognised evenly across `periods` future periods
+        (Design A). We record:
+
+          • ONE cash_adjustment (direction=out) for the FULL amount on the pay
+            date — so cash leaves now (counted by cash_position + period_cashflow,
+            EXCLUDED from the P&L).
+          • N expense rows, one per period, each = amount/N, dated the start of
+            each period, payment_method='prepaid' (moves NO cash) so the P&L
+            recognises the expense gradually.
+
+        `cadence` = 'month' | 'quarter' | 'year' (the step between recognition
+        rows). Amounts are kobo-split so the N parts sum EXACTLY to the total
+        (last row absorbs the rounding remainder). Never raises.
+        """
+        try:
+            from utils.money import money_round, to_money
+            from decimal import Decimal
+            try:
+                periods = int(periods)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "periods must be a whole number"}
+            if periods < 1 or periods > 60:
+                return {"ok": False, "error": "spread must be between 1 and 60 periods"}
+
+            total = money_round(tx_data.get("amount") or 0)
+            if total <= 0:
+                return {"ok": False, "error": "amount must be greater than 0"}
+            description = (tx_data.get("description") or "Prepaid expense").strip()
+            vendor = (tx_data.get("vendor") or "").strip()
+            category = tx_data.get("category") or "Uncategorized"
+
+            step = {"month": 1, "quarter": 3, "year": 12}.get(str(cadence).lower(), 1)
+
+            # Kobo-exact even split: each part = round(total/N); last part takes
+            # the remainder so the N parts sum to EXACTLY total (no lost/created
+            # kobo). Work in Decimal.
+            tot = to_money(total)
+            base_part = money_round(tot / Decimal(periods))
+            parts = [base_part] * (periods - 1)
+            allocated = to_money(base_part) * Decimal(periods - 1)
+            parts.append(money_round(tot - allocated))
+
+            # Pay date = today (the row that carries the cash out).
+            pay_date = datetime.now()
+
+            def _shift(dt, months):
+                # Add `months` to a date, clamping day to 1 (recognition rows sit
+                # at the start of their period — clean + avoids month-length edge
+                # cases like the 31st).
+                y = dt.year + (dt.month - 1 + months) // 12
+                m = (dt.month - 1 + months) % 12 + 1
+                return dt.replace(year=y, month=m, day=1)
+
+            group_id = f"ppd_{int(pay_date.timestamp())}"
+
+            # 1) Full cash OUT today (excluded from P&L, counted by cash).
+            cash_res = self.record_cash_adjustment(
+                phone_number, amount=total, direction="out",
+                reason=f"Prepaid: {description} ({periods}× {cadence})")
+            if not cash_res.get("ok"):
+                return {"ok": False, "error": "could not record the payment — please try again"}
+
+            # 2) N recognition rows (no cash), one per period.
+            recognized = []
+            for i, part in enumerate(parts):
+                d = _shift(pay_date, i * step)
+                extra = {
+                    "source": "miniapp",
+                    "prepaid_group": group_id,
+                    "prepaid_index": i + 1,
+                    "prepaid_total_periods": periods,
+                    "prepaid_cadence": cadence,
+                    "prepaid_total_amount": total,
+                }
+                if tx_data.get("details"):
+                    extra["details"] = tx_data["details"]
+                row = self.db.save_transaction(
+                    phone_number,
+                    part,
+                    "expense",
+                    f"{description} ({i + 1}/{periods})",
+                    category,
+                    sub_category=tx_data.get("sub_category", "Prepaid/periodic"),
+                    vendor=vendor,
+                    item_name=description,
+                    payment_method="prepaid",
+                    extra_details=extra,
+                )
+                # save_transaction stamps `date` as TODAY; override to the period
+                # start so the P&L buckets each part into its own period.
+                tx_id = row.get("transaction_id", "") if isinstance(row, dict) else ""
+                if tx_id:
+                    self.db.update_transaction(phone_number, tx_id,
+                                               {"date": d.strftime("%Y-%m-%d")})
+                recognized.append({"tx_id": tx_id, "amount": part,
+                                   "date": d.strftime("%Y-%m-%d")})
+
+            return {
+                "ok": True,
+                "cash_out": total,
+                "periods": periods,
+                "cadence": cadence,
+                "per_period": parts[0],
+                "recognized": recognized,
+                "group": group_id,
+            }
+        except Exception as e:
+            logger.error(f"record_prepaid_expense_web failed: {e}\n{traceback.format_exc()}")
+            return {"ok": False, "error": "could not record the prepaid expense — please try again"}
+
     def _sale_stock_warning(self, phone_number: str, tx_data: dict):
         """Return a friendly warning string if this sale is questionable — the
         item is OUT OF STOCK, or it is a finished/manufactured good with NO
