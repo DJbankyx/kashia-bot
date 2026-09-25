@@ -154,3 +154,24 @@ Owner recorded a part-payment deposit LARGER than the sale and it went through
 
 New/updated routes needing deploy: /app/api/produce, /app/api/cash-adjust,
 /app/api/opening-cash, /app/api/void-transaction.
+
+### Contact history + full transaction edit (2026-09-25)
+
+- **Contact detail depth** (`73f27d6`): tapping a customer/supplier/expense-payee
+  now shows their **transaction history** (last 20, newest first) + fuller stats
+  (total in/out, owes-me/i-owe, count, first→last date). New
+  `GET /app/api/contact-detail?name=` → `_contact_detail` (matches by vendor);
+  contact sheet renders a Transactions list.
+- **Full edit of a recorded transaction** (`a200699`): Records rows gained a ✏️
+  edit (next to 🗑). `transactions.edit_transaction_web` reverses the old
+  side-effects (via the factored `_reverse_tx_effects`), updates the SAME row
+  (amount/qty/description/vendor/date/payment), then re-applies with the new
+  values (stock, COGS, contact totals, debt). Deposit re-validated; production
+  blocked; return-guarded. New `POST /app/api/edit-transaction`.
+- **Tutorial** (`91a8ea0`): 'How to Use' rewritten as a chronological setup
+  journey (catalog → opening cash → produce → record/edit/delete → dashboard →
+  export → trial/upgrade), surfacing all the new features.
+
+Routes needing deploy this batch: /app/api/contact-detail, /app/api/edit-transaction
+(plus the earlier /app/api/produce, /app/api/cash-adjust, /app/api/opening-cash,
+/app/api/void-transaction).
