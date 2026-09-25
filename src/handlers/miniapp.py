@@ -1964,7 +1964,10 @@ _PAGE_HTML = """<!doctype html>
       </div>
       <div class="field" id="re-qty-wrap">
         <label>Quantity</label>
-        <input id="re-qty" type="number" inputmode="decimal" min="0" step="any">
+        <div class="row" style="gap:8px">
+          <input id="re-qty" type="number" inputmode="decimal" min="0" step="any" style="flex:2">
+          <input id="re-unit" placeholder="unit e.g. pack, kg" style="flex:1" autocomplete="off">
+        </div>
       </div>
       <div class="field">
         <label id="re-who-label">Customer / supplier (optional)</label>
@@ -2113,7 +2116,12 @@ _PAGE_HTML = """<!doctype html>
       </div>
       <div class="field">
         <label id="rec-who-label">Customer (optional)</label>
-        <input id="rec-who" placeholder="name">
+        <input id="rec-who" placeholder="name" list="rec-who-list" autocomplete="off">
+        <datalist id="rec-who-list"></datalist>
+        <div class="chips" id="rec-who-quick" style="margin-top:6px">
+          <div class="chip" onclick="recWho('walkin')">🚶 Walk-in</div>
+          <div class="chip" onclick="recWho('skip')">⏭️ Skip</div>
+        </div>
       </div>
       <div class="field">
         <label>Payment</label>
@@ -3289,8 +3297,14 @@ _PAGE_HTML = """<!doctype html>
     rePayVal = (row.payment || "cash").toLowerCase();
     document.getElementById("re-desc").value = row.desc || "";
     document.getElementById("re-amount").value = row.amount || "";
-    var qn = parseFloat(row.qty);
+    // Split a stored qty string like "5 pack" into number + unit so the owner
+    // can see and edit the unit (the reported "no unit in the records edit").
+    var qraw = String(row.qty || "").trim();
+    var qm = qraw.match(/^\s*(-?\d*\.?\d+)\s*(.*)$/);
+    var qn = qm ? parseFloat(qm[1]) : parseFloat(row.qty);
     document.getElementById("re-qty").value = (qn > 0) ? qn : "";
+    var reUnitEl = document.getElementById("re-unit");
+    if (reUnitEl) reUnitEl.value = qm ? (qm[2] || "").trim() : "";
     document.getElementById("re-who").value = row.vendor || "";
     document.getElementById("re-date").value = row.date || "";
     // Prefill the deposit for a part payment so it can be edited too.
@@ -3347,7 +3361,13 @@ _PAGE_HTML = """<!doctype html>
       payment_method: rePayVal,
     };
     if (isPart) body.deposit_amount = deposit;
-    if (qraw > 0) body.quantity = String(qraw);
+    if (qraw > 0) {
+      // Keep the unit with the quantity string ("5 pack") so editing a record
+      // no longer strips the unit (save_transaction stores the numeric part;
+      // the unit rides along for display, same as the record form).
+      var reUnit = (document.getElementById("re-unit").value || "").trim();
+      body.quantity = reUnit ? (String(qraw) + " " + reUnit) : String(qraw);
+    }
     var btn = document.getElementById("re-save");
     btn.disabled = true;
     apiPost("api/edit-transaction", body)
@@ -4332,6 +4352,10 @@ _PAGE_HTML = """<!doctype html>
     document.getElementById("rec-cost-wrap").style.display = (t === "sale") ? "" : "none";
     document.getElementById("rec-who-label").textContent =
       t === "purchase" ? _ts.supplier_opt : (t === "sale" ? _ts.customer_opt : "Paid to (optional)");
+    // Walk-in only makes sense for a SALE customer; hide the quick chips for
+    // purchase/expense (still keep the autocomplete + free-text name field).
+    var _wq = document.getElementById("rec-who-quick");
+    if (_wq) _wq.classList.toggle("hidden", t !== "sale");
     // Part payment (deposit + balance) doesn't apply to expenses — hide that chip
     // and fall back to cash if it was selected.
     var partChip = document.querySelector('#rec-pay .chip[data-p="part"]');
@@ -4423,11 +4447,46 @@ _PAGE_HTML = """<!doctype html>
     document.getElementById("rec-balance-hint").textContent = "";
     document.getElementById("rec-err").textContent = "";
     document.getElementById("rec-save").disabled = false;
+    recFillContacts();
     document.getElementById("recOverlay").classList.remove("hidden");
   };
   window.closeRecord = function () {
     document.getElementById("recOverlay").classList.add("hidden");
   };
+  // Walk-in / Skip quick buttons for the customer/supplier field.
+  //   walkin → records a generic "Walk-in customer" so it still shows on records
+  //   skip   → leaves the name blank (records nothing for who)
+  window.recWho = function (mode) {
+    var el = document.getElementById("rec-who");
+    if (!el) return;
+    el.value = (mode === "walkin") ? "Walk-in customer" : "";
+    el.focus();
+  };
+  // Fill the customer/supplier autocomplete datalist from already-recorded
+  // contacts, so the owner reuses an existing name instead of creating a near-
+  // duplicate ("John" vs "John A"). Loads contacts once if the CRM tab hasn't.
+  function recFillContacts() {
+    function paint() {
+      var dl = document.getElementById("rec-who-list");
+      if (!dl || !crmData) return;
+      var seen = {}, names = [];
+      ["customers", "suppliers", "expense_payees"].forEach(function (k) {
+        (crmData[k] || []).forEach(function (c) {
+          var n = (c.name || "").trim();
+          if (n && !seen[n.toLowerCase()]) { seen[n.toLowerCase()] = 1; names.push(n); }
+        });
+      });
+      dl.innerHTML = "";
+      names.forEach(function (n) {
+        var o = document.createElement("option");
+        o.value = n; dl.appendChild(o);
+      });
+    }
+    if (crmData) { paint(); return; }
+    // Lazy-load without flipping the CRM tab's loaded flag hard — just fetch.
+    api("api/contacts").then(function (d) { crmData = d; crmLoaded = true; paint(); })
+      .catch(function () { /* autocomplete is best-effort */ });
+  }
   window.saveRecord = function () {
     var err0 = document.getElementById("rec-err");
     // PRODUCE: a separate, simpler path — pick a finished good, enter quantity
