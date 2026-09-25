@@ -209,3 +209,27 @@ Build order confirmed: **S1 → S2 → S3 → S4**, S5 later. Starting with S1.
 feature for Free users — a live paywall change mid-beta. Left AS-IS on purpose;
 flip it only on the owner's go-ahead. (Downgrade already re-applies the ENFORCED
 limits — transactions/exports/invoices — because they read `tier` live.)
+
+
+---
+
+## Update 2026-09-25 — tighter free tier + anti-bypass
+
+- Free tier tightened: **trial 10 days** (was 14), **free cap 5 sales/month**
+  (was 30). `TierManager.TRIAL_DAYS=10`, `TIERS['free']['transactions_per_month']=5`.
+  Plans/usage/trial-reminder copy updated (reminder is dynamic off the cap).
+- **Anti-bypass — immutable `trial_started_at`.** The trial clock is set ONCE at
+  first-ever `create_user` and preserved across re-onboarding, Clear My Data,
+  Full Reset, and Transfer/Recover:
+  - `create_user` reads the existing row and keeps the original
+    `trial_started_at`/`created_at` (+ carries subscription state) rather than
+    stamping `now()` — so re-onboarding after a Full Reset can't restart the trial.
+  - `tier_manager._trial_status` reads `trial_started_at` first (falls back to
+    `created_at` for legacy rows).
+  - `db.transfer_account` copies the whole user row, so `trial_started_at` moves
+    with the data — transferring a spent-trial account to a new Telegram id does
+    NOT grant a new trial.
+  - Clear/Full Reset use `update_user` and never touch `created_at`/`trial_started_at`.
+- **Known limit (accepted):** a brand-new Telegram account with data re-typed by
+  hand still gets a fresh trial. Fully closing that needs phone/device
+  verification. This change closes the easy transfer/reset bypasses.
