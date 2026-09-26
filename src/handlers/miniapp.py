@@ -252,6 +252,8 @@ def lambda_handler(event, context):
             return _void_transaction_write(event, user_id)
         if method == "POST" and path.endswith("/app/api/restore-transaction"):
             return _restore_transaction_write(event, user_id)
+        if method == "GET" and path.endswith("/app/api/deleted-transactions"):
+            return _deleted_transactions_read(event, user_id)
         if method == "POST" and path.endswith("/app/api/prepaid-expense"):
             return _prepaid_expense_write(event, user_id)
         if method == "POST" and path.endswith("/app/api/edit-transaction"):
@@ -993,19 +995,35 @@ def _void_transaction_write(event, user_id: str):
 
 
 def _restore_transaction_write(event, user_id: str):
-    """UNDO a just-deleted transaction. Body: {tx: <the voided_tx row returned by
-    void-transaction>}. Re-inserts the row verbatim + re-applies its effects via
+    """UNDO a just-deleted transaction. Body: {tx_id} (preferred — server looks
+    it up from the soft-deleted row) OR {tx: <voided_tx row>} (legacy in-session
+    Undo). Re-un-archives the row + re-applies its effects via
     TransactionHandler.restore_transaction_web (the engine)."""
     from services.database import Database
     from features.transactions import TransactionHandler
 
     data = _parse_body(event)
-    tx = data.get("tx")
+    # Accept tx_id directly (new style, from Recently-deleted list).
+    tx_id = str(data.get("tx_id") or "").strip()
+    if tx_id:
+        tx = {"transaction_id": tx_id}
+    else:
+        tx = data.get("tx")
     if not isinstance(tx, dict) or not tx.get("transaction_id"):
         return _json(400, {"error": "nothing to restore"})
     handler = TransactionHandler(None, Database(), None, None)
     res = handler.restore_transaction_web(user_id, tx)
     return _json(200 if res.get("ok") else 400, res)
+
+
+def _deleted_transactions_read(event, user_id: str):
+    """Return the last 30 days of user-voided transactions for the
+    Recently-deleted restore screen. GET /app/api/deleted-transactions."""
+    from services.database import Database
+    from features.transactions import TransactionHandler
+    handler = TransactionHandler(None, Database(), None, None)
+    res = handler.list_deleted_web(user_id, since_days=30)
+    return _json(200, res)
 
 
 def _prepaid_expense_write(event, user_id: str):
@@ -1934,12 +1952,28 @@ _PAGE_HTML = """<!doctype html>
       <button class="btn save" style="flex:1" onclick="recExport('excel')">⬇️ Excel</button>
       <button class="btn cancel" style="flex:1" onclick="recExport('pdf')">🧾 PDF</button>
     </div>
+    <div style="text-align:right;margin:2px 0 6px">
+      <button class="linkbtn" onclick="openRecentlyDeleted()" style="font-size:13px;color:var(--hint)">🗑 Recently deleted</button>
+    </div>
     <div id="rec-undo-bar" class="hidden" style="margin:8px 0;padding:10px 12px;border-radius:10px;background:var(--card);border:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px">
       <span id="rec-undo-text" class="muted" style="flex:1"></span>
       <button class="btn save" style="padding:6px 14px;flex:0 0 auto" onclick="recUndo()">↩︎ Undo</button>
     </div>
     <div id="rec-list"><div class="muted">Loading...</div></div>
     <div id="rec-msg" class="muted"></div>
+  </div>
+
+  <!-- Recently-deleted overlay: shows soft-deleted transactions from the last
+       30 days; owner taps Restore to un-delete each one. -->
+  <div id="recentlyDeletedOverlay" class="overlay hidden">
+    <div class="sheet">
+      <h2>🗑 Recently deleted</h2>
+      <div class="sub2">Deleted in the last 30 days. Tap Restore to bring one back.</div>
+      <div id="rd-list" style="margin-top:12px"><div class="muted">Loading…</div></div>
+      <div class="actions" style="margin-top:16px">
+        <button class="btn cancel" onclick="closeRecentlyDeleted()">Close</button>
+      </div>
+    </div>
   </div>
 
   <!-- Debt-payment sheet (CRM write) -->
@@ -3395,6 +3429,74 @@ _PAGE_HTML = """<!doctype html>
         if (txt) txt.textContent = (e && e.message) || "Could not undo — tap Undo again.";
       });
   };
+
+  // ── Recently-deleted screen ────────────────────────────────────────────────
+  // Shows all user-voided transactions from the last 30 days (persisted
+  // server-side as soft-deletes) so the owner can restore any of them, even
+  // after closing and reopening the mini app.
+  window.openRecentlyDeleted = function () {
+    document.getElementById("recentlyDeletedOverlay").classList.remove("hidden");
+    var list = document.getElementById("rd-list");
+    list.innerHTML = '<div class="muted">Loading\u2026</div>';
+    api("api/deleted-transactions")
+      .then(function (d) { renderRecentlyDeleted(d.deleted || []); })
+      .catch(function (e) {
+        list.innerHTML = '<div class="err">' + escapeHtml((e && e.message) || "Could not load") + '</div>';
+      });
+  };
+  window.closeRecentlyDeleted = function () {
+    document.getElementById("recentlyDeletedOverlay").classList.add("hidden");
+  };
+  function renderRecentlyDeleted(rows) {
+    var list = document.getElementById("rd-list");
+    if (!rows.length) {
+      list.innerHTML = '<div class="muted">No deleted records in the last 30 days.</div>';
+      return;
+    }
+    list.innerHTML = "";
+    var card = document.createElement("div");
+    card.className = "card"; card.style.padding = "4px 0";
+    rows.forEach(function (t) {
+      var div = document.createElement("div");
+      div.className = "item";
+      div.style.alignItems = "center";
+      div.innerHTML =
+        '<div style="flex:1"><div class="name">' + escapeHtml(t.desc || "Entry") + '</div>' +
+        '<div class="meta">' + escapeHtml(t.date || "") +
+          (t.vendor ? " \u00b7 " + escapeHtml(t.vendor) : "") +
+          ' \u00b7 deleted ' + escapeHtml(t.deleted_at || "?") + '</div></div>' +
+        '<div class="right" style="gap:6px;align-items:center">' +
+        '<div class="stock">' + naira(t.amount || 0) + '</div>' +
+        '<button class="btn save" style="padding:5px 12px;font-size:13px" ' +
+          'onclick="rdRestore(' + JSON.stringify(t.transaction_id) + ',this)">Restore</button>' +
+        '</div>';
+      card.appendChild(div);
+    });
+    list.appendChild(card);
+  }
+  window.rdRestore = function (txId, btn) {
+    if (!txId) return;
+    btn.disabled = true; btn.textContent = "Restoring\u2026";
+    apiPost("api/restore-transaction", { tx_id: txId })
+      .then(function () {
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+        btn.textContent = "Restored!";
+        // Clear the inline Undo bar for this tx too (covers the common case where
+        // the owner used the list instead of the bar for the most-recent delete).
+        if (recUndoTx && recUndoTx.transaction_id === txId) {
+          recUndoTx = null; recRenderUndoBar();
+        }
+        loadRecords(); loadSummary();
+      })
+      .catch(function (e) {
+        btn.disabled = false; btn.textContent = "Restore";
+        var err = document.createElement("div");
+        err.className = "err"; err.style.fontSize = "12px";
+        err.textContent = (e && e.message) || "Could not restore";
+        btn.parentNode.appendChild(err);
+      });
+  };
+
   // ── Edit a recorded transaction ──
   var reEditId = null, rePayVal = "cash";
   window.recOpenEdit = function (row) {

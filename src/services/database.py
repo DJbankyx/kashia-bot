@@ -767,6 +767,76 @@ class Database:
             logger.error(f"Error deleting transaction: {e}")
             return None
 
+    def soft_delete_transaction(self, phone_number, transaction_id, reason="void"):
+        """SOFT-delete a transaction: stamp `deleted`/`deleted_at`/`retain_until`
+        so it drops out of every normal read (via _live) but STAYS in the table,
+        recoverable via the Recently-deleted list. `reason` distinguishes a
+        user VOID from a Clear-My-Data archive. Returns the row, or None."""
+        try:
+            tx = self.get_transaction(phone_number, transaction_id)
+            if not tx:
+                return None
+            now = datetime.now()
+            retain_until = (now + timedelta(days=RETENTION_DAYS)).isoformat()
+            self.transactions.update_item(
+                Key={'phone_number': phone_number, 'transaction_id': transaction_id},
+                UpdateExpression="SET deleted = :d, deleted_at = :da, retain_until = :ru, deleted_reason = :dr",
+                ExpressionAttributeValues={
+                    ':d': True, ':da': now.isoformat(),
+                    ':ru': retain_until, ':dr': str(reason or "void"),
+                },
+            )
+            logger.info(f"Soft-deleted transaction: {transaction_id} ({reason})")
+            return tx
+        except Exception as e:
+            logger.error(f"Error soft-deleting transaction: {e}")
+            return None
+
+    def restore_soft_deleted(self, phone_number, transaction_id):
+        """Undo a soft-delete: clear the archive flags so the row is live again.
+        Returns the (now-live) row, or None if it wasn't found."""
+        try:
+            tx = self.get_transaction(phone_number, transaction_id)
+            if not tx:
+                return None
+            self.transactions.update_item(
+                Key={'phone_number': phone_number, 'transaction_id': transaction_id},
+                UpdateExpression="REMOVE deleted, deleted_at, retain_until, deleted_reason",
+            )
+            logger.info(f"Restored soft-deleted transaction: {transaction_id}")
+            tx.pop("deleted", None); tx.pop("deleted_at", None)
+            tx.pop("retain_until", None); tx.pop("deleted_reason", None)
+            return tx
+        except Exception as e:
+            logger.error(f"Error restoring transaction: {e}")
+            return None
+
+    def list_deleted_transactions(self, phone_number, since_days=30, limit=50):
+        """List user-VOIDED transactions deleted within the last `since_days`,
+        newest-deleted first, for the Recently-deleted / restore UI. Only rows
+        with deleted_reason=='void' (NOT a full Clear-My-Data archive). Queries
+        the user's rows and filters in memory (delete volume is low)."""
+        try:
+            from boto3.dynamodb.conditions import Key as _Key
+            cutoff = (datetime.now() - timedelta(days=int(since_days))).isoformat()
+            resp = self.transactions.query(
+                KeyConditionExpression=_Key('phone_number').eq(phone_number))
+            items = resp.get('Items', [])
+            while 'LastEvaluatedKey' in resp:
+                resp = self.transactions.query(
+                    KeyConditionExpression=_Key('phone_number').eq(phone_number),
+                    ExclusiveStartKey=resp['LastEvaluatedKey'])
+                items.extend(resp.get('Items', []))
+            deleted = [it for it in items
+                       if it.get('deleted')
+                       and str(it.get('deleted_reason', '')) == 'void'
+                       and str(it.get('deleted_at', '')) >= cutoff]
+            deleted.sort(key=lambda x: str(x.get('deleted_at', '')), reverse=True)
+            return deleted[:int(limit)]
+        except Exception as e:
+            logger.error(f"Error listing deleted transactions: {e}")
+            return []
+
     def update_transaction(self, phone_number, transaction_id, updates):
         """Update specific fields of a transaction"""
         try:

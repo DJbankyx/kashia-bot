@@ -1730,10 +1730,11 @@ class TransactionHandler:
             reversed_bits = self._reverse_tx_effects(phone_number, tx)
             amount = int(float(tx.get("amount") or 0))
 
-            # ── Delete the row ── (delete_transaction returns the deleted row)
-            deleted = self.db.delete_transaction(phone_number, tx_id)
-            # Hand the full row back so the client can offer a one-tap UNDO that
-            # restores it verbatim (same id/date/amount) via restore_transaction_web.
+            # ── SOFT-delete the row ── it drops out of every normal read but
+            # STAYS in the table, so it appears in "Recently deleted" and can be
+            # restored later (survives closing the app), not just an in-session
+            # Undo. delete_reason='void' separates it from a Clear-My-Data wipe.
+            deleted = self.db.soft_delete_transaction(phone_number, tx_id, reason="void")
             voided_tx = deleted if isinstance(deleted, dict) else tx
             return {"ok": True, "type": ttype, "amount": amount,
                     "reversed": reversed_bits, "voided_tx": voided_tx}
@@ -1742,24 +1743,32 @@ class TransactionHandler:
             return {"ok": False, "error": "could not delete — please try again"}
 
     def restore_transaction_web(self, phone_number: str, tx: dict) -> dict:
-        """UNDO a void: re-insert the exact deleted row and RE-APPLY its
-        stock/debt/contact effects (the inverse of _reverse_tx_effects). Reuses
-        the same engine helpers as a normal record so the books match. Idempotent-
-        ish: if the row already exists again it just re-puts it. Never raises."""
+        """UNDO a void: un-archive the soft-deleted row (clear the deleted flags)
+        and RE-APPLY its stock/debt/contact effects (inverse of
+        _reverse_tx_effects). Accepts either a full tx dict (in-session Undo) or a
+        dict with just {transaction_id} (Recently-deleted list). The row is looked
+        up fresh from the DB so we always act on the authoritative stored data.
+        Never raises."""
         try:
             if not isinstance(tx, dict) or not tx.get("transaction_id"):
                 return {"ok": False, "error": "nothing to restore"}
             tx_id = tx.get("transaction_id")
+
+            # Un-archive: clear deleted/deleted_at/retain_until and get the live
+            # row back. If it was never soft-deleted this still returns the row.
+            restored = self.db.restore_soft_deleted(phone_number, tx_id)
+            if not restored:
+                # Fallback: an old-style hard-deleted row passed with full data —
+                # re-insert it verbatim so historic Undo payloads still work.
+                if not self.db.save_transaction_row(phone_number, tx):
+                    return {"ok": False, "error": "could not restore — it may be gone"}
+                restored = tx
+            tx = restored
             ttype = tx.get("type")
-            # Production/returns were never voidable here, so never restorable here.
             if ttype in ("production", "sale_return", "purchase_return"):
                 return {"ok": False, "error": "this type can't be restored here"}
 
-            # 1) Re-insert the row verbatim (same id/date/amount/extra).
-            if not self.db.save_transaction_row(phone_number, tx):
-                return {"ok": False, "error": "could not restore — please try again"}
-
-            # 2) Re-apply side-effects — the exact inverse of _reverse_tx_effects.
+            # Re-apply side-effects — the exact inverse of _reverse_tx_effects.
             from utils.money import to_money, money_round
             from features.catalog import CatalogHandler
             extra = tx.get("extra_details") or {}
@@ -1810,6 +1819,34 @@ class TransactionHandler:
         except Exception as e:
             logger.error(f"restore_transaction_web failed: {e}")
             return {"ok": False, "error": "could not restore — please try again"}
+
+    def list_deleted_web(self, phone_number: str, since_days: int = 30) -> dict:
+        """Return the last 30 days of user-voided (soft-deleted) transactions for
+        the 'Recently deleted' restore UI, newest-deleted first. Each row is
+        trimmed to the fields the restore list needs; the full transaction_id is
+        included so restore can look it up server-side. Never raises."""
+        try:
+            from utils.money import money_round
+            rows = self.db.list_deleted_transactions(phone_number,
+                                                     since_days=since_days, limit=50)
+            out = []
+            for t in rows:
+                ttype = str(t.get("type") or "")
+                if ttype in ("production", "sale_return", "purchase_return"):
+                    continue   # these are never restoreable; skip from the list
+                out.append({
+                    "transaction_id": str(t.get("transaction_id") or ""),
+                    "type": ttype,
+                    "desc": str(t.get("description") or t.get("item_name") or ""),
+                    "amount": int(float(t.get("amount") or 0)),
+                    "date": str(t.get("date") or ""),
+                    "deleted_at": str(t.get("deleted_at") or "")[:10],
+                    "vendor": str(t.get("vendor") or ""),
+                })
+            return {"ok": True, "deleted": out}
+        except Exception as e:
+            logger.error(f"list_deleted_web failed: {e}")
+            return {"ok": False, "deleted": [], "error": "could not load deleted records"}
 
     def _reverse_tx_effects(self, phone_number: str, tx: dict) -> dict:
         """Undo a transaction's stock/debt/contact side-effects (WITHOUT deleting
