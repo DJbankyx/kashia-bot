@@ -1852,10 +1852,15 @@ _PAGE_HTML = """<!doctype html>
         <label>Add material / cost</label>
         <select id="rc-mat" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--line)" onchange="rcMatChanged()"></select>
       </div>
-      <!-- New-material fields (shown only when "New material…" is picked). -->
+      <!-- New-material fields (shown only when "New material…" is picked). The
+           datalist suggests EXISTING catalog names as you type, so you reuse a
+           registered material instead of creating a near-duplicate (e.g. "Nylon"
+           vs "nylon" vs "Wrapping Nylon"). -->
       <div class="field hidden" id="rc-newname-wrap">
         <label>New material name</label>
-        <input id="rc-newname" placeholder="e.g. Nylon, Electricity" oninput="document.getElementById('rc-err').textContent=''">
+        <input id="rc-newname" list="rc-newname-list" autocomplete="off" placeholder="e.g. Nylon, Electricity" oninput="document.getElementById('rc-err').textContent=''">
+        <datalist id="rc-newname-list"></datalist>
+        <div class="sub2" id="rc-newname-hint" style="margin-top:4px"></div>
       </div>
       <!-- Raw material (stock-tracked) vs Overhead (rate x usage, no stock). -->
       <div class="field hidden" id="rc-type-wrap">
@@ -1955,9 +1960,9 @@ _PAGE_HTML = """<!doctype html>
     <div style="text-align:right;margin:2px 0 6px">
       <button class="linkbtn" onclick="openRecentlyDeleted()" style="font-size:13px;color:var(--hint)">🗑 Recently deleted</button>
     </div>
-    <div id="rec-undo-bar" class="hidden" style="margin:8px 0;padding:10px 12px;border-radius:10px;background:var(--card);border:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px">
-      <span id="rec-undo-text" class="muted" style="flex:1"></span>
-      <button class="btn save" style="padding:6px 14px;flex:0 0 auto" onclick="recUndo()">↩︎ Undo</button>
+    <div id="rec-undo-bar" class="hidden" style="margin:6px 0;padding:5px 6px 5px 10px;border-radius:8px;background:var(--card);border:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:8px">
+      <span id="rec-undo-text" class="muted" style="flex:1;font-size:12px"></span>
+      <button class="linkbtn" style="flex:0 0 auto;padding:3px 8px;font-size:13px;font-weight:600;color:var(--accent)" onclick="recUndo()">↩︎ Undo</button>
     </div>
     <div id="rec-list"><div class="muted">Loading...</div></div>
     <div id="rec-msg" class="muted"></div>
@@ -3406,7 +3411,11 @@ _PAGE_HTML = """<!doctype html>
   function recRenderUndoBar() {
     var bar = document.getElementById("rec-undo-bar");
     if (!bar) return;
-    if (!recUndoTx) { bar.classList.add("hidden"); return; }
+    // Show the Undo bar ONLY on the tab whose type matches the deleted row, so
+    // it never appears on a tab where that entry doesn't belong (and never on
+    // Production, which has no delete). The deleted row's own type is the gate.
+    var showable = recUndoTx && String(recUndoTx.type || "") === recTabType;
+    if (!showable) { bar.classList.add("hidden"); return; }
     var txt = document.getElementById("rec-undo-text");
     if (txt) txt.textContent = "Deleted \u201c" + recUndoLabel + "\u201d.";
     bar.classList.remove("hidden");
@@ -3421,6 +3430,9 @@ _PAGE_HTML = """<!doctype html>
         if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
         recUndoTx = null;
         if (recUndoTimer) { clearTimeout(recUndoTimer); recUndoTimer = null; }
+        // Hide the bar immediately (don't leave a stuck "Restoring…"), THEN
+        // reload — loadRecords repaints the list and re-runs recRenderUndoBar,
+        // which now hides the bar because recUndoTx is null.
         recRenderUndoBar();
         loadRecords();
         loadSummary();
@@ -3449,27 +3461,47 @@ _PAGE_HTML = """<!doctype html>
   };
   function renderRecentlyDeleted(rows) {
     var list = document.getElementById("rd-list");
-    if (!rows.length) {
-      list.innerHTML = '<div class="muted">No deleted records in the last 30 days.</div>';
+    // Scope the list to the record type the owner is currently looking at, so a
+    // deleted expense doesn't show under Raw materials etc. The active tab's
+    // type (recTabType) maps 1:1 to a tx type; production is never restoreable
+    // here (the server already omits it), so this list is empty on that tab.
+    var all = rows || [];
+    var scoped = all.filter(function (t) { return String(t.type || "") === recTabType; });
+    if (!scoped.length) {
+      list.innerHTML = '<div class="muted">Nothing deleted here in the last 30 days.</div>';
       return;
     }
     list.innerHTML = "";
     var card = document.createElement("div");
     card.className = "card"; card.style.padding = "4px 0";
-    rows.forEach(function (t) {
+    scoped.forEach(function (t) {
       var div = document.createElement("div");
       div.className = "item";
       div.style.alignItems = "center";
-      div.innerHTML =
-        '<div style="flex:1"><div class="name">' + escapeHtml(t.desc || "Entry") + '</div>' +
+      var info = document.createElement("div");
+      info.style.flex = "1";
+      info.innerHTML =
+        '<div class="name">' + escapeHtml(t.desc || "Entry") + '</div>' +
         '<div class="meta">' + escapeHtml(t.date || "") +
           (t.vendor ? " \u00b7 " + escapeHtml(t.vendor) : "") +
-          ' \u00b7 deleted ' + escapeHtml(t.deleted_at || "?") + '</div></div>' +
-        '<div class="right" style="gap:6px;align-items:center">' +
-        '<div class="stock">' + naira(t.amount || 0) + '</div>' +
-        '<button class="btn save" style="padding:5px 12px;font-size:13px" ' +
-          'onclick="rdRestore(' + JSON.stringify(t.transaction_id) + ',this)">Restore</button>' +
-        '</div>';
+          ' \u00b7 deleted ' + escapeHtml(t.deleted_at || "?") + '</div>';
+      var right = document.createElement("div");
+      right.className = "right";
+      right.style.gap = "6px"; right.style.alignItems = "center";
+      var amt = document.createElement("div");
+      amt.className = "stock"; amt.textContent = naira(t.amount || 0);
+      var btn = document.createElement("button");
+      btn.className = "btn save";
+      btn.style.padding = "5px 12px"; btn.style.fontSize = "13px";
+      btn.style.flex = "0 0 auto";
+      btn.textContent = "Restore";
+      // Bind the handler in a closure instead of an inline onclick with an
+      // interpolated id — a transaction_id containing a quote/backslash broke
+      // the inline onclick attribute, so the tap did nothing (no request ever
+      // fired). This binding is immune to the id's contents.
+      btn.addEventListener("click", function () { rdRestore(t.transaction_id, btn); });
+      right.appendChild(amt); right.appendChild(btn);
+      div.appendChild(info); div.appendChild(right);
       card.appendChild(div);
     });
     list.appendChild(card);
@@ -3484,9 +3516,15 @@ _PAGE_HTML = """<!doctype html>
         // Clear the inline Undo bar for this tx too (covers the common case where
         // the owner used the list instead of the bar for the most-recent delete).
         if (recUndoTx && recUndoTx.transaction_id === txId) {
-          recUndoTx = null; recRenderUndoBar();
+          recUndoTx = null;
+          if (recUndoTimer) { clearTimeout(recUndoTimer); recUndoTimer = null; }
+          recRenderUndoBar();
         }
         loadRecords(); loadSummary();
+        // Refresh the overlay list so the restored row drops out of it.
+        api("api/deleted-transactions")
+          .then(function (d) { renderRecentlyDeleted(d.deleted || []); })
+          .catch(function () {});
       })
       .catch(function (e) {
         btn.disabled = false; btn.textContent = "Restore";
@@ -4178,6 +4216,57 @@ _PAGE_HTML = """<!doctype html>
       ? "\\ud83d\\udca1 Enter the rate for ONE unit (e.g. \\u20a60.06 per kW of electricity). The cost added is quantity \\u00d7 this rate."
       : "\\ud83d\\udca1 Enter the price of ONE unit (e.g. \\u20a61,200 per kg of nylon), NOT the batch total. Blank = use the material's saved cost. Product cost = quantity \\u00d7 this.";
   };
+  // Fill the new-material name datalist from the catalog (invData) so typing a
+  // name suggests already-registered items — grouped by category label so the
+  // owner reuses "Nylon" instead of creating "nylon"/"Wrapping Nylon" again.
+  // Options carry the category in their label; the value stays the bare name so
+  // picking one just fills the input.
+  var IT_LABEL = { raw_material: "Raw material", supply: "Supply",
+                   overhead: "Overhead", product: "Product",
+                   finished_product: "Product", service: "Service" };
+  function recFillMaterialNames() {
+    var dl = document.getElementById("rc-newname-list");
+    if (!dl) return;
+    dl.innerHTML = "";
+    var items = (invData || []).slice();
+    // Materials/overheads/supplies first (most likely recipe inputs), then rest.
+    var order = { raw_material: 0, supply: 1, overhead: 2 };
+    items.sort(function (a, b) {
+      var oa = (order[a.item_type] !== undefined) ? order[a.item_type] : 9;
+      var ob = (order[b.item_type] !== undefined) ? order[b.item_type] : 9;
+      if (oa !== ob) return oa - ob;
+      return String(a.name || "").localeCompare(String(b.name || ""));
+    });
+    var seen = {};
+    items.forEach(function (p) {
+      var nm = String(p.name || "").trim();
+      if (!nm) return;
+      var lk = nm.toLowerCase();
+      if (seen[lk]) return;
+      seen[lk] = 1;
+      var o = document.createElement("option");
+      o.value = nm;
+      var lbl = IT_LABEL[p.item_type] || "Item";
+      o.label = lbl + (p.unit ? (" \u00b7 " + p.unit) : "");
+      dl.appendChild(o);
+    });
+    var hint = document.getElementById("rc-newname-hint");
+    if (hint) {
+      hint.className = "sub2";
+      hint.textContent = Object.keys(seen).length
+        ? "Start typing to pick an existing item and avoid duplicates."
+        : "";
+    }
+    // If the catalog hasn't loaded yet, pull it then refill once (guard the
+    // re-entry so we don't loop).
+    if (!invLoaded && !recFillMaterialNames._loading) {
+      recFillMaterialNames._loading = true;
+      loadInventory().then(function () {
+        recFillMaterialNames._loading = false;
+        recFillMaterialNames();
+      });
+    }
+  }
   // React to picker change: show the new-material fields (name + type + unit)
   // only for "New material…". For an existing catalog material, its unit/type
   // come from the catalog, so pre-fill unit and hide the editable extras.
@@ -4195,6 +4284,7 @@ _PAGE_HTML = """<!doctype html>
       unitInput.value = "";
       unitInput.readOnly = false;
       costInput.placeholder = "enter buy-cost";
+      recFillMaterialNames();   // suggest existing catalog names to avoid dupes
     } else {
       // Existing material: unit + type are fixed by the catalog row.
       var u = opt ? (opt.getAttribute("data-unit") || "") : "";
