@@ -268,3 +268,58 @@ profit isn't crushed (e.g. a year's rent paid upfront).
 ## Commits this round (all pushed to origin/master; owner deploys)
 e58a78b · 8a703c2 · 0d6ac77 · 410eb4a · 7ece661 · 200ce24 · 52d8657 · c075642 ·
 b857e46 · f232851 (template routes).
+
+---
+
+## Testing round 3 — recycle-bin / undo fixes + recipe name autocomplete (2026-09-26, commit `a3445a5`)
+
+From owner mini-app testing of the recently-deployed recycle-bin (`5d2914a`).
+Screenshots showed the Undo bar on every Records sub-tab and a deleted expense
+listed under Raw materials. All fixes are JS-only in `src/handlers/miniapp.py`.
+
+**1. Per-entry Restore did nothing (Undo worked).** CloudWatch showed NO restore
+call reaching `kashia-miniapp-dev` in 3 days, so the request never fired. Root
+cause: the "Restore" button in the Recently-deleted list used an inline
+`onclick="rdRestore(<JSON.stringify(id)>,this)"`. A `transaction_id` containing a
+quote/backslash breaks the HTML attribute → the tap is a no-op. Fixed by binding
+the handler with `addEventListener` + a closure over the id (immune to the id's
+contents). The Undo BAR always worked because it uses `onclick="recUndo()"` with
+the row held in a JS var (no interpolation). The SERVER path was fine all along:
+`get_transaction` reads soft-deleted rows and `restore_soft_deleted` clears the
+flags.
+
+**2. Undo bar + Recently-deleted list were global, not tab-scoped.** They showed
+on every sub-tab (Output sales / Raw materials / Expenses / Production) — even
+Production, where no delete exists — and a deleted expense appeared under Raw
+materials. Now BOTH are scoped to the active tab's type:
+`recRenderUndoBar` shows the bar only when `recUndoTx.type === recTabType`;
+`renderRecentlyDeleted` filters the list by `recTabType` (empty → "Nothing
+deleted here in the last 30 days"). Production shows neither.
+
+**3. "Restoring…" could stick on screen.** `recUndo` now hides the bar and
+clears the 5-min timer immediately on success (then reloads); `rdRestore`
+refreshes the overlay list so the restored row drops out.
+
+**4. Undo bar too tall.** Was a filled `.btn save` button + 10px padding. Now a
+slim strip (5px padding, 12px text) with a compact accent-coloured `Undo`
+linkbtn.
+
+**5. Recipe new-material name autocomplete.** The recipe editor's "➕ New
+material…" name field was free text, allowing near-duplicates (Nylon / nylon /
+Wrapping Nylon) and misfiled categories. Added a `<datalist id="rc-newname-list">`
+that suggests EXISTING catalog names as you type, grouped by `item_type` (raw
+material / supply / overhead first, then products), de-duped case-insensitively,
+sourced from the client-side `invData`; it refills after `loadInventory()` if the
+catalog wasn't loaded yet. (The existing-material `<select id="rc-mat">` already
+covered picking a registered material; this closes the new-name duplicate hole.)
+
+**Guardrail added:** never interpolate a dynamic id/ref into an inline `onclick`
+string in the served page — bind via `addEventListener` with the value captured
+in a closure.
+
+**Payment (not a bug):** re-attempting an upgrade now replies "You're already on
+the Pro plan!" — the tier gate working as intended. No change.
+
+**Verified:** `check_syntax.py` OK (catalog/transactions/router/main); miniapp
+`PYC_OK`, built-page UTF-8 encode OK, 0 lone surrogates, esprima `JS_PARSE_OK`
+(131316 chars).
