@@ -1934,6 +1934,10 @@ _PAGE_HTML = """<!doctype html>
       <button class="btn save" style="flex:1" onclick="recExport('excel')">⬇️ Excel</button>
       <button class="btn cancel" style="flex:1" onclick="recExport('pdf')">🧾 PDF</button>
     </div>
+    <div id="rec-undo-bar" class="hidden" style="margin:8px 0;padding:10px 12px;border-radius:10px;background:var(--card);border:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px">
+      <span id="rec-undo-text" class="muted" style="flex:1"></span>
+      <button class="btn save" style="padding:6px 14px;flex:0 0 auto" onclick="recUndo()">↩︎ Undo</button>
+    </div>
     <div id="rec-list"><div class="muted">Loading...</div></div>
     <div id="rec-msg" class="muted"></div>
   </div>
@@ -3199,6 +3203,7 @@ _PAGE_HTML = """<!doctype html>
   }
   function renderRecords(d) {
     document.getElementById("rec-total").textContent = naira(d.total || 0);
+    recRenderUndoBar();   // persistent Undo survives tab switches / reloads
     var list = document.getElementById("rec-list");
     var rows = d.records || [];
     if (!rows.length) {
@@ -3335,11 +3340,11 @@ _PAGE_HTML = """<!doctype html>
       apiPost("api/void-transaction", { tx_id: id })
         .then(function (res) {
           if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+          // Stash the deleted row so a PERSISTENT Undo bar can restore it
+          // verbatim. Set BEFORE loadRecords so the re-render paints the bar.
+          if (res && res.voided_tx) recSetUndo(res.voided_tx, label);
           loadRecords();
           loadSummary();   // stock/debt/cash may have moved.
-          // Offer a one-tap UNDO for a few seconds — restores the deleted row
-          // verbatim (same id/date/amount) and re-applies its effects.
-          if (res && res.voided_tx) recShowUndo(res.voided_tx, label);
         })
         .catch(function (e) {
           msg.textContent = (e && e.message) || "Could not delete.";
@@ -3352,35 +3357,42 @@ _PAGE_HTML = """<!doctype html>
       if (recPendingDelete === id) { recPendingDelete = null; msg.textContent = ""; }
     }, 4000);
   };
-  // ── Undo-after-delete toast ──
-  var recUndoTx = null, recUndoTimer = null;
-  function recShowUndo(tx, label) {
-    recUndoTx = tx;
-    var msg = document.getElementById("rec-msg");
-    if (!msg) return;
-    msg.innerHTML = "Deleted " + escapeHtml(label || "entry") +
-      '. <a href="#" onclick="recUndo();return false;" style="color:var(--accent);font-weight:600">Undo</a>';
+  // ── Persistent Undo-after-delete ──
+  // The deleted row is kept in recUndoTx and shown in the rec-undo-bar, which
+  // is REDRAWN on every renderRecords — so switching tabs, reloading, or a
+  // stray tap does NOT lose the Undo. It clears only when: the owner taps Undo,
+  // deletes another entry (that becomes the new undoable), or ~5 minutes pass.
+  var recUndoTx = null, recUndoLabel = "", recUndoTimer = null;
+  function recSetUndo(tx, label) {
+    recUndoTx = tx; recUndoLabel = label || "entry";
     if (recUndoTimer) clearTimeout(recUndoTimer);
-    recUndoTimer = setTimeout(function () {
-      recUndoTx = null;
-      if (msg.textContent.indexOf("Deleted") === 0) msg.textContent = "";
-    }, 7000);
+    recUndoTimer = setTimeout(function () { recUndoTx = null; recRenderUndoBar(); }, 300000);
+    recRenderUndoBar();
+  }
+  function recRenderUndoBar() {
+    var bar = document.getElementById("rec-undo-bar");
+    if (!bar) return;
+    if (!recUndoTx) { bar.classList.add("hidden"); return; }
+    var txt = document.getElementById("rec-undo-text");
+    if (txt) txt.textContent = "Deleted \u201c" + recUndoLabel + "\u201d.";
+    bar.classList.remove("hidden");
   }
   window.recUndo = function () {
     if (!recUndoTx) return;
-    var tx = recUndoTx; recUndoTx = null;
-    if (recUndoTimer) { clearTimeout(recUndoTimer); recUndoTimer = null; }
-    var msg = document.getElementById("rec-msg");
-    if (msg) msg.textContent = "Restoring…";
+    var tx = recUndoTx;
+    var txt = document.getElementById("rec-undo-text");
+    if (txt) txt.textContent = "Restoring\u2026";
     apiPost("api/restore-transaction", { tx: tx })
       .then(function () {
         if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
-        if (msg) msg.textContent = "";
+        recUndoTx = null;
+        if (recUndoTimer) { clearTimeout(recUndoTimer); recUndoTimer = null; }
+        recRenderUndoBar();
         loadRecords();
         loadSummary();
       })
       .catch(function (e) {
-        if (msg) msg.textContent = (e && e.message) || "Could not undo.";
+        if (txt) txt.textContent = (e && e.message) || "Could not undo — tap Undo again.";
       });
   };
   // ── Edit a recorded transaction ──
