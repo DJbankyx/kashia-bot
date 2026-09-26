@@ -134,12 +134,16 @@ def lambda_handler(event, context):
                           f"(billed per {period_word}).\n\n") if renew_on else ""
         except Exception:
             renew_line = ""
-        # NB: do NOT wrap the reference in *bold*/_italic_ — Paystack refs are
-        # full of underscores (kashia_basic_monthly_tg_..._...), and Telegram's
-        # Markdown reads each "_" as an italic delimiter, so an underscore-laden
-        # ref in markup produces "can't parse entities" and the whole message is
-        # rejected (user paid, upgrade happened, but got NO confirmation). Keep
-        # the ref on its own plain line.
+        # NB: the reference is FULL of underscores (kashia_basic_monthly_tg_..._...).
+        # send_text() renders with Telegram parse_mode=Markdown, which reads each
+        # "_" as an italic delimiter — an odd count = unterminated entity = HTTP
+        # 400 "can't parse entities", and the WHOLE confirmation is rejected (the
+        # user paid + was upgraded but got NO message). Putting the ref on its own
+        # line does NOT help: Markdown ignores line boundaries. Escape every "_"
+        # (and "*") in the ref so Markdown treats it as literal text. Verified the
+        # only underscores in this message live in the ref; the *bold* labels are
+        # balanced.
+        safe_ref = str(reference).replace("\\", "\\\\").replace("_", "\\_").replace("*", "\\*")
         client.send_text(recipient, (
             f"🎉 *Upgrade Successful!*\n\n"
             f"You're now on the *{plan_name}* plan ({period_word}ly).\n\n"
@@ -149,7 +153,7 @@ def lambda_handler(event, context):
             f"✅ PDF financial statements\n\n"
             f"{renew_line}"
             f"Thank you for supporting Kashia! 🙏\n\n"
-            f"Ref: {reference}"
+            f"Ref: {safe_ref}"
         ))
 
         logger.info(f"User upgraded: {phone_number} → {plan_name}/{period}")
