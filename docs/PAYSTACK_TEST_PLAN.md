@@ -110,3 +110,52 @@ python verify_trial.py <user_id> --simulate-days 20 --commit   # persist backdat
 - New payment → success message now arrives in the bot.
 - Duplicate webhook (replay) → rejected as `duplicate` (guard now has IAM).
 - Usage screen shows the subscription window for the paid account.
+
+---
+
+## Re-test 2026-09-26 — confirmation message STILL failing; real fix (commit `c576ad3`)
+
+Owner reported the same confusion again: after paying with test Paystack, the
+bot unlocked documents/features but showed **no confirmation message**. Pulled
+the actual `kashia-paystack-webhook-dev` CloudWatch logs — every payment (incl.
+Sept 26 `pro/quarterly`) shows the identical pattern:
+
+```
+Payment received: tg:1072412276 → pro/quarterly ... ref=kashia_pro_quarterly_tg_1072412276_...
+User tg:1072412276 upgraded to pro (quarterly); ends 2026-12-25
+[ERROR] Telegram sendMessage non-retryable error: 400 - can't parse entities:
+        Can't find end of the entity starting at byte offset 302
+User upgraded: tg:1072412276 → Pro/quarterly
+```
+
+So **payment + upgrade always worked**; only the confirmation `send_text` failed.
+
+**Why `ee36588` did NOT fix it.** That commit moved the ref onto its own plain
+line, on the theory that the markup was the problem. But `telegram_client.
+send_text` hard-codes `parse_mode=Markdown` for EVERY message, and Markdown
+parses the whole string — it does not care about line boundaries. The ref
+`kashia_pro_quarterly_tg_1072412276_1790383566` contains 5 underscores (odd),
+each read as an italic delimiter → unterminated entity → the entire message is
+rejected with 400. Byte offset 302/308/311 in the errors lands exactly inside
+the ref. Reconstructing the real payload confirmed: asterisks 6 (balanced),
+underscores 5 (UNbalanced).
+
+**Real fix (`c576ad3`).** Escape `_`, `*`, and `\` in the reference before
+sending, so Markdown treats it as literal text; the `*bold*` labels stay
+balanced. Re-verified against the real Sept-26 payload: 0 unescaped underscores,
+`MARKDOWN_OK`.
+
+**Guardrail:** any Telegram message built with `parse_mode=Markdown` that embeds
+a raw id / reference / underscore-heavy token MUST escape it (or be sent as
+plain text). Putting the token on its own line is NOT sufficient.
+
+**Idempotency IAM (item #2 above):** the same log history showed the Sept-23
+`AccessDeniedException` on `kashia-transactions-dev`, but Sept-26 runs no longer
+show it — so the `ee36588` TransactionsTable CRUD grant appears deployed now.
+Confirm after this deploy that a duplicate/replayed webhook logs `DUPLICATE
+ignored` (it did on Sept 23 17:56 once the guard could write).
+
+### Verify after deploying `c576ad3`
+- [ ] New test payment → "🎉 Upgrade Successful!" message ARRIVES in the bot.
+- [ ] Log shows NO `can't parse entities` error after `User ... upgraded`.
+- [ ] Duplicate webhook → `Paystack webhook DUPLICATE ignored` (idempotency IAM).
