@@ -3420,24 +3420,33 @@ _PAGE_HTML = """<!doctype html>
     if (txt) txt.textContent = "Deleted \u201c" + recUndoLabel + "\u201d.";
     bar.classList.remove("hidden");
   }
+  // Force-hide the Undo bar and forget the undoable row. Used by a hard timer
+  // so "Restoring…" can NEVER stick on screen, even if the network response is
+  // slow or never resolves.
+  function recClearUndo() {
+    recUndoTx = null;
+    if (recUndoTimer) { clearTimeout(recUndoTimer); recUndoTimer = null; }
+    recRenderUndoBar();
+  }
   window.recUndo = function () {
     if (!recUndoTx) return;
     var tx = recUndoTx;
     var txt = document.getElementById("rec-undo-text");
     if (txt) txt.textContent = "Restoring\u2026";
+    // Guaranteed auto-clear: whatever happens with the request, wipe the bar
+    // after 5s so the "Restoring…" label always disappears (the fix the owner
+    // asked for). Success clears it sooner via the .then below.
+    if (recUndoTimer) { clearTimeout(recUndoTimer); }
+    recUndoTimer = setTimeout(recClearUndo, 5000);
     apiPost("api/restore-transaction", { tx: tx })
       .then(function () {
         if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
-        recUndoTx = null;
-        if (recUndoTimer) { clearTimeout(recUndoTimer); recUndoTimer = null; }
-        // Hide the bar immediately (don't leave a stuck "Restoring…"), THEN
-        // reload — loadRecords repaints the list and re-runs recRenderUndoBar,
-        // which now hides the bar because recUndoTx is null.
-        recRenderUndoBar();
+        recClearUndo();     // hide immediately on success
         loadRecords();
         loadSummary();
       })
       .catch(function (e) {
+        // On failure, show the error briefly but still let the 5s timer clear it.
         if (txt) txt.textContent = (e && e.message) || "Could not undo — tap Undo again.";
       });
   };
