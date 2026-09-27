@@ -323,3 +323,46 @@ the Pro plan!" — the tier gate working as intended. No change.
 **Verified:** `check_syntax.py` OK (catalog/transactions/router/main); miniapp
 `PYC_OK`, built-page UTF-8 encode OK, 0 lone surrogates, esprima `JS_PARSE_OK`
 (131316 chars).
+
+---
+
+## Testing round 4 — UX polish + a units design call (2026-09-26, commit `265b54c`)
+
+**1. Clearer chat free-text hint.** The "type what you bought/sold" reply
+(`transactions.py`) was one terse line. Now lists three concrete examples — a
+sale, a purchase, and an expense — so a new user sees the shape of a valid entry.
+Shared engine, so both Telegram and WhatsApp get it.
+
+**2. Record-form name box scoped by type.** The mini-app `rec-who` autocomplete
+merged all contacts. Now it suggests names scoped to the record type (sale →
+customers, purchase → suppliers, expense → payees; falls back to all if a bucket
+is empty) and re-scopes when the type chip changes. The native `<datalist>` does
+the substring/closest-match filtering. This cuts duplicate contacts created under
+the wrong role.
+
+**3. Produce unit selector — and a deliberate design call.** The produce form
+showed no unit choice. It now shows the product's base unit + its TAUGHT
+conversions (`unit_defs`). We considered a free-text "type a new unit" option but
+REJECTED it: the engine has no way to relate an untaught unit to the base, so
+`produce_web` already rejects it ("cannot convert X to <base> — set up that
+conversion first"). Offering a free box would just be a dead-end that fails at
+save. Instead, the hint tells the owner to teach the new unit once in the
+product's Units & conversions, after which it appears in the dropdown
+automatically. (Credit: the owner spotted this foot-gun before it shipped.)
+Guardrail: a produce/sale/purchase unit choice must be the base unit or a taught
+`unit_defs` unit — never free text.
+
+**4. Build stamp.** The app footer now shows the live build id. `deploy.sh`
+stamps the deploy timestamp into the MiniApp `BUILD_STAMP` env var
+(`template.yaml`), and the `/app` handler substitutes `__BUILD_STAMP__` into the
+page at serve time. This settles "did my change deploy / is Telegram caching the
+old app?" — check the footer against the expected build.
+
+On the recurring "Restoring… still showing": the `cfeac45` 5-second auto-clear IS
+deployed (verified the live page contains `recClearUndo` + the timer). If it still
+sticks after a fresh deploy + reopening the app, it's the old cached WebView — the
+new footer build stamp will make that obvious.
+
+**Verified:** `check_syntax.py` OK; miniapp `PYC_OK`; built page (with the stamp
+substituted) UTF-8 encodes; 0 lone surrogates; placeholder replaced; esprima
+`JS_PARSE_OK` (133616 chars).
