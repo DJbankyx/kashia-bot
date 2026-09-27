@@ -245,6 +245,9 @@ def lambda_handler(event, context):
         # ── Writes (CRM: record a debt payment / collection) ──
         if method == "POST" and path.endswith("/app/api/debt-payment"):
             return _debt_payment_write(event, user_id)
+        # ── Writes (payment collection: create a Paystack pay-link) ──
+        if method == "POST" and path.endswith("/app/api/payment-request"):
+            return _payment_request_write(event, user_id)
         # ── Writes (Stage 2: recipe/BOM add/remove material) ──
         if method == "POST" and path.endswith("/app/api/recipe"):
             return _recipe_write(event, user_id)
@@ -1556,6 +1559,52 @@ def _debt_payment_write(event, user_id: str):
         return _json(500, {"error": "could not record the payment"})
 
 
+def _payment_request_write(event, user_id: str):
+    """Create a Paystack payment-collection link (Phase 4). Body:
+    {amount, description?, customer?}. Mints the link via
+    PaystackService.initialize_collection and persists a PaymentRequest so the
+    webhook can auto-mark it paid. Returns {ok, payment_url, reference}. The
+    owner forwards the link to the customer (v1 — we don't message them directly).
+    """
+    from services.database import Database
+    from services.paystack import PaystackService
+    import uuid as _uuid
+
+    data = _parse_body(event)
+    try:
+        from utils.money import money_round
+        amount = money_round(data.get("amount") or 0)   # kobo-precise (naira)
+    except (TypeError, ValueError):
+        return _json(400, {"error": "amount must be a number"})
+    if amount <= 0:
+        return _json(400, {"error": "enter an amount greater than 0"})
+    description = (data.get("description") or "").strip() or "Payment"
+    customer = (data.get("customer") or "").strip()
+
+    payreq_id = "payreq#" + _uuid.uuid4().hex[:12]
+    svc = PaystackService()
+    res = svc.initialize_collection(user_id, float(amount), description, payreq_id,
+                                    customer_name=customer or None)
+    if not res.get("success"):
+        return _json(502, {"error": res.get("error") or "could not create the pay-link"})
+
+    ref = res["reference"]
+    url = res["payment_url"]
+    db = Database()
+    stored = db.create_payment_request(
+        user_id, float(amount), description, payreq_id, ref,
+        customer_name=customer or None, payment_url=url)
+    if not stored:
+        # The link exists but we couldn't persist the request → the webhook won't
+        # find it to auto-mark paid. Fail loudly rather than hand out a link that
+        # won't reconcile.
+        return _json(500, {"error": "could not save the payment request — try again"})
+
+    return _json(200, {"ok": True, "payment_url": url, "reference": ref,
+                       "amount": amount, "customer": customer,
+                       "description": description})
+
+
 def _png_data_uri(path: str):
     """Read a PNG file and return a base64 data URI, or None. Returned inside a
     JSON body (data URI) so we avoid API Gateway binary-media-type config — the
@@ -1938,7 +1987,37 @@ _PAGE_HTML = """<!doctype html>
       <div id="cd-txlist"><div class="muted">Loading…</div></div>
       <div class="actions">
         <button class="btn cancel" onclick="closeContact()">Close</button>
+        <button class="btn hidden" id="cd-paylink" onclick="cdGetPayLink()" style="background:var(--card);border:1px solid var(--line)">💳 Get pay-link</button>
         <button class="btn save hidden" id="cd-pay" onclick="cdRecordPayment()">💵 Record payment</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Payment-collection sheet: create a Paystack pay-link to send the customer -->
+  <div id="payLinkOverlay" class="overlay hidden">
+    <div class="sheet">
+      <h2>💳 Request payment</h2>
+      <div class="sub2" id="pl-sub">Create a link the customer can pay online.</div>
+      <div class="field" style="margin-top:12px">
+        <label>Amount (₦)</label>
+        <input id="pl-amount" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 2500">
+      </div>
+      <div class="field">
+        <label>What's it for?</label>
+        <input id="pl-desc" placeholder="e.g. Invoice, 5 bags of rice">
+      </div>
+      <div class="sheeterr" id="pl-err"></div>
+      <!-- Result: the pay-link to copy/forward -->
+      <div id="pl-result" class="hidden" style="margin-top:12px">
+        <div class="sub2">Send this link to the customer. When they pay, it's recorded automatically.</div>
+        <div style="display:flex;gap:6px;margin-top:6px">
+          <input id="pl-url" readonly style="flex:1;font-size:12px">
+          <button class="btn save" id="pl-copy" onclick="plCopy()" style="flex:0 0 auto;padding:8px 12px">Copy</button>
+        </div>
+      </div>
+      <div class="actions" style="margin-top:16px">
+        <button class="btn cancel" onclick="closePayLink()">Close</button>
+        <button class="btn save" id="pl-create" onclick="plCreate()">Create link</button>
       </div>
     </div>
   </div>
@@ -2972,6 +3051,13 @@ window.onerror = function (msg, src, line, col, err) {
       debtCard.classList.add("hidden");
       payBtn.classList.add("hidden");
     }
+    // "Get pay-link" — for anyone you'd COLLECT from (a customer / someone who
+    // owes you). Hidden for a pure supplier you only owe (you don't bill them).
+    var payLinkBtn = document.getElementById("cd-paylink");
+    if (payLinkBtn) {
+      var canBill = (c.owes_me > 0) || (String(c.type || "").indexOf("supplier") === -1);
+      payLinkBtn.classList.toggle("hidden", !canBill);
+    }
 
     var phoneEl = document.getElementById("cd-phone");
     if (c.phone) { phoneEl.textContent = "📞 " + c.phone; phoneEl.classList.remove("hidden"); }
@@ -3032,6 +3118,66 @@ window.onerror = function (msg, src, line, col, err) {
     // "in" = they owe me (collect); "out" = I owe them (repay).
     if (c.owes_me > 0) openPay(c.name, c.owes_me, "in");
     else if (c.i_owe > 0) openPay(c.name, c.i_owe, "out");
+  };
+
+  // ── Payment collection: create a Paystack pay-link for this customer ──
+  var plCtx = null;   // {name}
+  window.cdGetPayLink = function () {
+    if (!cdCtx) return;
+    plCtx = { name: cdCtx.name || "" };
+    closeContact();
+    document.getElementById("pl-sub").textContent =
+      plCtx.name ? ("Create a link " + plCtx.name + " can pay online.")
+                 : "Create a link the customer can pay online.";
+    // Prefill the amount with what they owe (common case: collect a debt).
+    document.getElementById("pl-amount").value =
+      (cdCtx && cdCtx.owes_me > 0) ? cdCtx.owes_me : "";
+    document.getElementById("pl-desc").value = "";
+    document.getElementById("pl-err").textContent = "";
+    document.getElementById("pl-result").classList.add("hidden");
+    document.getElementById("pl-create").disabled = false;
+    document.getElementById("payLinkOverlay").classList.remove("hidden");
+  };
+  window.closePayLink = function () {
+    document.getElementById("payLinkOverlay").classList.add("hidden");
+    plCtx = null;
+  };
+  window.plCreate = function () {
+    var err = document.getElementById("pl-err");
+    err.textContent = "";
+    var amt = parseFloat(document.getElementById("pl-amount").value);
+    if (!(amt > 0)) { err.textContent = "Enter an amount greater than 0."; return; }
+    var desc = (document.getElementById("pl-desc").value || "").trim();
+    var btn = document.getElementById("pl-create");
+    btn.disabled = true; btn.textContent = "Creating…";
+    apiPost("api/payment-request", {
+      amount: amt, description: desc, customer: (plCtx && plCtx.name) || ""
+    })
+      .then(function (r) {
+        btn.textContent = "Create link";
+        var urlBox = document.getElementById("pl-url");
+        urlBox.value = r.payment_url || "";
+        document.getElementById("pl-result").classList.remove("hidden");
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+      })
+      .catch(function (e) {
+        btn.disabled = false; btn.textContent = "Create link";
+        err.textContent = (e && e.message) || "Could not create the link.";
+      });
+  };
+  window.plCopy = function () {
+    var urlBox = document.getElementById("pl-url");
+    urlBox.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) {}
+    // Modern clipboard API where available (execCommand is deprecated).
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(urlBox.value).then(function () {}, function () {});
+      ok = true;
+    }
+    var b = document.getElementById("pl-copy");
+    b.textContent = ok ? "Copied!" : "Select + copy";
+    setTimeout(function () { b.textContent = "Copy"; }, 2000);
   };
 
   // ── Debt-payment sheet (CRM write) ──
