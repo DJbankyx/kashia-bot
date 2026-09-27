@@ -2224,8 +2224,16 @@ _PAGE_HTML = """<!doctype html>
       </div>
       <div class="field">
         <label id="rec-who-label">Customer (optional)</label>
-        <input id="rec-who" placeholder="name" list="rec-who-list" autocomplete="off">
-        <datalist id="rec-who-list"></datalist>
+        <!-- Custom tappable dropdown (NOT a native <datalist> — on mobile that
+             only feeds the keyboard suggestion strip, which is fragile and
+             vanishes on a tap). This is a real positioned list that filters as
+             you type, is tappable, and still lets you type a brand-new name. -->
+        <div style="position:relative">
+          <input id="rec-who" placeholder="name" autocomplete="off"
+                 oninput="recWhoFilter()" onfocus="recWhoFilter()"
+                 onblur="recWhoBlur()">
+          <div id="rec-who-drop" class="hidden" style="position:absolute;left:0;right:0;top:100%;z-index:60;background:var(--card);border:1px solid var(--line);border-radius:10px;margin-top:4px;max-height:210px;overflow-y:auto;box-shadow:0 6px 20px rgba(0,0,0,.35)"></div>
+        </div>
         <div class="chips" id="rec-who-quick" style="margin-top:6px">
           <div class="chip" onclick="recWho('walkin')">🚶 Walk-in</div>
           <div class="chip" onclick="recWho('skip')">⏭️ Skip</div>
@@ -3443,9 +3451,7 @@ window.onerror = function (msg, src, line, col, err) {
     var showable = recUndoTx && undoType === recTabType;
     if (!showable) { bar.classList.add("hidden"); return; }
     var txt = document.getElementById("rec-undo-text");
-    // TEMP DEBUG: show the gate values so we can see why it (mis)renders.
-    if (txt) txt.textContent = "Deleted \u201c" + recUndoLabel + "\u201d. [dbg tab=" +
-      recTabType + " undoType=" + undoType + "]";
+    if (txt) txt.textContent = "Deleted \u201c" + recUndoLabel + "\u201d.";
     bar.classList.remove("hidden");
   }
   // Force-hide the Undo bar and forget the undoable row. Used by a hard timer
@@ -4858,21 +4864,20 @@ window.onerror = function (msg, src, line, col, err) {
     var el = document.getElementById("rec-who");
     if (!el) return;
     el.value = (mode === "walkin") ? "Walk-in customer" : "";
+    var drop = document.getElementById("rec-who-drop");
+    if (drop) { drop.classList.add("hidden"); drop.innerHTML = ""; }
     el.focus();
   };
-  // Fill the customer/supplier autocomplete datalist from already-recorded
-  // contacts, so the owner reuses an existing name instead of creating a near-
-  // duplicate ("John" vs "John A"). Loads contacts once if the CRM tab hasn't.
+  // Build the scoped name list for the CUSTOM dropdown (see #rec-who-drop). We
+  // moved off the native <datalist> because on mobile it only feeds the keyboard
+  // suggestion strip (fragile, vanishes on tap). recWhoNames holds the names
+  // relevant to the current record type; recWhoFilter renders the tappable list.
+  var recWhoNames = [];
   function recFillContacts() {
-    function paint() {
-      var dl = document.getElementById("rec-who-list");
-      if (!dl || !crmData) return;
-      // Suggest ONLY the names relevant to this record type so we don't mix
-      // roles (a sale suggests CUSTOMERS, a purchase SUPPLIERS, an expense
-      // PAYEES). Previously we included every bucket reordered, which showed
-      // customers under an expense — the owner flagged this. Only fall back to
-      // the full set if the relevant bucket is empty (so a fresh account still
-      // gets some help). Native datalist does the substring/closest-match.
+    function build() {
+      if (!crmData) { recWhoNames = []; return; }
+      // ONLY the names for this record type's role (sale→customers,
+      // purchase→suppliers, expense→payees); fall back to all if empty.
       var primary = (recTypeVal === "purchase") ? ["suppliers"]
                   : (recTypeVal === "expense") ? ["expense_payees"]
                   : ["customers"];
@@ -4887,17 +4892,49 @@ window.onerror = function (msg, src, line, col, err) {
       }
       collect(primary);
       if (!names.length) collect(["customers", "suppliers", "expense_payees"]);
-      dl.innerHTML = "";
-      names.forEach(function (n) {
-        var o = document.createElement("option");
-        o.value = n; dl.appendChild(o);
-      });
+      names.sort(function (a, b) { return a.localeCompare(b); });
+      recWhoNames = names;
     }
-    if (crmData) { paint(); return; }
-    // Lazy-load without flipping the CRM tab's loaded flag hard — just fetch.
-    api("api/contacts").then(function (d) { crmData = d; crmLoaded = true; paint(); })
-      .catch(function () { /* autocomplete is best-effort */ });
+    if (crmData) { build(); return; }
+    api("api/contacts").then(function (d) { crmData = d; crmLoaded = true; build(); })
+      .catch(function () { /* best-effort */ });
   }
+  // Render the tappable suggestion list under #rec-who, filtered by what's typed.
+  window.recWhoFilter = function () {
+    var input = document.getElementById("rec-who");
+    var drop = document.getElementById("rec-who-drop");
+    if (!input || !drop) return;
+    var q = (input.value || "").trim().toLowerCase();
+    // Substring match; if the box is empty, show all scoped names.
+    var matches = recWhoNames.filter(function (n) {
+      return !q || n.toLowerCase().indexOf(q) !== -1;
+    }).slice(0, 8);
+    // Don't show a 1-item list that exactly equals what's typed (nothing to add).
+    if (!matches.length || (matches.length === 1 && matches[0].toLowerCase() === q)) {
+      drop.classList.add("hidden"); drop.innerHTML = ""; return;
+    }
+    drop.innerHTML = "";
+    matches.forEach(function (n) {
+      var row = document.createElement("div");
+      row.textContent = n;
+      row.style.cssText = "padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--line)";
+      // mousedown (not click) fires BEFORE the input's blur, so the pick lands.
+      row.addEventListener("mousedown", function (e) {
+        e.preventDefault();
+        input.value = n;
+        drop.classList.add("hidden"); drop.innerHTML = "";
+      });
+      drop.appendChild(row);
+    });
+    drop.classList.remove("hidden");
+  };
+  // Hide the dropdown shortly after blur (delay lets a tap register first).
+  window.recWhoBlur = function () {
+    setTimeout(function () {
+      var drop = document.getElementById("rec-who-drop");
+      if (drop) { drop.classList.add("hidden"); }
+    }, 150);
+  };
   window.saveRecord = function () {
     var err0 = document.getElementById("rec-err");
     // PRODUCE: a separate, simpler path — pick a finished good, enter quantity
