@@ -256,13 +256,16 @@ function in template.yaml as part of the first code phase's deploy.
   round-trip (create request → simulate paid → sale recorded + debt settled +
   request marked paid) with a fake db, like the existing verify scripts.
 
-**Phase 2 — webhook branch:**
-- `purpose`-dispatch + `_handle_collection_paid`, reusing the shared idempotency
-  claim for BOTH purposes.
-- template.yaml: ContactsTable CRUD on `PaystackWebhookFunction` (⚠️ deploy).
-- Verify: signature/base64 path unchanged for subscriptions; a collection charge
-  records the sale + settles debt + notifies; a duplicate webhook → 200 duplicate;
-  a post-claim failure → 500 + release (retry re-processes).
+**Phase 2 — webhook branch: ✅ DONE (commit 5842047, 2026-09-27).**
+- `purpose`-dispatch + `_handle_collection` in `src/handlers/paystack_webhook.py`,
+  reusing the shared `claim_web_submit(reference)` idempotency claim.
+- Records a paid sale; AUTO-SETTLES the customer's receivable when
+  `debt_owed_to_me > 0` (else a fresh paid sale); marks the PaymentRequest paid;
+  notifies the owner (Markdown-escaped ref).
+- Post-claim failure → release claim + 500 (Paystack retries); notify best-effort.
+- template.yaml: ContactsTable CRUD added to `PaystackWebhookFunction` (⚠️ deploy).
+- Verified: check_syntax OK; webhook PYC_OK; fakes round-trip green (fresh sale /
+  auto-settle / duplicate rejected). Real TEST-mode payment still to run post-deploy.
 
 **Phase 3 — Telegram chat surface:**
 - A "💳 Request payment" action (e.g. under a customer / after an invoice) →
