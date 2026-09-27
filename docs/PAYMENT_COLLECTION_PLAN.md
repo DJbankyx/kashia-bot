@@ -267,10 +267,14 @@ function in template.yaml as part of the first code phase's deploy.
 - Verified: check_syntax OK; webhook PYC_OK; fakes round-trip green (fresh sale /
   auto-settle / duplicate rejected). Real TEST-mode payment still to run post-deploy.
 
-**Phase 3 — Telegram chat surface:**
-- A "💳 Request payment" action (e.g. under a customer / after an invoice) →
-  ask amount + description (+ optional customer) → create request → send the
-  owner the pay-link to forward (escaped per §7). Telegram-gated.
+**Phase 3 — chat surface: ✅ DONE (commit 1953dd5, 2026-09-27).**
+- `features/payment_collection.py` `PaymentCollectionHandler` — guided flow:
+  amount → description → optional customer → mints the pay-link (reuses
+  `initialize_collection` + `create_payment_request`) and hands the owner the
+  link to forward. `states.REQUEST_PAYMENT`; router dispatch; `main.py` wires it
+  with a `PaystackService()`; `button_dispatcher` `menu_request_payment` entry.
+- Pay-link sent as a bare URL inside a Markdown message (no wrapping markup to
+  break; `disable_web_page_preview` already set). Shared engine (both platforms).
 
 **Phase 4 — Mini App surface: ✅ DONE (commit bfb2e5b, 2026-09-27).**
 - `POST /app/api/payment-request` on MiniAppFunction (⚠️ new route → deploy) +
@@ -286,9 +290,15 @@ function in template.yaml as part of the first code phase's deploy.
   post-deploy (see §9). "Pending links" view moved to Phase 5.
 
 **Phase 5 — polish:**
-- "Pending payment links" view with cancel/expire.
-- Receipt PDF auto-generated on paid (reuse `generate_receipt(transaction_id)`).
-- Optional: link a generated invoice PDF's number to the request for a clean
+- ✅ 5b "Payment links" view (commit 1953dd5): Mini App CRM-tab overlay listing
+  created links with status badges + Copy/Cancel on pending ones.
+  `db.cancel_payment_request` (pending→cancelled only), `GET
+  /app/api/payment-requests`, `POST /app/api/cancel-payment-request`.
+- ⏸️ 5a receipt-on-paid — DEFERRED by design. Wiring PDF+S3 into the
+  money-critical Paystack webhook is too much blast radius for a nice-to-have;
+  the webhook already sends a text confirmation. Revisit as a Mini-App action on
+  the paid sale (MiniAppFunction already has S3 + the exporter), not in the webhook.
+- ⏭️ Optional: link a generated invoice PDF's number to the request for a clean
   "Invoice BFH-00012 — paid" story.
 
 ---
