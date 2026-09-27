@@ -157,6 +157,9 @@ class Router:
                 return self.quotes.handle(phone_number, text_stripped, session)
             return self.invoices.handle(phone_number, text_stripped, session)
 
+        if state == states.REQUEST_PAYMENT:
+            return self.payment_collection.handle(phone_number, text_stripped, session)
+
         if state == states.EXPORTING:
             return self.export.handle(phone_number, text_stripped, session)
 

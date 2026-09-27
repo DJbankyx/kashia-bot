@@ -549,6 +549,31 @@ class Database:
             logger.error(f"mark_payment_request_paid failed: {e}")
             return False
 
+    def cancel_payment_request(self, phone_number, payreq_id):
+        """Cancel a PENDING payment request (owner no longer wants the link).
+        Only flips pending→cancelled; a paid request is left untouched. Returns
+        True if cancelled, False otherwise. Never raises."""
+        try:
+            req = self.get_payment_request(phone_number, payreq_id)
+            if not req:
+                return False
+            if str(req.get("status")) != "pending":
+                return False   # don't cancel a paid/already-cancelled one
+            self.transactions.update_item(
+                Key={"phone_number": phone_number, "transaction_id": payreq_id},
+                UpdateExpression="SET #s = :c, cancelled_at = :ca",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={
+                    ":c": "cancelled",
+                    ":ca": datetime.now().isoformat(),
+                },
+            )
+            logger.info(f"Cancelled payment request {payreq_id}")
+            return True
+        except Exception as e:
+            logger.error(f"cancel_payment_request failed: {e}")
+            return False
+
     def list_payment_requests(self, phone_number, status=None, limit=50):
         """List an owner's payment requests (newest first), optionally filtered by
         status ('pending'/'paid'/'cancelled'). Queries the user's rows + filters

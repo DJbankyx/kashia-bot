@@ -104,6 +104,7 @@ class ButtonDispatcher:
             "menu_contacts": lambda: r.contacts.show(phone_number),
             "menu_export": lambda: r.export.show_options(phone_number),
             "menu_invoice": lambda: r.invoices.start(phone_number),
+            "menu_request_payment": lambda: r.payment_collection.start(phone_number),
             "menu_home": lambda: r._show_home_menu(phone_number),
         }
 

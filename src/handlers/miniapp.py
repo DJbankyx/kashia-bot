@@ -248,6 +248,10 @@ def lambda_handler(event, context):
         # ── Writes (payment collection: create a Paystack pay-link) ──
         if method == "POST" and path.endswith("/app/api/payment-request"):
             return _payment_request_write(event, user_id)
+        if method == "POST" and path.endswith("/app/api/cancel-payment-request"):
+            return _cancel_payment_request_write(event, user_id)
+        if method == "GET" and path.endswith("/app/api/payment-requests"):
+            return _payment_requests_read(event, user_id)
         # ── Writes (Stage 2: recipe/BOM add/remove material) ──
         if method == "POST" and path.endswith("/app/api/recipe"):
             return _recipe_write(event, user_id)
@@ -1605,6 +1609,43 @@ def _payment_request_write(event, user_id: str):
                        "description": description})
 
 
+def _payment_requests_read(event, user_id: str):
+    """List the owner's payment requests (Phase 5b), newest first. Optional
+    ?status=pending|paid|cancelled. Trimmed to the fields the list needs."""
+    from services.database import Database
+    params = event.get("queryStringParameters") or {}
+    status = (params.get("status") or "").strip().lower() or None
+    db = Database()
+    rows = db.list_payment_requests(user_id, status=status, limit=50)
+    out = []
+    for r in rows:
+        out.append({
+            "payreq_id": str(r.get("transaction_id") or ""),
+            "status": str(r.get("status") or ""),
+            "amount": int(float(r.get("amount") or 0)),
+            "description": str(r.get("description") or ""),
+            "customer": str(r.get("customer_name") or ""),
+            "payment_url": str(r.get("payment_url") or ""),
+            "created_at": str(r.get("created_at") or "")[:10],
+            "paid_at": str(r.get("paid_at") or "")[:10],
+        })
+    return _json(200, {"ok": True, "requests": out})
+
+
+def _cancel_payment_request_write(event, user_id: str):
+    """Cancel a PENDING payment request (Phase 5b). Body: {payreq_id}."""
+    from services.database import Database
+    data = _parse_body(event)
+    payreq_id = str(data.get("payreq_id") or "").strip()
+    if not payreq_id:
+        return _json(400, {"error": "payreq_id required"})
+    db = Database()
+    ok = db.cancel_payment_request(user_id, payreq_id)
+    if not ok:
+        return _json(400, {"error": "could not cancel — it may be paid or already cancelled"})
+    return _json(200, {"ok": True, "payreq_id": payreq_id})
+
+
 def _png_data_uri(path: str):
     """Read a PNG file and return a base64 data URI, or None. Returned inside a
     JSON body (data URI) so we avoid API Gateway binary-media-type config — the
@@ -1964,9 +2005,25 @@ _PAGE_HTML = """<!doctype html>
       <div class="chip" data-cd="suppliers" onclick="crmSetDir('suppliers')">🏭 Suppliers</div>
       <div class="chip" data-cd="expenses" onclick="crmSetDir('expenses')">🧾 Expenses</div>
     </div>
+    <div style="text-align:right;margin:2px 0 6px">
+      <button class="linkbtn" onclick="openPaymentLinks()" style="font-size:13px;color:var(--hint)">💳 Payment links</button>
+    </div>
     <input class="search" id="crmsearch" placeholder="Search people..." oninput="renderCrm()">
     <div id="crmlists"><div class="muted">Loading...</div></div>
     <div id="crmmsg" class="muted"></div>
+  </div>
+
+  <!-- Payment-links overlay: the owner's created pay-links + their status.
+       Pending ones can be copied or cancelled; paid ones show as recorded. -->
+  <div id="paymentLinksOverlay" class="overlay hidden">
+    <div class="sheet">
+      <h2>💳 Payment links</h2>
+      <div class="sub2">Links you've created. Paid ones are recorded automatically.</div>
+      <div id="pll-list" style="margin-top:12px"><div class="muted">Loading…</div></div>
+      <div class="actions" style="margin-top:16px">
+        <button class="btn cancel" onclick="closePaymentLinks()">Close</button>
+      </div>
+    </div>
   </div>
 
   <!-- Contact detail sheet -->
@@ -3178,6 +3235,82 @@ window.onerror = function (msg, src, line, col, err) {
     var b = document.getElementById("pl-copy");
     b.textContent = ok ? "Copied!" : "Select + copy";
     setTimeout(function () { b.textContent = "Copy"; }, 2000);
+  };
+
+  // ── Payment-links list (Phase 5b): see created links + status, cancel pending ──
+  window.openPaymentLinks = function () {
+    document.getElementById("paymentLinksOverlay").classList.remove("hidden");
+    var list = document.getElementById("pll-list");
+    list.innerHTML = '<div class="muted">Loading\u2026</div>';
+    api("api/payment-requests")
+      .then(function (d) { renderPaymentLinks((d && d.requests) || []); })
+      .catch(function (e) {
+        list.innerHTML = '<div class="err">' + escapeHtml((e && e.message) || "Could not load") + '</div>';
+      });
+  };
+  window.closePaymentLinks = function () {
+    document.getElementById("paymentLinksOverlay").classList.add("hidden");
+  };
+  function renderPaymentLinks(rows) {
+    var list = document.getElementById("pll-list");
+    if (!rows.length) {
+      list.innerHTML = '<div class="muted">No payment links yet. Create one from a customer\u2019s card.</div>';
+      return;
+    }
+    var BADGE = { pending: "\u23f3 Pending", paid: "\u2705 Paid", cancelled: "\u2716 Cancelled" };
+    list.innerHTML = "";
+    var card = document.createElement("div");
+    card.className = "card"; card.style.padding = "4px 0";
+    rows.forEach(function (r) {
+      var div = document.createElement("div");
+      div.className = "item"; div.style.alignItems = "center";
+      var info = document.createElement("div");
+      info.style.flex = "1";
+      var meta = [(BADGE[r.status] || r.status)];
+      if (r.customer) meta.push(escapeHtml(r.customer));
+      meta.push(escapeHtml(r.created_at || ""));
+      info.innerHTML = '<div class="name">' + escapeHtml(r.description || "Payment") + '</div>' +
+        '<div class="meta">' + meta.join(" \u00b7 ") + '</div>';
+      var right = document.createElement("div");
+      right.className = "right"; right.style.gap = "6px"; right.style.alignItems = "center";
+      var amt = document.createElement("div");
+      amt.className = "stock"; amt.textContent = naira(r.amount || 0);
+      right.appendChild(amt);
+      // Pending links get Copy + Cancel; others are display-only.
+      if (r.status === "pending" && r.payment_url) {
+        var copy = document.createElement("button");
+        copy.className = "linkbtn"; copy.style.cssText = "padding:4px 8px;color:var(--accent)";
+        copy.textContent = "Copy";
+        copy.addEventListener("click", function () {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(r.payment_url).then(function () {}, function () {});
+          }
+          copy.textContent = "Copied!";
+          setTimeout(function () { copy.textContent = "Copy"; }, 1500);
+        });
+        var cancel = document.createElement("button");
+        cancel.className = "linkbtn"; cancel.style.cssText = "padding:4px 8px;color:var(--neg)";
+        cancel.textContent = "Cancel";
+        cancel.addEventListener("click", function () { pllCancel(r.payreq_id, cancel); });
+        right.appendChild(copy); right.appendChild(cancel);
+      }
+      div.appendChild(info); div.appendChild(right);
+      card.appendChild(div);
+    });
+    list.appendChild(card);
+  }
+  window.pllCancel = function (payreqId, btn) {
+    if (!payreqId) return;
+    btn.disabled = true; btn.textContent = "Cancelling\u2026";
+    apiPost("api/cancel-payment-request", { payreq_id: payreqId })
+      .then(function () { openPaymentLinks(); })   // refresh the list
+      .catch(function (e) {
+        btn.disabled = false; btn.textContent = "Cancel";
+        var err = document.createElement("div");
+        err.className = "err"; err.style.fontSize = "12px";
+        err.textContent = (e && e.message) || "Could not cancel";
+        btn.parentNode.appendChild(err);
+      });
   };
 
   // ── Debt-payment sheet (CRM write) ──

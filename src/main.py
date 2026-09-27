@@ -24,6 +24,8 @@ from features.catalog import CatalogHandler
 from features.contacts import ContactsHandler
 from features.export import ExportHandler
 from features.invoices import InvoiceHandler
+from features.payment_collection import PaymentCollectionHandler
+from services.paystack import PaystackService
 from features.profile import ProfileHandler
 from features.personal_info import PersonalInfoHandler
 from features.settings import SettingsHandler
@@ -106,6 +108,9 @@ class KashiaBot:
             self.router.session, self.db, self.export_service, self.pdf_generator
         )
         self.router.invoices = InvoiceHandler(self.router.session, self.db, self.pdf_generator)
+        self.router.payment_collection = PaymentCollectionHandler(
+            self.router.session, self.db, PaystackService()
+        )
         self.router.profile = ProfileHandler(
             self.router.session, self.db, self.router._get_industry_handler
         )
