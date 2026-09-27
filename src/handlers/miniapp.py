@@ -1966,7 +1966,7 @@ _PAGE_HTML = """<!doctype html>
     <div style="text-align:right;margin:2px 0 6px">
       <button class="linkbtn" onclick="openRecentlyDeleted()" style="font-size:13px;color:var(--hint)">🗑 Recently deleted</button>
     </div>
-    <div id="rec-undo-bar" class="hidden" style="margin:6px 0;padding:5px 6px 5px 10px;border-radius:8px;background:var(--card);border:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:8px">
+    <div id="rec-undo-bar" style="display:none;margin:6px 0;padding:5px 6px 5px 10px;border-radius:8px;background:var(--card);border:1px solid var(--line);align-items:center;justify-content:space-between;gap:8px">
       <span id="rec-undo-text" class="muted" style="flex:1;font-size:12px"></span>
       <button class="linkbtn" style="flex:0 0 auto;padding:3px 8px;font-size:13px;font-weight:600;color:var(--accent)" onclick="recUndo()">↩︎ Undo</button>
     </div>
@@ -3449,10 +3449,14 @@ window.onerror = function (msg, src, line, col, err) {
     // Production, which has no delete). The deleted row's own type is the gate.
     var undoType = recUndoTx ? String(recUndoTx.type || "") : "";
     var showable = recUndoTx && undoType === recTabType;
-    if (!showable) { bar.classList.add("hidden"); return; }
+    // NB: the bar has an INLINE display:flex, which OVERRIDES the .hidden class
+    // (.hidden{display:none} loses to an inline style). That's why adding/removing
+    // .hidden never actually hid the bar — it stayed visible on every tab incl.
+    // Production and kept a stuck "Restoring…". Toggle the inline display DIRECTLY.
+    if (!showable) { bar.style.display = "none"; return; }
     var txt = document.getElementById("rec-undo-text");
     if (txt) txt.textContent = "Deleted \u201c" + recUndoLabel + "\u201d.";
-    bar.classList.remove("hidden");
+    bar.style.display = "flex";
   }
   // Force-hide the Undo bar and forget the undoable row. Used by a hard timer
   // so "Restoring…" can NEVER stick on screen, even if the network response is
