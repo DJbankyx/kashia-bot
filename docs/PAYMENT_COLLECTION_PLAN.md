@@ -272,11 +272,18 @@ function in template.yaml as part of the first code phase's deploy.
   ask amount + description (+ optional customer) → create request → send the
   owner the pay-link to forward (escaped per §7). Telegram-gated.
 
-**Phase 4 — Mini App surface:**
-- `POST /app/api/payment-request` (⚠️ new route → deploy) + a "Get pay-link"
-  button on a customer / invoice. Show pending links + their status.
-- Standard mini-app verify: py_compile + check_syntax + built-page UTF-8/
-  0-surrogate scan + esprima on the served JS.
+**Phase 4 — Mini App surface: ✅ DONE (commit bfb2e5b, 2026-09-27).**
+- `POST /app/api/payment-request` on MiniAppFunction (⚠️ new route → deploy) +
+  a "💳 Get pay-link" button on the customer detail card (shown for anyone
+  billable, not a pure supplier). Sheet: amount (prefilled with what they owe) +
+  description → returns a copyable Paystack link the owner forwards.
+- `_payment_request_write` wraps `initialize_collection` + `create_payment_request`
+  (fails loudly if the request can't persist).
+- Also shipped: `make_paylink.py` (CLI to mint a link for TEST-mode testing
+  before the UI existed — kept as a dev tool).
+- Verified: check_syntax OK; miniapp PYC_OK; built-page encode OK / 0 surrogates;
+  pay-link UI present; esprima JS_PARSE_OK. Real TEST-mode payment still to run
+  post-deploy (see §9). "Pending links" view moved to Phase 5.
 
 **Phase 5 — polish:**
 - "Pending payment links" view with cancel/expire.
