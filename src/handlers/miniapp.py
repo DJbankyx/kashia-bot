@@ -2280,6 +2280,25 @@ _PAGE_HTML = """<!doctype html>
   </div>
 
 <script>
+// DIAGNOSTIC: surface ANY runtime JS error on-screen (Telegram WebViews hide the
+// console). If the app "loads but nothing works", the banner shows the real
+// error + line so we can fix it instead of guessing. Registered BEFORE the app
+// IIFE so it catches errors thrown during init too.
+window.onerror = function (msg, src, line, col, err) {
+  try {
+    var b = document.getElementById("js-err-banner");
+    if (!b) {
+      b = document.createElement("div");
+      b.id = "js-err-banner";
+      b.style.cssText = "position:fixed;left:0;right:0;bottom:0;z-index:9999;" +
+        "background:#ff5c5c;color:#fff;font:12px monospace;padding:8px 10px;" +
+        "white-space:pre-wrap;word-break:break-word";
+      document.body.appendChild(b);
+    }
+    b.textContent = "JS error: " + msg + " @ line " + line + ":" + col;
+  } catch (e) {}
+  return false;   // still log to console where available
+};
 (function () {
   var tg = window.Telegram && window.Telegram.WebApp;
   if (tg) { tg.ready(); tg.expand(); }
