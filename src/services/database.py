@@ -47,9 +47,31 @@ def _is_deleted(item) -> bool:
     return bool(item.get("deleted")) if isinstance(item, dict) else False
 
 
+def _is_housekeeping(item) -> bool:
+    """True for rows that live in the transactions table but are NOT real
+    transactions and must never appear in any transaction list/report:
+      - idempotency markers ("idem#<...>", type absent / idem flag)
+      - payment requests ("payreq#...", type 'payment_request') — the pending
+        pay-link record; the INCOME is the sale created when it's paid, not this.
+    Keyed defensively on both the id prefix and the type/flag."""
+    if not isinstance(item, dict):
+        return False
+    tid = str(item.get("transaction_id", ""))
+    if tid.startswith("idem#") or tid.startswith("payreq#"):
+        return True
+    if item.get("idem") is True:
+        return True
+    if item.get("type") == "payment_request":
+        return True
+    return False
+
+
 def _live(items):
-    """Filter out soft-deleted (archived) rows from a result list."""
-    return [it for it in (items or []) if not _is_deleted(it)]
+    """Filter out soft-deleted (archived) rows AND housekeeping rows (idempotency
+    markers, payment requests) from a result list — so no transaction
+    list/report ever counts them."""
+    return [it for it in (items or [])
+            if not _is_deleted(it) and not _is_housekeeping(it)]
 
 
 def generate_id():
@@ -439,6 +461,115 @@ class Database:
             )
         except Exception as e:
             logger.warning(f"release_web_submit failed: {e}")
+
+    # ==========================================
+    # PAYMENT COLLECTION (payment requests / pay-links)
+    # ==========================================
+    # A "payment request" is a small record tying {owner, amount, customer,
+    # optional debt link} to a Paystack pay-link. Stored in the TRANSACTIONS
+    # table under a NAMESPACED sort key ("payreq#<uuid>") with type
+    # 'payment_request' so it never collides with a real transaction or an
+    # idem# marker, and is EXCLUDED from every P&L/records/report reader (the
+    # income is the SALE created when it's paid, not the request itself).
+    # Lookup is a direct get_item — the Paystack reference carries the owner id +
+    # payreq id, so the webhook never has to scan.
+    # See docs/PAYMENT_COLLECTION_PLAN.md.
+
+    def create_payment_request(self, phone_number, amount, description,
+                               payreq_id, paystack_ref, customer_name=None,
+                               invoice_number=None, debt_contact=None,
+                               payment_url=None):
+        """Persist a pending payment request. `payreq_id` is the caller-generated
+        sort key ("payreq#<uuid>"); `paystack_ref` is the unique Paystack
+        reference. Money is kobo-precise. Returns the stored row, or None on
+        error (never raises)."""
+        from utils.money import money_round
+        try:
+            now = datetime.now()
+            item = {
+                "phone_number": phone_number,
+                "transaction_id": payreq_id,
+                "type": "payment_request",          # excluded from P&L/records
+                "status": "pending",
+                "amount": money_round(amount),
+                "description": str(description or ""),
+                "paystack_ref": str(paystack_ref or ""),
+                "created_at": now.isoformat(),
+                "date": now.strftime("%Y-%m-%d"),
+            }
+            if customer_name:
+                item["customer_name"] = str(customer_name)
+                item["vendor"] = str(customer_name)   # so CRM/readers see a name
+            if invoice_number:
+                item["invoice_number"] = str(invoice_number)
+            if debt_contact:
+                item["debt_link"] = {"contact": str(debt_contact)}
+            if payment_url:
+                item["payment_url"] = str(payment_url)
+            self.transactions.put_item(Item=self._sanitize_for_dynamo(item))
+            logger.info(f"Created payment request {payreq_id} for {phone_number} "
+                        f"(₦{amount} ref={paystack_ref})")
+            return item
+        except Exception as e:
+            logger.error(f"create_payment_request failed: {e}")
+            return None
+
+    def get_payment_request(self, phone_number, payreq_id):
+        """Direct fetch of a payment request by owner + payreq id. None if gone.
+        Note: this returns the row even if it were soft-deleted (raw get_item),
+        matching get_transaction — the webhook needs the authoritative row."""
+        try:
+            resp = self.transactions.get_item(
+                Key={"phone_number": phone_number, "transaction_id": payreq_id})
+            item = resp.get("Item")
+            if item and item.get("type") == "payment_request":
+                return item
+            return None
+        except Exception as e:
+            logger.error(f"get_payment_request failed: {e}")
+            return None
+
+    def mark_payment_request_paid(self, phone_number, payreq_id, paid_tx_id):
+        """Flip a payment request to paid + back-link the sale it produced.
+        Idempotent at the field level (safe to call twice). Returns True/False."""
+        try:
+            self.transactions.update_item(
+                Key={"phone_number": phone_number, "transaction_id": payreq_id},
+                UpdateExpression=("SET #s = :paid, paid_at = :pa, paid_tx_id = :tx"),
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={
+                    ":paid": "paid",
+                    ":pa": datetime.now().isoformat(),
+                    ":tx": str(paid_tx_id or ""),
+                },
+            )
+            logger.info(f"Payment request {payreq_id} marked paid (tx={paid_tx_id})")
+            return True
+        except Exception as e:
+            logger.error(f"mark_payment_request_paid failed: {e}")
+            return False
+
+    def list_payment_requests(self, phone_number, status=None, limit=50):
+        """List an owner's payment requests (newest first), optionally filtered by
+        status ('pending'/'paid'/'cancelled'). Queries the user's rows + filters
+        in memory (volume is low). Never raises."""
+        try:
+            from boto3.dynamodb.conditions import Key as _Key
+            resp = self.transactions.query(
+                KeyConditionExpression=_Key("phone_number").eq(phone_number))
+            items = resp.get("Items", [])
+            while "LastEvaluatedKey" in resp:
+                resp = self.transactions.query(
+                    KeyConditionExpression=_Key("phone_number").eq(phone_number),
+                    ExclusiveStartKey=resp["LastEvaluatedKey"])
+                items.extend(resp.get("Items", []))
+            reqs = [it for it in items if it.get("type") == "payment_request"
+                    and (status is None or it.get("status") == status)]
+            reqs.sort(key=lambda x: str(x.get("created_at", "")), reverse=True)
+            return reqs[:int(limit)]
+        except Exception as e:
+            logger.error(f"list_payment_requests failed: {e}")
+            return []
 
     # ==========================================
     # ACCOUNT TRANSFER / RECOVERY

@@ -301,21 +301,29 @@ CVV 408, PIN 0000, OTP 123456).
 
 ---
 
-## 10. Open questions for the owner
+## 10. Owner decisions — LOCKED (2026-09-26)
 
-1. **Where should "Request payment" live first** — on a customer card, after
-   generating an invoice, or a standalone "collect" action? (Drives Phase 3/4
-   ordering.)
-2. **Settle debt automatically on pay?** If the customer already owes (a credit
-   sale was recorded), paying the link should settle that receivable rather than
-   create a second sale. v1 assumes: if `customer_name` has an open receivable
-   >= amount, settle it (and log the collection as the settling sale, mirroring
-   `_apply_directed_payment`); otherwise record a fresh paid sale. Confirm.
-3. **Fees/markup** — v1 adds none (send exact amount). Revisit after real-merchant
-   willingness-to-pay testing, per the roadmap.
-4. **Link delivery** — does the owner forward the link to the customer themselves
-   (simplest, v1), or should Kashia message the customer directly (needs the
-   customer's contact + consent — later)?
+1. **First surface = the Mini App customer card.** "Get pay-link / Request
+   payment" lands on the customer detail view (which already shows history), and
+   the Mini App is easier to iterate than the chat flow. Chat surface (Phase 3)
+   comes after. → build order becomes Phase 1 → 2 → **4 (Mini App)** → 3 (chat).
+2. **Auto-settle debt on pay = YES.** If the paying `customer_name` has an open
+   receivable (`debt_owed_to_me > 0`), the paid link SETTLES it (mirroring
+   `debt._apply_directed_payment`: `settle_debt` + log the settling `sale`),
+   rather than creating a second unrelated sale. If there is NO open receivable,
+   record a fresh paid `sale`. This is the "free auto-reconciliation" hook the
+   roadmap calls the sticky feature. (Owner confirmed; note it mutates a
+   customer's balance from an external event — intended.)
+3. **Fees/markup = NONE in v1.** Send the exact amount; Paystack takes its own fee
+   from the payer as today. Revisit after real-merchant willingness-to-pay tests.
+4. **Link delivery = owner forwards it.** v1 returns a copyable pay-link the owner
+   sends to the customer. Kashia messaging the customer directly (needs their
+   contact + consent) is deferred.
+
+### Build order (revised from these decisions)
+Phase 1 (engine) → Phase 2 (webhook + IAM) → **test end-to-end with a
+manually-created request BEFORE any UI** → Phase 4 (Mini App customer-card
+surface) → Phase 3 (chat surface) → Phase 5 (polish).
 
 ---
 

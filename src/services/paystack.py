@@ -159,6 +159,94 @@ class PaystackService:
             logger.error(f"Paystack request error: {e}")
             return {"success": False, "error": str(e)}
 
+    def initialize_collection(self, owner_id: str, amount_naira, description: str,
+                              payreq_id: str, customer_name: str = None,
+                              customer_email: str = None) -> dict:
+        """Create a Paystack pay-link for an ARBITRARY amount (payment collection:
+        an invoice/bill a customer pays), NOT a subscription plan.
+
+        Distinct from initialize_transaction (which derives its amount from PLANS)
+        — a plan and an invoice amount are different enough that sharing one
+        function invites wrong-amount/wrong-metadata money bugs.
+
+        Args:
+            owner_id:      the business owner's namespaced id (bare phone or
+                           "tg:<chat_id>") — who gets PAID. Carried in metadata +
+                           the reference so the webhook can route the payment back.
+            amount_naira:  the amount to collect, in NAIRA (kobo-precise). Sent to
+                           Paystack as integer kobo at its boundary.
+            description:   what it's for ("Invoice BFH-00012", "50 bags of rice").
+            payreq_id:     the PaymentRequest sort key ("payreq#<uuid>") to tie the
+                           charge back to its stored request.
+            customer_name: optional — the paying customer (for settle_debt + the
+                           owner's confirmation message).
+            customer_email: optional payer email (Paystack requires one; we fall
+                           back to a derived address).
+
+        Returns {"success": True, "payment_url": "...", "reference": "..."} or
+        {"success": False, "error": "..."}.
+        """
+        from utils.money import money_round
+        try:
+            # Amount → integer kobo at the Paystack boundary (its own integer
+            # world). money_round keeps it kobo-precise before the ×100.
+            amount = money_round(amount_naira)
+            kobo = int(round(float(amount) * 100))
+            if kobo <= 0:
+                return {"success": False, "error": "amount must be greater than 0"}
+
+            safe_id = _paystack_safe(owner_id)
+            email = customer_email or f"{safe_id}@kashia.app"
+
+            # Reference embeds the owner id so the webhook can route directly (no
+            # scan). Prefix "kashia_pay_" distinguishes a COLLECTION charge from a
+            # "kashia_<plan>_..." subscription charge at a glance. Underscore-only
+            # (URL-safe); the webhook + any message MUST still Markdown-escape it.
+            import time
+            import uuid as _uuid
+            token = _uuid.uuid4().hex[:8]
+            reference = f"kashia_pay_{safe_id}_{token}_{int(time.time())}"
+
+            payload = {
+                "email": email,
+                "amount": kobo,
+                "reference": reference,
+                # Reuse the existing hosted "thank you" page for v1 (cosmetic).
+                "callback_url": "https://kashia.app/payment/success",
+                "metadata": {
+                    "purpose": "collection",     # webhook discriminator
+                    "owner_id": owner_id,         # who gets paid (full id)
+                    "payreq_id": payreq_id,       # ties back to the stored request
+                    "description": description,
+                    "customer_name": customer_name or "",
+                    "custom_fields": [
+                        {"display_name": "For", "variable_name": "description",
+                         "value": str(description or "")},
+                        {"display_name": "Customer", "variable_name": "customer",
+                         "value": str(customer_name or "")},
+                    ],
+                },
+            }
+
+            resp = requests.post(
+                f"{PAYSTACK_BASE_URL}/transaction/initialize",
+                headers=self._get_headers(),
+                json=payload,
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                data = resp.json().get("data", {})
+                return {
+                    "success": True,
+                    "payment_url": data.get("authorization_url", ""),
+                    "reference": data.get("reference", reference),
+                }
+            logger.error(f"Paystack collection init error: {resp.status_code} {resp.text}")
+            return {"success": False, "error": f"Payment service error ({resp.status_code})"}
+        except Exception as e:
+            logger.error(f"Paystack collection request error: {e}")
+            return {"success": False, "error": str(e)}
+
     def verify_transaction(self, reference: str) -> dict:
         """
         Verify a payment was successful.
