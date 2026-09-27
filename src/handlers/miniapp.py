@@ -3439,10 +3439,13 @@ window.onerror = function (msg, src, line, col, err) {
     // Show the Undo bar ONLY on the tab whose type matches the deleted row, so
     // it never appears on a tab where that entry doesn't belong (and never on
     // Production, which has no delete). The deleted row's own type is the gate.
-    var showable = recUndoTx && String(recUndoTx.type || "") === recTabType;
+    var undoType = recUndoTx ? String(recUndoTx.type || "") : "";
+    var showable = recUndoTx && undoType === recTabType;
     if (!showable) { bar.classList.add("hidden"); return; }
     var txt = document.getElementById("rec-undo-text");
-    if (txt) txt.textContent = "Deleted \u201c" + recUndoLabel + "\u201d.";
+    // TEMP DEBUG: show the gate values so we can see why it (mis)renders.
+    if (txt) txt.textContent = "Deleted \u201c" + recUndoLabel + "\u201d. [dbg tab=" +
+      recTabType + " undoType=" + undoType + "]";
     bar.classList.remove("hidden");
   }
   // Force-hide the Undo bar and forget the undoable row. Used by a hard timer
@@ -4864,21 +4867,26 @@ window.onerror = function (msg, src, line, col, err) {
     function paint() {
       var dl = document.getElementById("rec-who-list");
       if (!dl || !crmData) return;
-      // Scope the suggestions to the record type so a sale suggests CUSTOMERS,
-      // a purchase suggests SUPPLIERS, and an expense suggests PAYEES — reusing
-      // an existing name instead of creating a near-duplicate under the wrong
-      // role. Fall back to all names if a bucket is empty. The native datalist
-      // does the substring/closest-match filtering as the owner types.
-      var order = (recTypeVal === "purchase") ? ["suppliers", "customers", "expense_payees"]
-                 : (recTypeVal === "expense") ? ["expense_payees", "suppliers", "customers"]
-                 : ["customers", "suppliers", "expense_payees"];
+      // Suggest ONLY the names relevant to this record type so we don't mix
+      // roles (a sale suggests CUSTOMERS, a purchase SUPPLIERS, an expense
+      // PAYEES). Previously we included every bucket reordered, which showed
+      // customers under an expense — the owner flagged this. Only fall back to
+      // the full set if the relevant bucket is empty (so a fresh account still
+      // gets some help). Native datalist does the substring/closest-match.
+      var primary = (recTypeVal === "purchase") ? ["suppliers"]
+                  : (recTypeVal === "expense") ? ["expense_payees"]
+                  : ["customers"];
       var seen = {}, names = [];
-      order.forEach(function (k) {
-        (crmData[k] || []).forEach(function (c) {
-          var n = (c.name || "").trim();
-          if (n && !seen[n.toLowerCase()]) { seen[n.toLowerCase()] = 1; names.push(n); }
+      function collect(keys) {
+        keys.forEach(function (k) {
+          (crmData[k] || []).forEach(function (c) {
+            var n = (c.name || "").trim();
+            if (n && !seen[n.toLowerCase()]) { seen[n.toLowerCase()] = 1; names.push(n); }
+          });
         });
-      });
+      }
+      collect(primary);
+      if (!names.length) collect(["customers", "suppliers", "expense_payees"]);
       dl.innerHTML = "";
       names.forEach(function (n) {
         var o = document.createElement("option");
