@@ -12,6 +12,9 @@ echo "🚀 Deploying Kashia Bot to [$STAGE]..."
 # Step 1: Stamp the build timestamp into template.yaml description
 TIMESTAMP=$(date +%Y%m%d%H%M%S)
 sed -i "s/Description: Kashia WhatsApp Bot.*/Description: Kashia WhatsApp Bot - Build ${TIMESTAMP}/" template.yaml
+# Stamp the same build id into the Mini App's BUILD_STAMP env var so the app
+# footer shows which build is actually live (settles cache/deploy questions).
+sed -i "s/          BUILD_STAMP: .*/          BUILD_STAMP: \"${TIMESTAMP}\"/" template.yaml
 echo "📋 Build timestamp: ${TIMESTAMP}"
 
 # Step 2: Build

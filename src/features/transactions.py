@@ -90,8 +90,12 @@ class TransactionHandler:
                         phone_number, text, intent_type)
                 # No transaction verb at all → truly not a transaction.
                 return [text_response(
-                    "💬 Just type what you bought or sold and I'll record it!\n\n"
-                    "Example: _sold shoes 50K to Sandra_\n\n"
+                    "💬 Tell me a sale, a purchase, or an expense in one line and "
+                    "I'll record it. Include the amount, and a name if you like.\n\n"
+                    "Try one of these:\n"
+                    "• _sold 5 bags of rice for 30,000 to Sandra_\n"
+                    "• _bought fuel 12,000 from NNPC_\n"
+                    "• _paid 5,000 for transport_\n\n"
                     "Or tap ☰ Menu below for other options."
                 )]
 

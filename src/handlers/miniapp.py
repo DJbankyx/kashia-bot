@@ -223,7 +223,13 @@ def lambda_handler(event, context):
         # The page shell is public HTML (no data in it — the JS fetches data with
         # initData afterward). Data routes below require a valid signature.
         if method == "GET" and path.endswith("/app"):
-            return _html(_PAGE_HTML)
+            # Stamp the live build id (set by deploy.sh into BUILD_STAMP) into the
+            # footer so the owner can confirm which build is actually running —
+            # settles "did my change deploy / is Telegram caching?" questions.
+            import os as _os
+            page = _PAGE_HTML.replace("__BUILD_STAMP__",
+                                      _os.environ.get("BUILD_STAMP", "dev"))
+            return _html(page)
 
         # Every data + write route requires a valid Telegram signature.
         user_id, err = _authenticate(event)
@@ -4556,24 +4562,40 @@ _PAGE_HTML = """<!doctype html>
   function recPopulateUnits() {
     var sel = document.getElementById("rec-unit-sel");
     var hint = document.getElementById("rec-qty-hint");
+    var freeUnit = document.getElementById("rec-unit-free");
     if (!sel) return;
     sel.innerHTML = "";
+    if (freeUnit) { freeUnit.classList.add("hidden"); }
     var base = (pick.base_unit || "").trim();
     var defs = pick.unit_defs || {};
     var custom = Object.keys(defs);
-    if (!base || !custom.length) {
-      // No alternative units → plain numeric qty in the product's own unit.
-      // Still NAME that unit in the hint so the owner buys/sells in the same
-      // unit the recipe/stock uses (e.g. Nylon in kg), not a guessed number.
+    var isProduce = (recTypeVal === "produce");
+    // IMPORTANT: only ever offer units the engine can CONVERT — the base unit and
+    // its TAUGHT conversions (unit_defs). We deliberately do NOT allow a free-text
+    // "new unit" here: the bot doesn't know a new unit's relationship to the base,
+    // so producing/selling in it would be rejected server-side anyway (produce_web
+    // returns "cannot convert X to <base> — set up that conversion first"). To use
+    // a new unit, teach it once in the product's "Units & conversions"; it then
+    // shows up here automatically.
+    if (!base) {
+      // Truly unit-less product: nothing safe to choose — plain numeric qty.
       sel.classList.add("hidden");
-      if (hint && base) {
+      if (hint && isProduce) hint.textContent =
+        "\\uD83D\\uDCA1 Quantity produced. Set a base unit on the product (Catalog) to record in bags/pieces/etc.";
+      return;
+    }
+    if (!custom.length && !isProduce) {
+      // Sale/purchase, no alternative units → plain numeric qty in the product's
+      // own unit; still NAME that unit in the hint.
+      sel.classList.add("hidden");
+      if (hint) {
         hint.textContent = (recTypeVal === "purchase")
           ? "\\uD83D\\uDCA1 Quantity in " + base + " (the unit this item is stocked \\u0026 used in)."
           : "\\uD83D\\uDCA1 Quantity in " + base + ". Stock drops by this amount.";
       }
       return;
     }
-    // Base first (factor 1), then each custom unit.
+    // Base first (factor 1), then each taught custom unit. No free-text option.
     var opts = [[base, 1]];
     custom.forEach(function (u) {
       var f = Number(defs[u]) || 0;
@@ -4588,9 +4610,14 @@ _PAGE_HTML = """<!doctype html>
     });
     sel.value = "1";                      // default to base unit
     sel.classList.remove("hidden");
-    if (hint) hint.textContent =
-      "\\uD83D\\uDCA1 Choose the unit you're recording in (e.g. bag or piece). " +
-      "Stock & cost are kept in " + base + ".";
+    if (hint) {
+      var teach = (custom.length)
+        ? " Need another unit? Teach it in the product's Units \\u0026 conversions."
+        : " To record in bags/cartons/etc., teach that unit in the product's Units \\u0026 conversions.";
+      hint.textContent = (isProduce
+        ? "\\uD83D\\uDCA1 Unit you produced in. Stock is kept in " + base + "."
+        : "\\uD83D\\uDCA1 Choose the unit you're recording in. Stock \\u0026 cost are kept in " + base + ".") + teach;
+    }
   }
   // Factor to multiply the typed qty by to get BASE units (1 when no selector).
   function recUnitFactor() {
@@ -4600,8 +4627,7 @@ _PAGE_HTML = """<!doctype html>
     return (f > 0) ? f : 1;
   }
   // Name of the unit currently chosen in the qty selector ("" when none shown).
-  // Produce sends this to the server so the engine converts to base units and
-  // stamps a per-BASE-unit cost (produce "5 packs" -> 60 pieces, cost/piece).
+  // Only ever a base/taught unit the engine can convert (no free-text).
   function recUnitName() {
     var sel = document.getElementById("rec-unit-sel");
     if (!sel || sel.classList.contains("hidden")) return "";
@@ -4712,6 +4738,7 @@ _PAGE_HTML = """<!doctype html>
     var chips = document.querySelectorAll("#rec-type .chip");
     chips.forEach(function (c) { c.classList.toggle("active", c.getAttribute("data-t") === t); });
     recSyncLabels();
+    recFillContacts();   // re-scope name suggestions to the new type
   };
   window.recPay = function (p) {
     recPayVal = p;
@@ -4818,8 +4845,16 @@ _PAGE_HTML = """<!doctype html>
     function paint() {
       var dl = document.getElementById("rec-who-list");
       if (!dl || !crmData) return;
+      // Scope the suggestions to the record type so a sale suggests CUSTOMERS,
+      // a purchase suggests SUPPLIERS, and an expense suggests PAYEES — reusing
+      // an existing name instead of creating a near-duplicate under the wrong
+      // role. Fall back to all names if a bucket is empty. The native datalist
+      // does the substring/closest-match filtering as the owner types.
+      var order = (recTypeVal === "purchase") ? ["suppliers", "customers", "expense_payees"]
+                 : (recTypeVal === "expense") ? ["expense_payees", "suppliers", "customers"]
+                 : ["customers", "suppliers", "expense_payees"];
       var seen = {}, names = [];
-      ["customers", "suppliers", "expense_payees"].forEach(function (k) {
+      order.forEach(function (k) {
         (crmData[k] || []).forEach(function (c) {
           var n = (c.name || "").trim();
           if (n && !seen[n.toLowerCase()]) { seen[n.toLowerCase()] = 1; names.push(n); }
@@ -5011,5 +5046,6 @@ _PAGE_HTML = """<!doctype html>
   loadSummary();
 })();
 </script>
+  <div style="text-align:center;margin:14px 0 8px;font-size:11px;color:var(--hint);opacity:.6">Kashia \u00b7 build __BUILD_STAMP__</div>
 </body>
 </html>"""
