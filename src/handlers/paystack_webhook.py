@@ -57,10 +57,22 @@ def lambda_handler(event, context):
         # Extract payment data
         data = payload.get("data", {})
         metadata = data.get("metadata", {})
-        phone_number = metadata.get("phone_number", "")
-        plan = metadata.get("plan", "")
+        purpose = str(metadata.get("purpose", "") or "").lower()
         amount = data.get("amount", 0)
         reference = data.get("reference", "")
+
+        # ── PAYMENT COLLECTION branch ──
+        # A charge from a Kashia pay-link (invoice/bill a customer paid) carries
+        # metadata.purpose == "collection" + owner_id + payreq_id (see
+        # PaystackService.initialize_collection). Route it to the collection
+        # handler instead of the subscription-upgrade path. This is exactly the
+        # spot a non-plan charge used to fall into the 'missing_data' dead end.
+        if purpose == "collection":
+            return _handle_collection(metadata, data, reference)
+
+        # ── SUBSCRIPTION UPGRADE (existing path) ──
+        phone_number = metadata.get("phone_number", "")
+        plan = metadata.get("plan", "")
 
         if not phone_number or not plan:
             logger.error(f"Missing phone/plan in webhook: {metadata}")
@@ -168,6 +180,112 @@ def lambda_handler(event, context):
         if verified_and_parsed:
             return response(500, {"status": "error", "retry": True})
         return response(200, {"status": "error"})
+
+
+def _handle_collection(metadata, data, reference):
+    """Handle a PAID payment-collection charge (a customer paid a Kashia pay-link
+    for an invoice/bill). Records a paid SALE, AUTO-SETTLES the customer's
+    receivable if one exists (the sticky auto-reconciliation feature), marks the
+    PaymentRequest paid, and notifies the owner. Idempotent on the Paystack
+    reference. See docs/PAYMENT_COLLECTION_PLAN.md.
+
+    Returns an HTTP response dict. On a genuine post-claim failure it returns 500
+    (after releasing the claim) so Paystack retries safely.
+    """
+    from services.database import Database
+    from services.whatsapp_client import WhatsAppClient
+    from services.messaging_client import resolve_client
+    from utils.money import money_round
+
+    owner_id = metadata.get("owner_id") or metadata.get("phone_number") or ""
+    payreq_id = metadata.get("payreq_id") or ""
+    customer_name = (metadata.get("customer_name") or "").strip()
+    description = metadata.get("description") or "Payment received"
+    # Amount actually paid, from Paystack (integer kobo) → naira, kobo-precise.
+    kobo = data.get("amount", 0) if isinstance(data, dict) else 0
+    amount_naira = money_round((int(kobo) if kobo else 0) / 100.0)
+
+    if not owner_id:
+        logger.error(f"Collection webhook missing owner_id: {metadata}")
+        return response(200, {"status": "missing_data"})
+
+    db = Database()
+    whatsapp = WhatsAppClient()
+
+    # ── IDEMPOTENCY (shared guard, keyed on the Paystack reference) ──
+    if reference:
+        claimed, _prior = db.claim_web_submit(owner_id, f"paystack#{reference}")
+        if not claimed:
+            logger.info(f"Collection webhook DUPLICATE ignored: ref={reference}")
+            return response(200, {"status": "duplicate", "reference": reference})
+
+    try:
+        # Belt-and-braces on top of the idempotency claim: if the request is
+        # already marked paid, don't double-record.
+        preq = db.get_payment_request(owner_id, payreq_id) if payreq_id else None
+        if preq and str(preq.get("status")) == "paid":
+            logger.info(f"Payment request {payreq_id} already paid — skipping.")
+            return response(200, {"status": "already_paid"})
+
+        # AUTO-SETTLE vs fresh sale (owner decision: auto-reconcile). If the
+        # customer has an open receivable, settle it; otherwise record a fresh
+        # paid sale. Either way a SALE is logged (mirrors debt._apply_directed_
+        # payment: settle_debt + a settling sale), so income is captured once.
+        settled = 0
+        if customer_name:
+            try:
+                contact = db.get_contact_by_name(owner_id, customer_name)
+                owed = money_round((contact or {}).get("debt_owed_to_me", 0) or 0)
+                if owed > 0:
+                    pay = amount_naira if amount_naira <= owed else owed
+                    db.settle_debt(owner_id, customer_name, pay, "owed_to_me")
+                    settled = pay
+            except Exception as e:
+                logger.warning(f"collection settle_debt failed: {e}")
+
+        sale = db.save_transaction(
+            owner_id, amount_naira, "sale", description, "Sales & Income",
+            vendor=customer_name, payment_method="cash",
+            extra_details={"source": "payment_collection", "paystack_ref": reference,
+                           "payreq_id": payreq_id, "settled_receivable": settled},
+        )
+        paid_tx_id = (sale or {}).get("transaction_id", "")
+
+        if payreq_id:
+            db.mark_payment_request_paid(owner_id, payreq_id, paid_tx_id)
+    except Exception:
+        # Post-claim failure on an authentic webhook → release the claim so the
+        # 500-triggered Paystack retry can re-process, then re-raise to 500.
+        if reference:
+            db.release_web_submit(owner_id, f"paystack#{reference}")
+        logger.error("Collection processing failed; releasing claim for retry")
+        return response(500, {"status": "error", "retry": True})
+
+    # Notify the owner on their own platform. Escape the underscore-heavy ref for
+    # Telegram Markdown (an odd count of "_" = 400 "can't parse entities").
+    try:
+        client, recipient = resolve_client(owner_id, whatsapp_fallback=whatsapp)
+        if client is None:
+            client, recipient = whatsapp, owner_id
+        who = f" from *{customer_name}*" if customer_name else ""
+        settle_line = (f"\n\u2705 Settled \u20a6{settled:,.0f} of what they owed."
+                       if settled else "")
+        safe_ref = str(reference).replace("\\", "\\\\").replace("_", "\\_").replace("*", "\\*")
+        client.send_text(recipient, (
+            f"\U0001F4B0 *Payment received!*\n\n"
+            f"\u20a6{amount_naira:,.0f}{who} for {description}.{settle_line}\n\n"
+            f"It's recorded as a paid sale in your books.\n\n"
+            f"Ref: {safe_ref}"
+        ))
+    except Exception as e:
+        # Notification is best-effort; the money is already recorded. Do NOT 500
+        # (that would make Paystack retry a fully-processed charge).
+        logger.warning(f"collection notify failed: {e}")
+
+    logger.info(f"Collection recorded: {owner_id} ₦{amount_naira} "
+                f"settled={settled} ref={reference}")
+    return response(200, {"status": "success", "owner": owner_id,
+                          "amount": amount_naira, "settled": settled})
 
 
 def response(status_code, body):
