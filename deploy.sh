@@ -43,3 +43,12 @@ sam deploy \
 echo ""
 echo "✅ Deploy complete! Build: ${TIMESTAMP}"
 echo "📡 Check the Outputs above for your webhook URL."
+
+# Step 4: Re-point the Telegram Menu Button at the NEW build (?v=<build>).
+# The mini-app URL is otherwise fixed, so Telegram's WebView caches the page and
+# keeps running OLD JS after a deploy. Re-registering with the fresh build id in
+# the query string forces every open to load the new page. Safe + idempotent;
+# non-fatal if it fails (deploy already succeeded).
+echo ""
+echo "🔘 Re-pointing Telegram Menu Button at build ${TIMESTAMP} (cache-bust)..."
+./set_telegram_menu_button.sh "${STAGE}" || echo "⚠️  Menu-button update failed (non-fatal) — run ./set_telegram_menu_button.sh ${STAGE} manually."

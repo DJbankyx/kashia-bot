@@ -40,6 +40,20 @@ if [ -z "$URL" ] || [ "$URL" = "None" ]; then
   exit 1
 fi
 
+# ── 2b. Cache-buster: append the DEPLOYED build id as ?v=<build> ──
+# Telegram's WebView caches the mini-app page per-URL and does NOT reliably evict
+# it on "Clear Cache". Because the menu-button URL was a FIXED ".../app", a fresh
+# deploy served new JS at the SAME url → the WebView kept running the OLD cached
+# page (this caused rounds of "I deployed but nothing changed"). Appending the
+# live build id makes the URL CHANGE every deploy, forcing a fresh fetch. Read the
+# build id from the DEPLOYED Lambda env (the source of truth for what's live).
+BUILD=$(aws lambda get-function-configuration --region "$REGION" \
+  --function-name "kashia-miniapp-${STAGE}" \
+  --query "Environment.Variables.BUILD_STAMP" --output text 2>/dev/null || true)
+if [ -n "$BUILD" ] && [ "$BUILD" != "None" ]; then
+  URL="${URL}?v=${BUILD}"
+fi
+
 echo "🌐 Mini App URL: $URL"
 
 # ── 3. Register the Menu Button (a web_app button) ──
