@@ -294,10 +294,13 @@ function in template.yaml as part of the first code phase's deploy.
   created links with status badges + Copy/Cancel on pending ones.
   `db.cancel_payment_request` (pending→cancelled only), `GET
   /app/api/payment-requests`, `POST /app/api/cancel-payment-request`.
-- ⏸️ 5a receipt-on-paid — DEFERRED by design. Wiring PDF+S3 into the
-  money-critical Paystack webhook is too much blast radius for a nice-to-have;
-  the webhook already sends a text confirmation. Revisit as a Mini-App action on
-  the paid sale (MiniAppFunction already has S3 + the exporter), not in the webhook.
+- ✅ 5a receipt — DONE via OPTION A (commit 499497d, 2026-09-27), NOT in the
+  webhook. On-demand: POST /app/api/receipt {tx_id} → generate_receipt +
+  deliver_file (MiniAppFunction has S3 + the exporter; tier-gated). "🧾 Receipt"
+  button on PAID rows in the Payment-links view. Discoverability: the "Payment
+  received!" webhook message + a 💡 tip point the owner to it. Chosen over
+  auto-in-webhook to keep the money-critical webhook lean (owner decision after
+  weighing the risk). Auto-receipt-to-the-CUSTOMER = later (needs their contact).
 - ⏭️ Optional: link a generated invoice PDF's number to the request for a clean
   "Invoice BFH-00012 — paid" story.
 
