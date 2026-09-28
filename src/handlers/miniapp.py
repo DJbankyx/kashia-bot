@@ -677,6 +677,35 @@ def _product_write(event, user_id: str):
         req_type = str(data.get("item_type", "") or "").strip()
         if req_type in ("finished_product", "raw_material", "supply"):
             products[new_key]["item_type"] = req_type
+        # Optional cost + unit on creation. Useful for "Add raw material" (you
+        # register stock you already have on hand, with what it cost you and its
+        # stock unit) — the plain product add still omits both and they stay 0/"".
+        # Money stays kobo-precise; unit goes through the canonical unit engine so
+        # base_unit/unit_defs are consistent with the rest of the catalog.
+        raw_cost = data.get("landing_cost", data.get("cost"))
+        if raw_cost not in (None, ""):
+            try:
+                from utils.money import money_round as _mr
+                products[new_key]["landing_cost"] = _mr(raw_cost)
+            except Exception:
+                pass
+        raw_unit = str(data.get("unit", "") or "").strip()
+        if raw_unit:
+            try:
+                from utils import units as _units
+                u = _units.normalize_unit(raw_unit)
+                if u:
+                    _units.rebase_product(products[new_key], u)
+            except Exception:
+                pass
+        # Optional opening stock (what you already have on hand). Fractional-safe.
+        raw_stock = data.get("stock")
+        if raw_stock not in (None, ""):
+            try:
+                from utils.quantity import to_qty as _toq
+                products[new_key]["stock"] = _toq(raw_stock)
+            except Exception:
+                pass
         cat._save_products(user_id, products)
         return _echo(new_key)
 
@@ -1944,6 +1973,7 @@ _PAGE_HTML = """<!doctype html>
     <div class="card"><div class="k">Stock value (at cost)</div><div class="v" id="cat-value">—</div></div>
     <div class="card hidden" id="cat-lowcard"><div class="k">Low stock</div><div class="v neg" id="cat-low">—</div></div>
     <button class="btn save" style="width:100%;margin-bottom:10px" onclick="openAddProduct()">➕ Add product</button>
+    <button class="btn cancel hidden" id="cat-add-raw" style="width:100%;margin-bottom:10px" onclick="openAddRawMaterial()">🧱 Add raw material</button>
     <input class="search" id="catsearch" placeholder="Search catalog..." oninput="renderCatalog()">
     <div id="catgroups"><div class="muted">Loading...</div></div>
     <div id="catmsg" class="muted"></div>
@@ -1974,6 +2004,24 @@ _PAGE_HTML = """<!doctype html>
       <div class="field">
         <label>Category (optional)</label>
         <input id="add-cat" placeholder="e.g. Vehicles">
+      </div>
+      <!-- Raw-material extras: only shown when adding a raw material directly.
+           A raw material you already have on hand can carry what it cost you, its
+           stock unit, and an opening quantity, without being tied to any product
+           yet. All optional. -->
+      <div id="add-raw-extra" class="hidden">
+        <div class="field">
+          <label>Cost per unit (optional)</label>
+          <input id="add-cost" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 400">
+        </div>
+        <div class="field">
+          <label>Stock unit (optional)</label>
+          <input id="add-unit" placeholder="e.g. kg, bag, litre">
+        </div>
+        <div class="field">
+          <label>Opening stock on hand (optional)</label>
+          <input id="add-stock" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 10">
+        </div>
       </div>
       <div class="sheeterr" id="add-err"></div>
       <div class="actions">
@@ -2105,7 +2153,16 @@ _PAGE_HTML = """<!doctype html>
     <div class="sheet">
       <h2>💳 Request payment</h2>
       <div class="sub2" id="pl-sub">Create a link the customer can pay online.</div>
+      <!-- Optional product picker: choosing a product prefills the amount (its
+           selling price) and the description. "Something else" keeps free text.
+           Populated from the catalog (invData). -->
       <div class="field" style="margin-top:12px">
+        <label>Product (optional)</label>
+        <select id="pl-product" onchange="plPickProduct()">
+          <option value="">Something else (type below)</option>
+        </select>
+      </div>
+      <div class="field">
         <label>Amount (₦)</label>
         <input id="pl-amount" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 2500">
       </div>
@@ -2618,6 +2675,11 @@ window.onerror = function (msg, src, line, col, err) {
       if (pTab) pTab.classList.remove("hidden");
       var pRec = document.getElementById("rec-type-produce");
       if (pRec) pRec.classList.remove("hidden");
+      // Raw materials are a manufacturing/hybrid concept — reveal the direct
+      // "Add raw material" button so you can register stock not yet tied to a
+      // product. Trading/services never see it (they don't keep raw materials).
+      var rawBtn = document.getElementById("cat-add-raw");
+      if (rawBtn) rawBtn.classList.remove("hidden");
     }
   }
 
@@ -3233,6 +3295,44 @@ window.onerror = function (msg, src, line, col, err) {
 
   // ── Payment collection: create a Paystack pay-link for this customer ──
   var plCtx = null;   // {name}
+  // Populate the pay-link product dropdown from the catalog (SELLABLE items
+  // only — raw materials/overheads aren't things a customer pays for). invData
+  // may be null if the Catalog tab was never opened, so load it if needed.
+  function plFillProducts() {
+    var sel = document.getElementById("pl-product");
+    if (!sel) return;
+    function build() {
+      // Keep the first "Something else" option, drop the rest, then refill.
+      sel.options.length = 1;
+      var list = (invData || []).filter(function (p) {
+        var it = p.item_type || "";
+        return (it === "" || it === "product" || it === "finished_product");
+      });
+      list.sort(function (a, b) {
+        return String(a.name || "").localeCompare(String(b.name || ""));
+      });
+      for (var i = 0; i < list.length; i++) {
+        var p = list[i];
+        var o = document.createElement("option");
+        o.value = p.key;
+        o.textContent = p.name || p.key;
+        sel.appendChild(o);
+      }
+    }
+    if (invData) { build(); }
+    else { loadInventory().then(build).catch(function () {}); }
+  }
+  // When a product is chosen, prefill the amount (its selling price) + the
+  // description. Choosing "Something else" leaves whatever's typed.
+  window.plPickProduct = function () {
+    var sel = document.getElementById("pl-product");
+    if (!sel || !sel.value) return;
+    var p = (invData || []).filter(function (x) { return x.key === sel.value; })[0];
+    if (!p) return;
+    var price = parseFloat(p.sale_price || p.price || 0);
+    if (price > 0) document.getElementById("pl-amount").value = price;
+    document.getElementById("pl-desc").value = p.name || "";
+  };
   window.cdGetPayLink = function () {
     if (!cdCtx) return;
     plCtx = { name: cdCtx.name || "" };
@@ -3244,6 +3344,8 @@ window.onerror = function (msg, src, line, col, err) {
     document.getElementById("pl-amount").value =
       (cdCtx && cdCtx.owes_me > 0) ? cdCtx.owes_me : "";
     document.getElementById("pl-desc").value = "";
+    var psel = document.getElementById("pl-product"); if (psel) psel.value = "";
+    plFillProducts();
     document.getElementById("pl-err").textContent = "";
     document.getElementById("pl-result").classList.add("hidden");
     document.getElementById("pl-create").disabled = false;
@@ -4463,26 +4565,59 @@ window.onerror = function (msg, src, line, col, err) {
   // ── Add product ──
   // Chosen item type for a NEW product (mfg/hybrid only). Default finished.
   var addItemType = "finished_product";
+  // When true, the Add sheet is in "Add raw material" mode: item type is forced
+  // to raw_material and the cost/unit/opening-stock fields are shown. A raw
+  // material can exist on its own, not tied to any product's recipe yet.
+  var addRawMode = false;
   window.addSetType = function (t) {
     addItemType = t;
     var chips = document.querySelectorAll("#add-type .chip");
     for (var i = 0; i < chips.length; i++) {
       chips[i].classList.toggle("active", chips[i].getAttribute("data-it") === t);
     }
+    // Raw material / supply carry a real buy-cost; show the cost/unit/stock
+    // extras for those so you can register what you already have. A finished
+    // product's cost comes from its recipe, so hide them.
+    var extra = document.getElementById("add-raw-extra");
+    if (extra) extra.classList.toggle("hidden", t === "finished_product");
     document.getElementById("add-type-hint").textContent = (t === "finished_product")
       ? "A finished product's cost is calculated from its recipe. After adding, tap it to Set / edit recipe."
-      : "A raw material or supply has a normal buy-cost you set on the product.";
+      : "A raw material or supply has a normal buy-cost. You can set what it cost you, its stock unit, and what you already have on hand below.";
   };
   window.openAddProduct = function () {
+    addRawMode = false;
     document.getElementById("add-name").value = "";
     document.getElementById("add-cat").value = "";
     document.getElementById("add-err").textContent = "";
     document.getElementById("add-save").disabled = false;
+    document.querySelector("#addOverlay h2").textContent = "Add a product";
+    var cost = document.getElementById("add-cost"); if (cost) cost.value = "";
+    var unit = document.getElementById("add-unit"); if (unit) unit.value = "";
+    var stk = document.getElementById("add-stock"); if (stk) stk.value = "";
+    var extra = document.getElementById("add-raw-extra"); if (extra) extra.classList.add("hidden");
     // Item-type chooser only for mfg/hybrid; default to finished product.
     var typeWrap = document.getElementById("add-type-wrap");
     if (usesRecipes()) { typeWrap.classList.remove("hidden"); addSetType("finished_product"); }
-    else { typeWrap.classList.add("hidden"); addItemType = ""; }
+    else { typeWrap.classList.add("hidden"); addItemType = ""; document.getElementById("add-raw-extra").classList.add("hidden"); }
     document.getElementById("addOverlay").classList.remove("hidden");
+  };
+  // Direct "Add raw material" entry — a raw material not yet tied to any product.
+  window.openAddRawMaterial = function () {
+    addRawMode = true;
+    document.getElementById("add-name").value = "";
+    document.getElementById("add-cat").value = "";
+    document.getElementById("add-err").textContent = "";
+    document.getElementById("add-save").disabled = false;
+    document.querySelector("#addOverlay h2").textContent = "\\ud83e\\uddf1 Add raw material";
+    var cost = document.getElementById("add-cost"); if (cost) cost.value = "";
+    var unit = document.getElementById("add-unit"); if (unit) unit.value = "";
+    var stk = document.getElementById("add-stock"); if (stk) stk.value = "";
+    // Hide the type chooser (it's fixed to raw material here) and show the extras.
+    document.getElementById("add-type-wrap").classList.add("hidden");
+    addItemType = "raw_material";
+    document.getElementById("add-raw-extra").classList.remove("hidden");
+    document.getElementById("addOverlay").classList.remove("hidden");
+    document.getElementById("add-name").focus();
   };
   window.closeAddProduct = function () {
     document.getElementById("addOverlay").classList.add("hidden");
@@ -4491,12 +4626,34 @@ window.onerror = function (msg, src, line, col, err) {
     var name = (document.getElementById("add-name").value || "").trim();
     var cat = (document.getElementById("add-cat").value || "").trim();
     var err = document.getElementById("add-err");
-    if (!name) { err.textContent = "Enter a product name."; return; }
+    var label = addRawMode ? "raw material" : "product";
+    if (!name) { err.textContent = "Enter a " + label + " name."; return; }
     var btn = document.getElementById("add-save");
     btn.disabled = true; err.textContent = "";
     var body = { action: "add", name: name, category: cat };
-    // Only mfg/hybrid tag an item type up front; trading stays a plain product.
-    if (usesRecipes() && addItemType) body.item_type = addItemType;
+    // Raw-material mode forces the type + carries the optional cost/unit/stock.
+    // Otherwise only mfg/hybrid tag an item type; trading stays a plain product.
+    if (addRawMode) {
+      body.item_type = "raw_material";
+      var cv = (document.getElementById("add-cost").value || "").trim();
+      var uv = (document.getElementById("add-unit").value || "").trim();
+      var sv = (document.getElementById("add-stock").value || "").trim();
+      if (cv !== "") body.cost = parseFloat(cv);
+      if (uv !== "") body.unit = uv;
+      if (sv !== "") body.stock = parseFloat(sv);
+    } else if (usesRecipes() && addItemType) {
+      body.item_type = addItemType;
+      // A raw material / supply added via the type chooser can also carry its
+      // cost/unit/stock (the extras are shown for those types).
+      if (addItemType !== "finished_product") {
+        var cv2 = (document.getElementById("add-cost").value || "").trim();
+        var uv2 = (document.getElementById("add-unit").value || "").trim();
+        var sv2 = (document.getElementById("add-stock").value || "").trim();
+        if (cv2 !== "") body.cost = parseFloat(cv2);
+        if (uv2 !== "") body.unit = uv2;
+        if (sv2 !== "") body.stock = parseFloat(sv2);
+      }
+    }
     apiPost("api/product", body)
       .then(function (j) {
         if (j.product) (invData = invData || []).push(j.product);
