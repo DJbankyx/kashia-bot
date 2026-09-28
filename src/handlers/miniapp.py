@@ -3158,11 +3158,15 @@ window.onerror = function (msg, src, line, col, err) {
       debtCard.classList.add("hidden");
       payBtn.classList.add("hidden");
     }
-    // "Get pay-link" — for anyone you'd COLLECT from (a customer / someone who
-    // owes you). Hidden for a pure supplier you only owe (you don't bill them).
+    // "Get pay-link" — only for people you COLLECT from: a customer, a
+    // customer+supplier ("both"), or anyone who currently owes you. Hidden for a
+    // pure supplier OR an expense payee (you PAY them; you don't bill them). The
+    // old check only excluded "supplier", so it wrongly showed on expense payees.
     var payLinkBtn = document.getElementById("cd-paylink");
     if (payLinkBtn) {
-      var canBill = (c.owes_me > 0) || (String(c.type || "").indexOf("supplier") === -1);
+      var ct = String(c.type || "").toLowerCase();
+      var isCollectable = (ct === "customer" || ct === "both" || ct === "client");
+      var canBill = isCollectable || (c.owes_me > 0);
       payLinkBtn.classList.toggle("hidden", !canBill);
     }
 

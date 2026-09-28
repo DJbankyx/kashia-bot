@@ -469,6 +469,12 @@ class PDFGenerator:
             story.append(Paragraph(f"<b>Receipt #:</b> {receipt_number}", self.styles['KashiaBody']))
             story.append(Paragraph(f"<b>Date:</b> {tx.get('date', datetime.now().strftime('%Y-%m-%d'))}", self.styles['KashiaBody']))
             story.append(Paragraph(f"<b>From:</b> {business_name}", self.styles['KashiaBody']))
+            # Business identity block (address / phone / email / TIN) — same as
+            # invoices, so a receipt carries the same contact details, not just
+            # the name. Rendered only when the fields are set.
+            identity = self._business_identity_lines(user)
+            if identity:
+                story.append(Paragraph(identity, self.styles['KashiaBody']))
             story.append(Spacer(1, 10*mm))
 
             # Transaction details
