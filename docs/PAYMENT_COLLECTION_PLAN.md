@@ -368,3 +368,45 @@ surface) → Phase 3 (chat surface) → Phase 5 (polish).
   `src/services/pdf_generator.py`.
 - template.yaml `PaystackWebhookFunction` route + IAM; `/app/api/*` route pattern
   on `MiniAppFunction`.
+
+---
+## 12. Follow-ups (2026-09-27, post-testing) — SHIPPED
+
+Three owner asks after the first payment-collection round, all done + pushed.
+
+### 12.1 Immediate fixes (commit 7c4fbf4)
+- **Pay-link button gate.** It was showing on expense-payee cards. Now gated to
+  `customer` / `both` / `client` roles OR `owes_me > 0` — excludes pure suppliers
+  AND expense_payees. (miniapp customer-card render.)
+- **Receipt business header.** `pdf_generator._business_identity_lines` stamps
+  business name / address / phone on the receipt. Logo already rendered once a
+  logo is uploaded (owner confirmed this was NOT a bug).
+
+### 12.2 Itemized receipt (commit c871028)
+- Receipt now renders the transaction's item as a real line-item table
+  (qty × unit price = amount) rather than a single payment line. Single-line by
+  design: Kashia has no per-transaction basket (multi-item basket is DEFERRED in
+  the roadmap).
+
+### 12.3 Online refunds (commit 53cf58e)
+Push money back to the customer when a **Paystack-paid sale is returned**.
+- `paystack.refund_transaction(ref, amount_kobo=None)` — `POST /refund`
+  ({transaction, amount?}); full refund if amount omitted. Idempotent at the
+  caller.
+- `transactions.online_refund()` — claims `refund#<ref>#<kobo>` via
+  `db.claim_web_submit` BEFORE calling Paystack. The books are ALREADY adjusted by
+  `record_return`, so the refund is a **separate money move**: a Paystack API
+  failure never corrupts accounting (guard released on genuine failure so a retry
+  can re-run).
+- `returns.return_refund_online` — a **two-tap OFFER** button (not auto-refund;
+  money action needs confirmation) surfaced after a Paystack-paid return.
+  `record_return` now returns `orig_paystack_ref` so the returns flow knows the
+  original sale was collected online and can offer the refund.
+
+**Ops notes:** needs Paystack **refund permission** on the account; test-mode
+refunds only work against test-mode transactions. NO new API route or IAM — refund
+runs from `returns.py` (engine-side, on the telegram/whatsapp webhook functions,
+which already read the Paystack SSM secret).
+
+**Verify:** py_compile + check_syntax imports + `hasattr(refund_transaction)` /
+`hasattr(online_refund)` all green; receipt build passed esprima + surrogate scan.
