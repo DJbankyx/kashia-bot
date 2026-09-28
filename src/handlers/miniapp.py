@@ -252,6 +252,9 @@ def lambda_handler(event, context):
             return _cancel_payment_request_write(event, user_id)
         if method == "GET" and path.endswith("/app/api/payment-requests"):
             return _payment_requests_read(event, user_id)
+        # ── Writes (generate + deliver a payment receipt PDF, on-demand) ──
+        if method == "POST" and path.endswith("/app/api/receipt"):
+            return _receipt_send(event, user_id)
         # ── Writes (Stage 2: recipe/BOM add/remove material) ──
         if method == "POST" and path.endswith("/app/api/recipe"):
             return _recipe_write(event, user_id)
@@ -1502,6 +1505,52 @@ def _export(event, user_id: str):
         return _json(500, {"error": "export failed"})
 
 
+def _receipt_send(event, user_id: str):
+    """Generate + deliver a PAYMENT RECEIPT PDF for a specific transaction
+    (on-demand, Phase 5a via Option A). Body: {tx_id}. Builds the receipt with
+    the shared PDFGenerator and delivers it to the owner's chat via ExportService
+    (same S3-upload + platform-send pipeline as exports). PDF is tier-gated,
+    mirroring _export. Returns {ok, delivered_to_chat, download_url, message}."""
+    from services.database import Database
+    from services.pdf_generator import PDFGenerator
+    from services.export_service import ExportService
+
+    data = _parse_body(event)
+    tx_id = str(data.get("tx_id") or "").strip()
+    if not tx_id:
+        return _json(400, {"error": "tx_id required"})
+
+    db = Database()
+    # PDF receipts are a Basic/Pro feature (mirror the export paywall).
+    try:
+        from services.tier_manager import TierManager
+        allowed, msg = TierManager(database=db).check_can_generate_pdf(user_id)
+        if not allowed:
+            return _json(403, {"error": "pdf_paywalled",
+                               "message": msg or "Receipts are a Basic/Pro feature."})
+    except Exception:
+        pass
+
+    try:
+        pdfgen = PDFGenerator(database=db)
+        filepath, filename = pdfgen.generate_receipt(user_id, transaction_id=tx_id)
+        if not filepath:
+            return _json(404, {"error": "could not build a receipt for that payment"})
+        svc = ExportService(database=db)
+        success, url = svc.deliver_file(user_id, filepath, filename,
+                                        caption="🧾 Payment receipt")
+        return _json(200, {
+            "ok": bool(success),
+            "delivered_to_chat": bool(success),
+            "download_url": url or "",
+            "message": ("Receipt sent to your chat." if success
+                        else "Built the receipt but couldn't deliver it — use the link."),
+        })
+    except Exception as e:
+        logger.error(f"miniapp receipt failed: {e}")
+        return _json(500, {"error": "could not generate the receipt"})
+
+
 def _debt_payment_write(event, user_id: str):
     """Record a debt payment from the app — a COLLECTION (a customer repays me)
     or a REPAYMENT (I pay a supplier). Mirrors the chat debt board EXACTLY:
@@ -1628,6 +1677,7 @@ def _payment_requests_read(event, user_id: str):
             "payment_url": str(r.get("payment_url") or ""),
             "created_at": str(r.get("created_at") or "")[:10],
             "paid_at": str(r.get("paid_at") or "")[:10],
+            "paid_tx_id": str(r.get("paid_tx_id") or ""),
         })
     return _json(200, {"ok": True, "requests": out})
 
@@ -3276,7 +3326,7 @@ window.onerror = function (msg, src, line, col, err) {
       var amt = document.createElement("div");
       amt.className = "stock"; amt.textContent = naira(r.amount || 0);
       right.appendChild(amt);
-      // Pending links get Copy + Cancel; others are display-only.
+      // Pending links get Copy + Cancel; PAID links get a Receipt button.
       if (r.status === "pending" && r.payment_url) {
         var copy = document.createElement("button");
         copy.className = "linkbtn"; copy.style.cssText = "padding:4px 8px;color:var(--accent)";
@@ -3293,12 +3343,43 @@ window.onerror = function (msg, src, line, col, err) {
         cancel.textContent = "Cancel";
         cancel.addEventListener("click", function () { pllCancel(r.payreq_id, cancel); });
         right.appendChild(copy); right.appendChild(cancel);
+      } else if (r.status === "paid" && r.paid_tx_id) {
+        var rcpt = document.createElement("button");
+        rcpt.className = "linkbtn"; rcpt.style.cssText = "padding:4px 8px;color:var(--accent)";
+        rcpt.textContent = "🧾 Receipt";
+        rcpt.addEventListener("click", function () { pllReceipt(r.paid_tx_id, rcpt); });
+        right.appendChild(rcpt);
       }
       div.appendChild(info); div.appendChild(right);
       card.appendChild(div);
     });
     list.appendChild(card);
+    // Discoverability nudge: tell the owner receipts exist (some won't know).
+    var tip = document.createElement("div");
+    tip.className = "muted"; tip.style.cssText = "font-size:12px;margin-top:8px";
+    tip.textContent = "💡 Tap 🧾 Receipt on a paid item to send yourself a PDF receipt.";
+    list.appendChild(tip);
   }
+  window.pllReceipt = function (txId, btn) {
+    if (!txId) return;
+    btn.disabled = true; btn.textContent = "Sending…";
+    apiPost("api/receipt", { tx_id: txId })
+      .then(function (r) {
+        btn.disabled = false; btn.textContent = "🧾 Receipt";
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+        if (tg && tg.showAlert) {
+          tg.showAlert(r.delivered_to_chat ? "Receipt sent to your chat."
+                       : (r.message || "Couldn't deliver the receipt."));
+        }
+      })
+      .catch(function (e) {
+        btn.disabled = false; btn.textContent = "🧾 Receipt";
+        var err = document.createElement("div");
+        err.className = "err"; err.style.fontSize = "12px";
+        err.textContent = (e && e.body && e.body.message) || (e && e.message) || "Could not send receipt";
+        btn.parentNode.appendChild(err);
+      });
+  };
   window.pllCancel = function (payreqId, btn) {
     if (!payreqId) return;
     btn.disabled = true; btn.textContent = "Cancelling\u2026";

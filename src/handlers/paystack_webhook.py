@@ -275,6 +275,8 @@ def _handle_collection(metadata, data, reference):
             f"\U0001F4B0 *Payment received!*\n\n"
             f"\u20a6{amount_naira:,.0f}{who} for {description}.{settle_line}\n\n"
             f"It's recorded as a paid sale in your books.\n\n"
+            f"\U0001F9FE Need a receipt? Open the app \u2192 Customers \u2192 "
+            f"\U0001F4B3 Payment links \u2192 tap \U0001F9FE Receipt on this payment.\n\n"
             f"Ref: {safe_ref}"
         ))
     except Exception as e:
