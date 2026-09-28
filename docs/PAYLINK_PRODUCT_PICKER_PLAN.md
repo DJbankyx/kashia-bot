@@ -79,5 +79,12 @@ actually bill multi-product links, and keep **Option C** parked behind demand.
 - Per-invoice ledger (Option C) unless explicitly prioritized.
 
 ## Status
-NOT STARTED — plan only. Immediate honest-amount + part-payment-receipt fixes shipped
-separately (commit c8e436c); see docs/PAYMENT_COLLECTION_PLAN.md §12–13.
+- **Option A — SHIPPED** (commit 77aee46). The Mini App "Request payment" sheet has
+  an optional Product `<select>` populated from the catalog (sellable items only);
+  choosing one prefills amount (selling price) + description, "Something else" keeps
+  free text. JS-only (`plFillProducts`/`plPickProduct`), no server change.
+- **Option B (multi-line + per-item allocation)** and **Option C (per-invoice
+  ledger)** — NOT STARTED, deferred as above.
+
+Immediate honest-amount + part-payment-receipt fixes shipped separately (commit
+c8e436c); see docs/PAYMENT_COLLECTION_PLAN.md §12–13.
