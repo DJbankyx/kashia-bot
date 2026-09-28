@@ -891,8 +891,16 @@ class ProductionHandler:
                 "📋 Add products to your catalog first, then set recipes."
             )]
 
+        # Only FINISHED / SELLABLE goods can have a recipe — raw materials,
+        # supplies and overheads are recipe INPUTS, not things you set a recipe
+        # for. Filter by item_type so the picker doesn't list Nylon/Power/Bottle
+        # etc. (the owner + sister both hit this). "" / "product" /
+        # "finished_product" = sellable (legacy rows have no item_type).
+        SELLABLE = ("", "product", "finished_product")
         rows = []
-        for key, data in list(products.items())[:10]:
+        for key, data in products.items():
+            if str(data.get("item_type", "")).lower() not in SELLABLE:
+                continue
             name = data.get("name", key)
             recipe = data.get("recipe", [])
             desc = f"Recipe: {len(recipe)} materials" if recipe else "No recipe yet"
@@ -901,6 +909,14 @@ class ProductionHandler:
                 "title": f"📦 {name}"[:24],
                 "description": desc[:72],
             })
+            if len(rows) >= 10:
+                break
+
+        if not rows:
+            return [text_response(
+                "📋 You don't have any finished products yet — only raw materials.\n\n"
+                "Add a finished product (the thing you SELL) in Products & "
+                "Materials, then set its recipe here.")]
 
         self.session.save(phone_number, states.PRODUCTION_RECORDING, {
             "prod_step": "recipe_pick_product",

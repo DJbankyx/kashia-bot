@@ -248,7 +248,7 @@ class DebtHandler:
             pay_id = f"debt_payout_{name}"[:60]
             pay_title = "💵 Record a payment"
 
-        body = [headline, f"⏱ Age: {bucket} ({age} days)"]
+        body = [headline, f"⏱ Age: {bucket} ({age} {'day' if age == 1 else 'days'})"]
         if reason:
             body.append(f"📝 {reason}")
 

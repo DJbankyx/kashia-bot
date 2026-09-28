@@ -5151,6 +5151,32 @@ class CatalogHandler:
         """Save products dict to user profile."""
         self.db.update_user_field(phone_number, "product_catalog", {"products": products})
 
+    def ensure_raw_material(self, phone_number: str, name: str) -> str:
+        """Find (by name, case-insensitive) or CREATE a raw_material catalog row,
+        and return its key. This is the 'raw materials registry' — a material the
+        owner types while buying becomes a first-class inventory item, so it shows
+        in the picker next time and its stock/cost are tracked. Rejects reserved
+        menu labels. Returns "" on a bad name."""
+        clean = (name or "").strip()
+        if not clean or clean.lower() in self._RESERVED_PRODUCT_NAMES:
+            return ""
+        products = self._get_products(phone_number)
+        target = clean.lower()
+        for k, v in products.items():
+            if str(v.get("name", k)).strip().lower() == target:
+                return k   # already registered (any item_type) — reuse it
+        key = clean.lower().replace(" ", "_")
+        base, i = key, 2
+        while key in products:
+            key = f"{base}_{i}"; i += 1
+        products[key] = {"name": clean, "item_type": "raw_material", "stock": 0}
+        try:
+            self._save_products(phone_number, products)
+        except Exception as e:
+            logger.warning(f"ensure_raw_material save failed: {e}")
+            return ""
+        return key
+
     def ensure_item_types(self, phone_number: str) -> dict:
         """
         Ensure all products have an item_type tag. Auto-detects:

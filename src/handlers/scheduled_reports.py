@@ -244,7 +244,7 @@ def build_debt_notification(db, phone, report_type, now):
                 days_old = _days_since(d.get('last_date', ''))
                 msg += f"  • {d['name']}: ₦{d['amount']:,}"
                 if days_old:
-                    msg += f" ({days_old} days)"
+                    msg += f" ({days_old} {'day' if days_old == 1 else 'days'})"
                 msg += "\n"
             msg += f"  *Total: ₦{owed_to_me:,}*\n\n"
 
@@ -302,7 +302,7 @@ def build_overdue_alert(db, phone, now):
     msg = "⚠️ *Overdue Debt Alert*\n\n"
     msg += "These debts are over 14 days old:\n\n"
     for d in overdue[:5]:
-        msg += f"  • *{d['name']}* — ₦{d['amount']:,} ({d['days']} days old)\n"
+        msg += f"  • *{d['name']}* — ₦{d['amount']:,} ({d['days']} {'day' if d['days'] == 1 else 'days'} old)\n"
 
     total = sum(d['amount'] for d in overdue)
     msg += f"\n*Total overdue: ₦{total:,}*"
@@ -332,7 +332,7 @@ def build_inactivity_alert(db, phone, now):
 
     msg = (
         f"👋 *Quick Check-in*\n\n"
-        f"You haven't recorded any transactions in {days} days.\n\n"
+        f"You haven't recorded any transactions in {days} {'day' if days == 1 else 'days'}.\n\n"
         f"Don't forget to track your sales and expenses — it only takes a few seconds!\n\n"
         f"_Just type what happened e.g. \"sold shoes to Amaka for 15,000\"_"
     )

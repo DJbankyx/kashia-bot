@@ -167,7 +167,21 @@ class TGFastEntry:
         fx["rows"] = rows
 
         if not rows:
-            # No catalog — go straight to price/total with a generic item.
+            # No catalog rows to pick from. For a mfg/hybrid PURCHASE this is the
+            # common "I haven't registered this raw material yet" case — DON'T
+            # silently record it as a nameless "Item" (the owner + sister hit
+            # this). Ask them to TYPE the material name; we register it as a
+            # raw_material so it's in the picker next time (the "registry" ask).
+            if tx_type == "purchase":
+                fx["step"] = "await_purchase_item"
+                prompt = spec.get("item_prompt", "What did you buy?")
+                self._render(phone_number, fx,
+                             f"{self._header(fx)}\n{prompt}\n\n_Type the name "
+                             f"(e.g. Nylon, Sulphonic Acid). I'll remember it for "
+                             f"next time._",
+                             [])
+                return []
+            # Sale/other with no catalog — keep the old generic-item behaviour.
             fx["product_name"] = "Item"
             fx["product_key"] = ""
             return self._go_to_price_or_qty(phone_number, fx, first_screen=True)
@@ -421,6 +435,26 @@ class TGFastEntry:
                                  "🧾 That didn't look like an amount. Type the total, e.g. 12000 or 12k:")
                 return []
             return self._set_total(phone_number, fx, int(total))
+
+        if step == "await_purchase_item":
+            # Owner typed the raw-material name (no catalog row existed). Register
+            # it as a raw_material so it's a first-class inventory item + shows in
+            # the picker next time (the "registry" the owner asked for), then
+            # continue to price/qty like a picked item.
+            name = text.strip()
+            if not name:
+                self._edit_plain(phone_number, fx,
+                                 "🧱 Type the raw material name (e.g. Nylon, Flour, Bottles):")
+                return []
+            key = ""
+            try:
+                key = self.catalog.ensure_raw_material(phone_number, name) or ""
+            except Exception as e:
+                logger.warning(f"tg_fastentry: ensure_raw_material failed: {e}")
+            fx["product_name"] = name
+            fx["product_key"] = key
+            fx["counted_stock"] = True   # raw materials are stock-tracked
+            return self._go_to_price_or_qty(phone_number, fx, first_screen=False)
 
         if step == "await_expense_desc":
             desc = text.strip()
