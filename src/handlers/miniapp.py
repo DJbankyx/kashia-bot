@@ -4747,15 +4747,46 @@ window.onerror = function (msg, src, line, col, err) {
     var avail = d.available_materials || [];
     sel.innerHTML = "";
     document.getElementById("rc-add").disabled = false;
-    avail.forEach(function (m) {
+    // Build one option, formatting the money as a per-unit figure and marking
+    // OVERHEADS as rates so they aren't mistaken for a raw-material's unit cost.
+    // An overhead's number is a RATE per unit of usage (e.g. \u20a61.5/sec of
+    // labour), whereas a material's number is the cost of ONE unit you consume
+    // (e.g. \u20a670/piece of bottle). Same "\u20a6X" with no context was
+    // misleading, so overheads read "... \u20a61.5/sec (rate)".
+    function mkOpt(m) {
       var o = document.createElement("option");
       o.value = m.key;
       o.setAttribute("data-unit", m.unit || "");
       o.setAttribute("data-type", m.item_type || "material");
-      o.textContent = m.name + (m.unit ? (" (" + m.unit + ")") : "") +
-        (m.cost ? (" · " + naira(m.cost)) : "");
-      sel.appendChild(o);
-    });
+      var isOverhead = (m.item_type === "overhead");
+      var per = m.unit ? ("/" + m.unit) : "";
+      var money = m.cost ? (naira(m.cost) + per) : "";
+      var label = m.name;
+      if (isOverhead) {
+        // \u26a1 lightning marks an overhead at a glance; "(rate)" spells it out.
+        label = "\\u26a1 " + m.name + (money ? (" \u2014 " + money + " (rate)") : " (rate)");
+      } else {
+        label = m.name + (money ? (" \u2014 " + money) : (m.unit ? (" (" + m.unit + ")") : ""));
+      }
+      o.textContent = label;
+      return o;
+    }
+    // Group into Raw materials vs Overheads so rates and costs aren't
+    // interleaved. Anything not an overhead is treated as a stock material here.
+    var mats = avail.filter(function (m) { return m.item_type !== "overhead"; });
+    var ovh = avail.filter(function (m) { return m.item_type === "overhead"; });
+    if (mats.length) {
+      var g1 = document.createElement("optgroup");
+      g1.label = "Raw materials";
+      mats.forEach(function (m) { g1.appendChild(mkOpt(m)); });
+      sel.appendChild(g1);
+    }
+    if (ovh.length) {
+      var g2 = document.createElement("optgroup");
+      g2.label = "Overheads (rate \u00d7 usage)";
+      ovh.forEach(function (m) { g2.appendChild(mkOpt(m)); });
+      sel.appendChild(g2);
+    }
     var nn = document.createElement("option");
     nn.value = "__new__";
     nn.textContent = "\u2795 New material\u2026";

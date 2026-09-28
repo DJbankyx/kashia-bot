@@ -295,6 +295,9 @@ class CatalogHandler:
         if button_id == "cat_add":
             return self._start_add_product(phone_number)
 
+        if button_id == "cat_add_raw":
+            return self._start_add_raw_material(phone_number)
+
         if button_id == "cat_recipe":
             # Delegate to production handler's recipe setup
             # Return a marker that the router will handle
@@ -580,6 +583,13 @@ class CatalogHandler:
         # Add service steps (services industry)
         if step in ("adding_service_name", "adding_service_price"):
             return self._handle_add_service(phone_number, text_s, context)
+
+        # Add raw material steps (manufacturing/hybrid) — the chat-side registry,
+        # mirroring the Mini App "Add raw material". Register a material you have
+        # on hand, not yet tied to any product's recipe.
+        if step in ("adding_raw_name", "adding_raw_unit", "adding_raw_cost",
+                    "adding_raw_stock"):
+            return self._handle_add_raw_material(phone_number, text_s, context)
 
         self.session.reset(phone_number)
         return self.show_menu(phone_number)
@@ -1043,6 +1053,133 @@ class CatalogHandler:
                 button_response("What's next?", [
                     {"id": "cat_add_service", "title": "➕ Add Another"},
                     {"id": "rec_add", "title": "🔁 Add Recurring"},
+                    {"id": "menu_home", "title": "☰ Menu"},
+                ])
+            ]
+
+        return self.show_menu(phone_number)
+
+    # ─────────────────────────────────────────────────────────
+    # ADD RAW MATERIAL (chat registry — parity with the Mini App)
+    # ─────────────────────────────────────────────────────────
+    def _start_add_raw_material(self, phone_number: str) -> list:
+        """Start the chat flow to register a raw material directly (not tied to
+        any product's recipe yet). Mirrors the Mini App "🧱 Add raw material".
+        name → optional unit → optional cost → optional opening stock."""
+        self.session.save(phone_number, states.CATALOG_ADD_DATA, {
+            "cat_step": "adding_raw_name",
+        })
+        return [text_response(
+            "🧱 *Add Raw Material*\n\n"
+            "What's the raw material called?\n\n"
+            "_e.g. Nylon, Flour, Sugar, Bottle Caps_\n\n"
+            "_Type *back* to cancel_"
+        )]
+
+    def _handle_add_raw_material(self, phone_number: str, text: str, context: dict) -> list:
+        """Register a raw material via the engine registry (ensure_raw_material),
+        then set its unit / cost / opening stock across a few optional steps.
+        Money is kobo-precise; stock is fractional; unit is a plain primary_unit."""
+        step = context.get("cat_step", "")
+
+        if step == "adding_raw_name":
+            name = text.strip()
+            if len(name) < 2:
+                return [text_response("Please enter the raw material name (at least 2 characters):")]
+            # Find-or-create via the shared registry. Returns "" for a reserved
+            # menu label or a save failure — surface a helpful error.
+            key = self.ensure_raw_material(phone_number, name)
+            if not key:
+                return [text_response(
+                    "⚠️ That name can't be used (it clashes with a menu option). "
+                    "Try a different name:"
+                )]
+            context["cat_step"] = "adding_raw_unit"
+            context["raw_key"] = key
+            context["raw_name"] = name.strip()
+            self.session.save(phone_number, states.CATALOG_ADD_DATA, context)
+            return [text_response(
+                f"🧱 *{name.strip().title()}*\n\n"
+                f"📏 What unit do you track its stock in?\n\n"
+                f"_e.g. kg, litre, bag, piece_\n\n"
+                f"_Type *skip* if you're not sure yet_"
+            )]
+
+        if step == "adding_raw_unit":
+            key = context.get("raw_key", "")
+            products = self._get_products(phone_number)
+            prod = products.get(key)
+            if not isinstance(prod, dict):
+                self.session.reset(phone_number)
+                return [text_response("❓ That material is no longer in your catalog.")]
+            if text.lower() not in ("skip", "none", "-"):
+                unit = text.strip().lower()
+                if len(unit) <= 20:
+                    prod["primary_unit"] = unit
+                    self._save_products(phone_number, products)
+            context["cat_step"] = "adding_raw_cost"
+            self.session.save(phone_number, states.CATALOG_ADD_DATA, context)
+            unit_word = prod.get("primary_unit", "") or "unit"
+            return [text_response(
+                f"💰 How much does ONE {unit_word} cost you?\n\n"
+                f"_e.g. 400, 1.2K, 0.06 (sub-naira is fine)_\n\n"
+                f"_Type *skip* if you don't want to set a cost now_"
+            )]
+
+        if step == "adding_raw_cost":
+            key = context.get("raw_key", "")
+            products = self._get_products(phone_number)
+            prod = products.get(key)
+            if not isinstance(prod, dict):
+                self.session.reset(phone_number)
+                return [text_response("❓ That material is no longer in your catalog.")]
+            if text.lower() not in ("skip", "none", "-", "0"):
+                amount = parse_amount(text)
+                if not amount:
+                    return [text_response("💰 Enter a cost (e.g. 400, 1.2K) or type *skip*:")]
+                from utils.money import money_round
+                prod["landing_cost"] = money_round(amount)
+                self._save_products(phone_number, products)
+            context["cat_step"] = "adding_raw_stock"
+            self.session.save(phone_number, states.CATALOG_ADD_DATA, context)
+            unit_word = prod.get("primary_unit", "") or "units"
+            return [text_response(
+                f"📦 How much do you have on hand right now?\n\n"
+                f"_e.g. 10, 2.5 ({unit_word})_\n\n"
+                f"_Type *skip* to leave it at 0_"
+            )]
+
+        if step == "adding_raw_stock":
+            key = context.get("raw_key", "")
+            name = context.get("raw_name", "Raw material")
+            products = self._get_products(phone_number)
+            prod = products.get(key)
+            if not isinstance(prod, dict):
+                self.session.reset(phone_number)
+                return [text_response("❓ That material is no longer in your catalog.")]
+            if text.lower() not in ("skip", "none", "-"):
+                qty = self._as_num(text, None)
+                if qty is None:
+                    return [text_response("📦 Enter a quantity (e.g. 10, 2.5) or type *skip*:")]
+                prod["stock"] = qty
+                self._save_products(phone_number, products)
+            self.session.reset(phone_number)
+
+            # Confirmation summary.
+            cost = prod.get("landing_cost", 0) or 0
+            unit_word = prod.get("primary_unit", "")
+            stock = prod.get("stock", 0) or 0
+            bits = []
+            if stock:
+                bits.append(f"{self._fmt_qty(stock)}{(' ' + unit_word) if unit_word else ''} on hand")
+            if cost:
+                bits.append(f"{format_amount(cost)}/{unit_word or 'unit'}")
+            detail = (" — " + " · ".join(bits)) if bits else ""
+            return [
+                text_response(f"✅ Raw material registered: *{name.title()}*{detail}"),
+                button_response("What's next?", [
+                    {"id": "cat_add_raw", "title": "🧱 Add Another"},
+                    {"id": "cat_recipe", "title": "📋 Set Recipe"},
                     {"id": "menu_home", "title": "☰ Menu"},
                 ])
             ]
@@ -3433,6 +3570,11 @@ class CatalogHandler:
             rows.append({"id": "cat_shelf_low", "title": f"🔴 Low Stock ({len(low)})"})
         rows.append({"id": "cat_count_start", "title": "🧮 Stock-Take (count)"})
         rows.append({"id": "cat_add", "title": "➕ Add Item"})
+        # Raw materials are a manufacturing/hybrid concept — offer a direct
+        # "Add raw material" so you can register stock not yet tied to a product
+        # (parity with the Mini App). Only for mfg/hybrid.
+        if self._uses_type_split(phone_number):
+            rows.append({"id": "cat_add_raw", "title": "🧱 Add Raw Material"})
 
         return [list_response(
             header=f"📋 {label}",
