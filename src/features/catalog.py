@@ -439,6 +439,20 @@ class CatalogHandler:
             self.session.reset(phone_number)
             return [text_response("👍 Cancelled.")]
 
+        # "✅ Done" finishing the add-products flow — items are already saved, so
+        # confirm success (NOT "Cancelled") and offer the next step. Previously
+        # the Done button reused cat_cancel, so tapping Done showed "Cancelled"
+        # even though the products were added (owner flagged).
+        if button_id == "cat_done":
+            self.session.reset(phone_number)
+            return [button_response(
+                "✅ All set — your products are saved.",
+                [
+                    {"id": "cat_stock", "title": "📊 View Stock"},
+                    {"id": "cat_add", "title": "➕ Add More"},
+                    {"id": "menu_home", "title": "☰ Menu"},
+                ])]
+
         return self.show_menu(phone_number)
 
     # ─────────────────────────────────────────────────────────
@@ -1547,7 +1561,7 @@ class CatalogHandler:
             "_e.g. Toyota Prado, Honda Civic, Kia Sportage_\n"
             "_e.g. Detergent 1L, Soap Bar, Hand Wash_",
             [
-                {"id": "cat_cancel", "title": "✅ Done"},
+                {"id": "cat_done", "title": "✅ Done"},
             ]
         )]
 
@@ -1621,7 +1635,7 @@ class CatalogHandler:
         # (Typing more names still works too — the state stays in add mode.)
         return [button_response("\n".join(lines), [
             {"id": "cat_add", "title": "➕ Add More"},
-            {"id": "cat_cancel", "title": "✅ Done"},
+            {"id": "cat_done", "title": "✅ Done"},
         ])]
 
     # ─────────────────────────────────────────────────────────
