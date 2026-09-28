@@ -56,6 +56,22 @@ bolted onto the existing simple pay-link as a rushed patch.
   (or customer) chooses. This is the "real" accounting answer and the biggest change
   (data model + every debt surface + reports). Park unless demanded.
 
+### B does NOT require C (important sequencing note)
+B has two flavours and only the second needs C:
+- **B-lite (buildable now, no C):** multi-line pay-link; on FULL payment record each
+  line as its own paid sale; on PART payment allocate by a STATED rule (proportional
+  across lines, or FIFO oldest-first). Works on today's single-balance-per-contact
+  model. The only compromise is that the split is a rule, not the customer's exact
+  per-item intention (there's no per-invoice ledger to record "they meant ₦2k for
+  rice specifically").
+- **B-exact (needs C):** the payer/owner picks exactly which product/invoice each
+  naira covers, tracked per invoice forever.
+So the sequence is A (done) → **B-lite** → C only if merchants actually need exact
+per-item tracking. Do NOT attempt exact per-item allocation without C — that's the
+part with nowhere truthful to land. **Best time to build B-lite:** right after a real
+multi-product test, so the allocation rule (proportional vs FIFO) is chosen from
+observed merchant behaviour rather than guessed.
+
 ## Recommendation
 Ship **Option A first** (product dropdown on the Mini App pay-link sheet) — it
 answers the owner's immediate "where's my product list?" with almost no risk and no
