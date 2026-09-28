@@ -2244,10 +2244,44 @@ class TransactionHandler:
                 "refund_mode": "debt_cancelled" if (orig_credit and vendor) else "cash",
                 "debt_adjusted": debt_adjusted,
                 "stock_matched": bool(stock_result and stock_result.get("matched")),
+                # For the caller (returns UI): if the ORIGINAL sale was paid online
+                # via Paystack, surface its reference + whether this is a cash
+                # refund, so it can offer to push the refund back through Paystack.
+                "orig_paystack_ref": ((original.get("extra_details") or {}).get("paystack_ref")
+                                      if return_type == "sale_return" else ""),
             }
         except Exception as e:
             logger.error(f"record_return error: {e}\n{traceback.format_exc()}")
             return {"ok": False, "error": "could not record the return — please try again"}
+
+    def online_refund(self, phone_number: str, paystack_ref: str, amount_naira,
+                      return_tx_id: str = "") -> dict:
+        """Push a refund back to the customer through Paystack for a returned
+        online-paid sale. Best-effort + guarded: idempotency-claims the refund on
+        the reference+amount so a repeat tap can't double-refund; the books were
+        ALREADY adjusted by record_return, so a Paystack failure here doesn't
+        corrupt accounting — it just means the owner refunds manually. Never
+        raises. Returns {ok, status?, amount?, error?}."""
+        try:
+            if not paystack_ref:
+                return {"ok": False, "error": "this sale wasn't paid online"}
+            # Idempotency: one online refund per (ref, amount). Reuse the same
+            # marker guard the webhook uses so a double-tap can't double-refund.
+            claim_id = f"refund#{paystack_ref}#{int(round(float(amount_naira) * 100))}"
+            claimed, _ = self.db.claim_web_submit(phone_number, claim_id)
+            if not claimed:
+                return {"ok": False, "error": "already refunded online"}
+            from services.paystack import PaystackService
+            res = PaystackService().refund_transaction(paystack_ref, amount_naira=amount_naira)
+            if not res.get("success"):
+                # Release so the owner can retry (nothing was refunded).
+                self.db.release_web_submit(phone_number, claim_id)
+                return {"ok": False, "error": res.get("error") or "refund failed"}
+            return {"ok": True, "status": res.get("status", "processing"),
+                    "amount": res.get("amount", amount_naira)}
+        except Exception as e:
+            logger.error(f"online_refund failed: {e}")
+            return {"ok": False, "error": "could not process the online refund"}
 
     def _maybe_cost_choice_prompt(self, phone_number: str, tx_data: dict,
                                   stock_result: dict):

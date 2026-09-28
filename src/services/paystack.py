@@ -282,6 +282,57 @@ class PaystackService:
             logger.error(f"Paystack verify error: {e}")
             return {"success": False, "error": str(e)}
 
+    def refund_transaction(self, reference: str, amount_naira=None) -> dict:
+        """Issue a Paystack REFUND against an original charge reference (pushes
+        money back to the customer). Full refund when amount_naira is None; else a
+        PARTIAL refund of that naira amount. Used when a customer returns goods
+        they paid for online (a sale_return on a Paystack-paid collection).
+
+        Paystack: POST /refund with {transaction: <ref>, amount: <kobo?>}. Paystack
+        itself guards against over-refunding (you can't refund more than was paid,
+        and repeated identical refunds are rejected), which backstops our own
+        guard on the return side.
+
+        Returns {"success": True, "status": <paystack refund status>,
+        "amount": <naira refunded>} or {"success": False, "error": "..."}.
+        """
+        from utils.money import money_round
+        try:
+            if not reference:
+                return {"success": False, "error": "no payment reference to refund"}
+            payload = {"transaction": str(reference)}
+            if amount_naira is not None:
+                amt = money_round(amount_naira)
+                kobo = int(round(float(amt) * 100))
+                if kobo <= 0:
+                    return {"success": False, "error": "refund amount must be greater than 0"}
+                payload["amount"] = kobo
+            resp = requests.post(
+                f"{PAYSTACK_BASE_URL}/refund",
+                headers=self._get_headers(),
+                json=payload,
+                timeout=15,
+            )
+            if resp.status_code in (200, 201):
+                data = resp.json().get("data", {}) or {}
+                refunded_kobo = data.get("amount") or payload.get("amount") or 0
+                return {
+                    "success": True,
+                    "status": data.get("status", "processing"),
+                    "amount": (int(refunded_kobo) / 100.0) if refunded_kobo else amount_naira,
+                    "reference": reference,
+                }
+            # Paystack returns a helpful message (e.g. already refunded / too large).
+            try:
+                msg = resp.json().get("message", "")
+            except Exception:
+                msg = resp.text[:200]
+            logger.error(f"Paystack refund error: {resp.status_code} {msg}")
+            return {"success": False, "error": msg or f"refund failed ({resp.status_code})"}
+        except Exception as e:
+            logger.error(f"Paystack refund request error: {e}")
+            return {"success": False, "error": str(e)}
+
     @staticmethod
     def verify_webhook_signature(payload_body: str, signature: str, secret_key: str) -> bool:
         """Verify that a webhook request is genuinely from Paystack."""

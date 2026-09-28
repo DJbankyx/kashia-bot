@@ -153,6 +153,27 @@ class ReturnsHandler:
             self.session.reset(phone_number)
             return self.show_menu(phone_number)
 
+        # Push a refund back through Paystack for an online-paid sale return.
+        if bid == "return_refund_online":
+            ctx = (session or {}).get("context", {}) or {}
+            ref = ctx.get("refund_ref", "")
+            amt = ctx.get("refund_amount", 0)
+            self.session.reset(phone_number)
+            tx = self._tx_handler()
+            if tx is None or not ref:
+                return [text_response("⚠️ Couldn't start the online refund.")] + self.show_menu(phone_number)
+            res = tx.online_refund(phone_number, ref, amt)
+            if res.get("ok"):
+                msg = (f"💳 *Online refund sent* · {format_amount(res.get('amount', amt))}\n\n"
+                       f"Paystack is processing it back to the customer "
+                       f"(status: {res.get('status', 'processing')}). The return is "
+                       f"already recorded in your books.")
+            else:
+                msg = (f"⚠️ Couldn't refund online: {res.get('error', 'try again')}.\n\n"
+                       f"The return IS recorded in your books — you can refund the "
+                       f"customer manually.")
+            return [text_response(msg)] + self.show_menu(phone_number)
+
         # One-tap from a just-made sale's receipt card → jump straight to that
         # sale's quantity picker (skips the recent-list).
         if bid.startswith("return_from_"):
@@ -294,10 +315,23 @@ class ReturnsHandler:
         if not result.get("stock_matched"):
             lines.append("_Note: no matching catalog item, so stock wasn't adjusted._")
 
-        return [button_response(
-            "\n".join(lines),
-            [
-                {"id": "menu_returns", "title": "↩️ Another return"},
-                {"id": "menu_home", "title": "☰ Menu"},
-            ]
-        )]
+        # If this was a CASH refund on a sale the customer paid ONLINE (Paystack),
+        # offer to push the refund back through Paystack — a deliberate extra tap
+        # (money action). The books are already adjusted either way.
+        pref = result.get("orig_paystack_ref") or ""
+        buttons = []
+        if is_sale and mode == "cash" and pref:
+            lines.append("\n💳 This sale was paid online. Refund it back to the "
+                         "customer's card/account?")
+            self.session.save(phone_number, states.RETURN_RECORDING, {
+                "refund_ref": pref,
+                "refund_amount": result.get("amount", 0),
+                "refund_tx_id": result.get("transaction_id", ""),
+            })
+            buttons.append({"id": "return_refund_online", "title": "💳 Refund online"})
+
+        buttons += [
+            {"id": "menu_returns", "title": "↩️ Another return"},
+            {"id": "menu_home", "title": "☰ Menu"},
+        ]
+        return [button_response("\n".join(lines), buttons)]
