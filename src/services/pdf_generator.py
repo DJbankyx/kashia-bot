@@ -567,6 +567,48 @@ class PDFGenerator:
                     tax_label = f"{tax_type} ({tax_pct}%)" if tax_pct else tax_type
                     details.append([tax_label, f"+ NGN {_m(tax_amt)}"])
 
+            # ── ITEMIZED line-item table (what was purchased) ──
+            # A single transaction is one line item (Kashia doesn't do multi-line
+            # baskets per tx). Render it like the invoice's items table so the
+            # receipt shows Description / Qty / Unit Price / Amount instead of a
+            # flat "Item: X". Unit price falls back to amount/qty when not stored.
+            try:
+                _qty = to_money(quantity) if quantity else to_money(0)
+                _unit = to_money(unit_cost) if unit_cost else to_money(0)
+                if _qty and not _unit:
+                    _unit = money_round(to_money(amount) / _qty) if _qty else to_money(0)
+                qty_disp = (str(int(_qty)) if _qty and float(_qty) == int(_qty)
+                            else (_m(_qty) if _qty else "1"))
+                item_rows = [['Description', 'Qty', 'Unit Price', 'Amount (NGN)']]
+                item_rows.append([
+                    clean_desc.title(),
+                    qty_disp if _qty else "1",
+                    (f"NGN {_m(_unit)}" if _unit else "—"),
+                    f"NGN {_m(amount)}",
+                ])
+                item_rows.append(['', '', 'TOTAL', f"NGN {_m(amount)}"])
+                items_table = Table(item_rows, colWidths=[7*cm, 2.5*cm, 3.5*cm, 4*cm])
+                items_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), HexColor('#2c3e50')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), white),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 10),
+                    ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
+                    ('TOPPADDING', (0, 0), (-1, -1), 6),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                    ('LINEBELOW', (0, 0), (-1, -2), 0.4, HexColor('#eeeeee')),
+                    ('LINEABOVE', (0, -1), (-1, -1), 0.6, HexColor('#2c3e50')),
+                ]))
+                story.append(items_table)
+                story.append(Spacer(1, 8*mm))
+            except Exception as e:
+                logger.warning(f"receipt items table failed: {e}")
+
+            # Remaining meta (date / payment / discount / tax) below the items —
+            # keep the item row OUT of this table now that it's in the items table.
+            details = [d for d in details if d and d[0] not in ("Item", "Quantity", "Unit Price")]
+
             details_table = Table(details, colWidths=[5*cm, 12*cm])
             details_table.setStyle(TableStyle([
                 ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
@@ -575,7 +617,8 @@ class PDFGenerator:
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
                 ('LINEBELOW', (0, 0), (-1, -1), 0.5, HexColor('#eeeeee')),
             ]))
-            story.append(details_table)
+            if details:
+                story.append(details_table)
             story.append(Spacer(1, 20*mm))
 
             # Signature line
