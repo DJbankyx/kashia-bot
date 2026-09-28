@@ -201,9 +201,12 @@ def _handle_collection(metadata, data, reference):
     payreq_id = metadata.get("payreq_id") or ""
     customer_name = (metadata.get("customer_name") or "").strip()
     description = metadata.get("description") or "Payment received"
-    # Amount actually paid, from Paystack (integer kobo) → naira, kobo-precise.
+    # GROSS amount Paystack charged the customer (integer kobo) → naira. This
+    # INCLUDES Paystack's own processing fee, which the customer pays on top of
+    # what the owner requested (fees=none on our side). It is NOT what the owner
+    # sold — recording it as revenue would overstate the books by the fee.
     kobo = data.get("amount", 0) if isinstance(data, dict) else 0
-    amount_naira = money_round((int(kobo) if kobo else 0) / 100.0)
+    gross_naira = money_round((int(kobo) if kobo else 0) / 100.0)
 
     if not owner_id:
         logger.error(f"Collection webhook missing owner_id: {metadata}")
@@ -227,10 +230,32 @@ def _handle_collection(metadata, data, reference):
             logger.info(f"Payment request {payreq_id} already paid — skipping.")
             return response(200, {"status": "already_paid"})
 
+        # ── HONEST AMOUNT (Fix C) ──
+        # Record what the owner ASKED FOR (the stored request amount), NOT the
+        # fee-inflated gross Paystack charged the customer. The difference is
+        # Paystack's processing fee (the customer covers it; we add no markup).
+        # Recording the gross would overstate revenue by that fee. Fall back to
+        # the gross only if we can't read the stored request (shouldn't happen —
+        # the link isn't handed out unless create_payment_request persisted).
+        requested_naira = None
+        if preq is not None:
+            try:
+                requested_naira = money_round(preq.get("amount", 0) or 0)
+            except Exception:
+                requested_naira = None
+        amount_naira = requested_naira if (requested_naira and requested_naira > 0) else gross_naira
+        # Fee the customer paid on top (>= 0). Purely informational in the books;
+        # the owner neither earns nor pays it — Paystack takes it from the payer.
+        fee_naira = money_round(gross_naira - amount_naira)
+        if fee_naira < 0:
+            fee_naira = 0
+
         # AUTO-SETTLE vs fresh sale (owner decision: auto-reconcile). If the
         # customer has an open receivable, settle it; otherwise record a fresh
         # paid sale. Either way a SALE is logged (mirrors debt._apply_directed_
         # payment: settle_debt + a settling sale), so income is captured once.
+        # Settlement uses the REQUESTED amount (what actually pays down the debt),
+        # never the fee-inflated gross.
         settled = 0
         if customer_name:
             try:
@@ -247,7 +272,8 @@ def _handle_collection(metadata, data, reference):
             owner_id, amount_naira, "sale", description, "Sales & Income",
             vendor=customer_name, payment_method="cash",
             extra_details={"source": "payment_collection", "paystack_ref": reference,
-                           "payreq_id": payreq_id, "settled_receivable": settled},
+                           "payreq_id": payreq_id, "settled_receivable": settled,
+                           "gross_charged": gross_naira, "paystack_fee": fee_naira},
         )
         paid_tx_id = (sale or {}).get("transaction_id", "")
 
@@ -270,10 +296,15 @@ def _handle_collection(metadata, data, reference):
         who = f" from *{customer_name}*" if customer_name else ""
         settle_line = (f"\n\u2705 Settled \u20a6{settled:,.0f} of what they owed."
                        if settled else "")
+        # Only mention the fee when there was one, so the owner understands why
+        # their Paystack dashboard shows a bigger number than what we booked.
+        fee_line = (f"\n\u2139\uFE0F Customer also paid \u20a6{fee_naira:,.0f} "
+                    f"Paystack fee (not counted as your income)."
+                    if fee_naira else "")
         safe_ref = str(reference).replace("\\", "\\\\").replace("_", "\\_").replace("*", "\\*")
         client.send_text(recipient, (
             f"\U0001F4B0 *Payment received!*\n\n"
-            f"\u20a6{amount_naira:,.0f}{who} for {description}.{settle_line}\n\n"
+            f"\u20a6{amount_naira:,.0f}{who} for {description}.{settle_line}{fee_line}\n\n"
             f"It's recorded as a paid sale in your books.\n\n"
             f"\U0001F9FE Need a receipt? Open the app \u2192 Customers \u2192 "
             f"\U0001F4B3 Payment links \u2192 tap \U0001F9FE Receipt on this payment.\n\n"
@@ -285,6 +316,7 @@ def _handle_collection(metadata, data, reference):
         logger.warning(f"collection notify failed: {e}")
 
     logger.info(f"Collection recorded: {owner_id} ₦{amount_naira} "
+                f"(gross ₦{gross_naira}, fee ₦{fee_naira}) "
                 f"settled={settled} ref={reference}")
     return response(200, {"status": "success", "owner": owner_id,
                           "amount": amount_naira, "settled": settled})

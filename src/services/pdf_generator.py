@@ -489,6 +489,34 @@ class PDFGenerator:
 
             story.append(Spacer(1, 8*mm))
 
+            # ── PART-PAYMENT DETECTION ──
+            # A receipt should never fake a "Qty × Unit Price = Amount" line for a
+            # payment that doesn't correspond to buying goods at that price — e.g.
+            # a customer paying PART of what they owe across several past sales. In
+            # that case an itemized goods table is misleading. We treat the receipt
+            # as a PAYMENT receipt (amount received + balance remaining) when the
+            # customer still has an outstanding balance after this payment, or when
+            # the transaction explicitly settled a receivable. Signals used:
+            #   • extra_details.settled_receivable > 0  → this paid down a debt
+            #   • the customer's contact still shows debt_owed_to_me > 0 (balance)
+            #   • balance_owed on the tx itself (a credit/part-paid sale)
+            extra = tx.get('extra_details', {}) or {}
+            settled_receivable = to_money(extra.get('settled_receivable', 0) or 0)
+            outstanding = to_money(0)
+            try:
+                if vendor and tx_type in ('sale', 'income'):
+                    _contact = self.db.get_contact_by_name(phone_number, vendor)
+                    outstanding = to_money((_contact or {}).get('debt_owed_to_me', 0) or 0)
+            except Exception:
+                outstanding = to_money(0)
+            # A part-paid credit sale stores its own remaining balance.
+            tx_balance = to_money(tx.get('balance_owed', 0) or 0)
+            if tx_balance and tx_balance > outstanding:
+                outstanding = tx_balance
+            # It's a payment (not a clean goods sale) if a debt was settled OR a
+            # balance remains owed by this customer.
+            is_payment_receipt = bool(settled_receivable > 0 or outstanding > 0)
+
             # Amount (large, prominent)
             story.append(Paragraph(f"NGN {_m(amount)}", self.styles['KashiaAmount']))
             story.append(Spacer(1, 8*mm))
@@ -567,43 +595,80 @@ class PDFGenerator:
                     tax_label = f"{tax_type} ({tax_pct}%)" if tax_pct else tax_type
                     details.append([tax_label, f"+ NGN {_m(tax_amt)}"])
 
-            # ── ITEMIZED line-item table (what was purchased) ──
-            # A single transaction is one line item (Kashia doesn't do multi-line
-            # baskets per tx). Render it like the invoice's items table so the
-            # receipt shows Description / Qty / Unit Price / Amount instead of a
-            # flat "Item: X". Unit price falls back to amount/qty when not stored.
-            try:
-                _qty = to_money(quantity) if quantity else to_money(0)
-                _unit = to_money(unit_cost) if unit_cost else to_money(0)
-                if _qty and not _unit:
-                    _unit = money_round(to_money(amount) / _qty) if _qty else to_money(0)
-                qty_disp = (str(int(_qty)) if _qty and float(_qty) == int(_qty)
-                            else (_m(_qty) if _qty else "1"))
-                item_rows = [['Description', 'Qty', 'Unit Price', 'Amount (NGN)']]
-                item_rows.append([
-                    clean_desc.title(),
-                    qty_disp if _qty else "1",
-                    (f"NGN {_m(_unit)}" if _unit else "—"),
-                    f"NGN {_m(amount)}",
-                ])
-                item_rows.append(['', '', 'TOTAL', f"NGN {_m(amount)}"])
-                items_table = Table(item_rows, colWidths=[7*cm, 2.5*cm, 3.5*cm, 4*cm])
-                items_table.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, 0), HexColor('#2c3e50')),
-                    ('TEXTCOLOR', (0, 0), (-1, 0), white),
-                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, -1), 10),
-                    ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
-                    ('TOPPADDING', (0, 0), (-1, -1), 6),
-                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                    ('LINEBELOW', (0, 0), (-1, -2), 0.4, HexColor('#eeeeee')),
-                    ('LINEABOVE', (0, -1), (-1, -1), 0.6, HexColor('#2c3e50')),
-                ]))
-                story.append(items_table)
-                story.append(Spacer(1, 8*mm))
-            except Exception as e:
-                logger.warning(f"receipt items table failed: {e}")
+            if is_payment_receipt:
+                # ── PAYMENT RECEIPT table (money received, not goods sold) ──
+                # Honest for part-payments: shows what was paid + the balance that
+                # remains, WITHOUT inventing a per-unit price the payment never had.
+                try:
+                    pay_rows = [['Description', 'Amount (NGN)']]
+                    pay_rows.append([
+                        (clean_desc.title() if clean_desc else "Payment received"),
+                        f"NGN {_m(amount)}",
+                    ])
+                    pay_rows.append(['Amount Paid', f"NGN {_m(amount)}"])
+                    if outstanding and outstanding > 0:
+                        pay_rows.append(['Balance Remaining', f"NGN {_m(outstanding)}"])
+                    pay_table = Table(pay_rows, colWidths=[11.5*cm, 5.5*cm])
+                    pay_table.setStyle(TableStyle([
+                        ('BACKGROUND', (0, 0), (-1, 0), HexColor('#2c3e50')),
+                        ('TEXTCOLOR', (0, 0), (-1, 0), white),
+                        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+                        ('FONTSIZE', (0, 0), (-1, -1), 10),
+                        ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
+                        ('TOPPADDING', (0, 0), (-1, -1), 6),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                        ('LINEBELOW', (0, 0), (-1, -2), 0.4, HexColor('#eeeeee')),
+                        ('LINEABOVE', (0, -1), (-1, -1), 0.6, HexColor('#2c3e50')),
+                    ]))
+                    story.append(pay_table)
+                    story.append(Spacer(1, 4*mm))
+                    if outstanding and outstanding > 0:
+                        story.append(Paragraph(
+                            "This is a receipt for a payment received. A balance "
+                            "remains on the account as shown above.",
+                            self.styles['KashiaSmall']))
+                    story.append(Spacer(1, 6*mm))
+                except Exception as e:
+                    logger.warning(f"receipt payment table failed: {e}")
+            else:
+                # ── ITEMIZED line-item table (what was purchased) ──
+                # A single transaction is one line item (Kashia doesn't do multi-line
+                # baskets per tx). Render it like the invoice's items table so the
+                # receipt shows Description / Qty / Unit Price / Amount instead of a
+                # flat "Item: X". Unit price falls back to amount/qty when not stored.
+                try:
+                    _qty = to_money(quantity) if quantity else to_money(0)
+                    _unit = to_money(unit_cost) if unit_cost else to_money(0)
+                    if _qty and not _unit:
+                        _unit = money_round(to_money(amount) / _qty) if _qty else to_money(0)
+                    qty_disp = (str(int(_qty)) if _qty and float(_qty) == int(_qty)
+                                else (_m(_qty) if _qty else "1"))
+                    item_rows = [['Description', 'Qty', 'Unit Price', 'Amount (NGN)']]
+                    item_rows.append([
+                        clean_desc.title(),
+                        qty_disp if _qty else "1",
+                        (f"NGN {_m(_unit)}" if _unit else "—"),
+                        f"NGN {_m(amount)}",
+                    ])
+                    item_rows.append(['', '', 'TOTAL', f"NGN {_m(amount)}"])
+                    items_table = Table(item_rows, colWidths=[7*cm, 2.5*cm, 3.5*cm, 4*cm])
+                    items_table.setStyle(TableStyle([
+                        ('BACKGROUND', (0, 0), (-1, 0), HexColor('#2c3e50')),
+                        ('TEXTCOLOR', (0, 0), (-1, 0), white),
+                        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+                        ('FONTSIZE', (0, 0), (-1, -1), 10),
+                        ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
+                        ('TOPPADDING', (0, 0), (-1, -1), 6),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                        ('LINEBELOW', (0, 0), (-1, -2), 0.4, HexColor('#eeeeee')),
+                        ('LINEABOVE', (0, -1), (-1, -1), 0.6, HexColor('#2c3e50')),
+                    ]))
+                    story.append(items_table)
+                    story.append(Spacer(1, 8*mm))
+                except Exception as e:
+                    logger.warning(f"receipt items table failed: {e}")
 
             # Remaining meta (date / payment / discount / tax) below the items —
             # keep the item row OUT of this table now that it's in the items table.
