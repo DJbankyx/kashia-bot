@@ -410,3 +410,41 @@ which already read the Paystack SSM secret).
 
 **Verify:** py_compile + check_syntax imports + `hasattr(refund_transaction)` /
 `hasattr(online_refund)` all green; receipt build passed esprima + surrogate scan.
+
+---
+## 13. Honest-amount + part-payment receipt (2026-09-27, commit c8e436c)
+
+Follow-up from owner testing (a ₦5,000 request showed ₦5,177.67 on Paystack).
+
+### 13.1 The Paystack fee is NOT a bug
+Kashia sends EXACTLY the requested amount to Paystack. Paystack adds its own fee
+on top so the customer covers it and the owner receives the full requested amount.
+We add zero markup (decision §10.3). The ₦177.67 was Paystack's fee, not ours.
+
+### 13.2 Fix C — record the requested amount, not the gross
+`_handle_collection` was recording `data.amount` (the fee-inflated GROSS the customer
+was charged) as the sale → overstated revenue by the fee. Now it records the
+**requested amount** from the stored PaymentRequest (`preq.amount`), falling back to
+the gross only if the request can't be read. The fee (`gross − requested`) and the
+gross are kept in `extra_details` (`paystack_fee`, `gross_charged`) for audit, and
+the owner's "Payment received" message notes the fee when there was one. Debt
+settlement uses the requested amount, never the gross.
+
+### 13.3 Part-payment-aware receipt
+The itemized receipt table (Qty × Unit Price = Amount) is misleading for a PARTIAL
+payment across several debts/products. `generate_receipt` now detects a payment
+receipt (a debt was settled via `extra_details.settled_receivable`, OR the customer
+still has `debt_owed_to_me > 0`, OR the tx carries `balance_owed`) and renders a
+PAYMENT receipt (Amount Paid + Balance Remaining) instead of a fake goods table.
+Full goods sales still itemize exactly as before.
+
+**Deploy:** engine + webhook + PDF only. NO new route/IAM. `PaystackWebhookFunction`
+already reads the PaymentRequest (Transactions CRUD) and the receipt runs in
+`MiniAppFunction` (already has S3 + exporter).
+
+### 13.4 Product picker + per-item allocation — DEFERRED, planned
+Owner asked for a product dropdown on the pay-link and per-item allocation of a
+part-payment. This is its own feature (debt is one balance per contact; no per-tx
+basket; the chat has a line-item document flow but the Mini App does not). Full plan:
+**docs/PAYLINK_PRODUCT_PICKER_PLAN.md** (recommends Option A = product dropdown first,
+Option B = multi-line + allocation next, Option C = per-invoice ledger parked).
