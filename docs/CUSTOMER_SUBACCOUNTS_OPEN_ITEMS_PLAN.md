@@ -99,15 +99,27 @@ existing flat customer + all of WhatsApp is untouched until the owner opts in.
 - Kobo-precise throughout; `_is_debt_settlement` still excludes repayments from P&L;
   soft-delete/retention respected for any new item/record type.
 
-## Open questions for the owner (drive the design)
-1. Sub-account shape: is it always a clean tree (Customer → Site → items), or can
-   one payment/one invoice span sites? (Owner already said payments are usually
-   per-site → tree is fine; confirm for invoices.)
-2. Reports: do you want balances "by site", "by customer across all sites", or
-   both? (affects Stage 2 vs 3)
-3. Naming: what do YOU call the middle layer in-app — Site? Branch? Location?
-   Outlet? Project? (owner picks the generic word; could be per-industry TERMS)
-4. Migration: existing flat customers stay flat unless you add a sub-account — OK?
+## Owner decisions (LOCKED 2026-09-27)
+1. **Bills/payments can span sites — flexibly, user's choice.** A bill can stay
+   within one site OR mix open items from several sites; the owner decides per bill.
+   → Design for the general case: a bill / a payment targets a chosen SET of open
+   items (wherever they sit); "all items of one site" is just a convenient preset,
+   not a hard rule. A payment therefore reduces the specific items it's applied to,
+   which may live under different sites.
+2. **Reports: BOTH** — balances by site AND by customer-across-all-sites. Roll-ups
+   at both levels.
+3. **The middle-layer label is USER-DEFINED.** No hard-coded word. Owner names it
+   (Mall / Property / Project / Outlet / Branch…); default to a neutral word (e.g.
+   "Location") if unset. Store the owner's chosen label; render it everywhere.
+4. **Flat by default; sites only when needed.** Existing + new customers stay flat
+   (one balance, no sites) until the owner explicitly adds a site to that customer.
+   Simple/walk-in customers never see the site concept. WhatsApp path unchanged.
+
+## (historical) Open questions — now answered above
+1. tree vs span → SPAN allowed, user's choice (#1).
+2. reports → BOTH (#2).
+3. naming → user-defined label (#3).
+4. migration → flat until necessary (#4).
 
 ## Status
 DESIGN ONLY — nothing built. Sequenced so each stage ships value and stays
