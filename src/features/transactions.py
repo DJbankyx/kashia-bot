@@ -1462,11 +1462,16 @@ class TransactionHandler:
                 # stamped balance_owed before (only deposits did) — do it here so
                 # every credit row is trackable. Reports still read the lump field;
                 # this is purely additive. See features/open_items.py.
+                # SITE tag (Stage 2): an optional user-named sub-account (site /
+                # branch / project) so the SAME customer's balances stay separate
+                # per site (Delta vs Asaba). Blank = a flat customer (unchanged).
                 if tx_id:
+                    stamp = {"balance_owed": money_round(owed), "open_item": True}
+                    site = str(tx_data.get("site") or "").strip()
+                    if site:
+                        stamp["site"] = site
                     try:
-                        self.db.update_transaction(phone_number, tx_id,
-                                                   {"balance_owed": money_round(owed),
-                                                    "open_item": True})
+                        self.db.update_transaction(phone_number, tx_id, stamp)
                     except Exception as e:
                         logger.warning(f"web save: open-item stamp failed: {e}")
 
