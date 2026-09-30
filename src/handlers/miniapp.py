@@ -1429,6 +1429,8 @@ def _records(event, user_id: str):
             "amount": int(t.get("amount", 0) or 0),
             "vendor": str(vendor or ""),
             "date": str(t.get("date", "") or ""),
+            # Full timestamp (#7) so the Records list can show time as well as date.
+            "at": str(t.get("created_at", "") or t.get("at", "") or ""),
             "qty": str(t.get("quantity", "") or ""),
             # Editable-field context for the Records edit sheet.
             "payment": str(t.get("payment_method", "") or ""),
@@ -1567,24 +1569,50 @@ def _receipt_send(event, user_id: str):
     except Exception:
         pass
 
+    # Document KIND: "receipt" (default, money already received) or "invoice"
+    # (a bill for this sale). Both build from the SAME transaction so the app can
+    # produce either straight from a Records row — no more hopping to chat "Bill a
+    # Customer" for a single item. Multi-item stays in the chat flow for now.
+    kind = str(data.get("kind") or "receipt").strip().lower()
+    if kind not in ("receipt", "invoice"):
+        kind = "receipt"
+
     try:
         pdfgen = PDFGenerator(database=db)
-        filepath, filename = pdfgen.generate_receipt(user_id, transaction_id=tx_id)
+        if kind == "invoice":
+            # Build a one-line invoice from the transaction (a Kashia sale is one
+            # line item). Reuse generate_invoice with an items list so it renders
+            # the proper Description/Qty/Unit Price/Amount table.
+            tx = db.get_transaction(user_id, tx_id) or {}
+            if not tx:
+                return _json(404, {"error": "that transaction is no longer in your records"})
+            from utils.money import money_round as _mr
+            amount = _mr(tx.get("amount", 0) or 0)
+            desc = (tx.get("item_name") or tx.get("description") or "Goods/Services")
+            customer = (tx.get("vendor") or "").strip() or "Customer"
+            qty = tx.get("quantity") or 1
+            items = [{"description": str(desc)[:60], "quantity": qty, "amount": amount}]
+            filepath, filename = pdfgen.generate_invoice(
+                user_id, customer, amount, str(desc)[:60], items=items, kind="invoice")
+            caption = "📄 Invoice"
+        else:
+            filepath, filename = pdfgen.generate_receipt(user_id, transaction_id=tx_id)
+            caption = "🧾 Payment receipt"
         if not filepath:
-            return _json(404, {"error": "could not build a receipt for that payment"})
+            return _json(404, {"error": f"could not build a {kind} for that transaction"})
         svc = ExportService(database=db)
-        success, url = svc.deliver_file(user_id, filepath, filename,
-                                        caption="🧾 Payment receipt")
+        success, url = svc.deliver_file(user_id, filepath, filename, caption=caption)
         return _json(200, {
             "ok": bool(success),
             "delivered_to_chat": bool(success),
             "download_url": url or "",
-            "message": ("Receipt sent to your chat." if success
-                        else "Built the receipt but couldn't deliver it — use the link."),
+            "kind": kind,
+            "message": ((f"{kind.title()} sent to your chat.") if success
+                        else f"Built the {kind} but couldn't deliver it — use the link."),
         })
     except Exception as e:
-        logger.error(f"miniapp receipt failed: {e}")
-        return _json(500, {"error": "could not generate the receipt"})
+        logger.error(f"miniapp doc ({kind}) failed: {e}")
+        return _json(500, {"error": f"could not generate the {kind}"})
 
 
 def _debt_payment_write(event, user_id: str):
@@ -2102,8 +2130,8 @@ _PAGE_HTML = """<!doctype html>
 
   <div id="view-crm" class="hidden">
     <div class="row">
-      <div class="card"><div class="k">Owed to you</div><div class="v pos" id="crm-owed">—</div></div>
-      <div class="card"><div class="k">You owe</div><div class="v neg" id="crm-iowe">—</div><div class="sub" id="crm-iowebreak"></div></div>
+      <div class="card tappable" onclick="crmFocusDebt('owed')"><div class="k">Owed to you ›</div><div class="v pos" id="crm-owed">—</div></div>
+      <div class="card tappable" onclick="crmFocusDebt('iowe')"><div class="k">You owe ›</div><div class="v neg" id="crm-iowe">—</div><div class="sub" id="crm-iowebreak"></div></div>
     </div>
     <div class="chips" id="crm-dir-tabs">
       <div class="chip active" data-cd="customers" onclick="crmSetDir('customers')">👤 Customers</div>
@@ -3160,13 +3188,31 @@ window.onerror = function (msg, src, line, col, err) {
       });
   }
   var crmDir = "customers";   // which directory the CRM tab shows
+  var crmDebtFilter = "";     // "" | "owed" (they owe you) | "iowe" (you owe)
   window.crmSetDir = function (d) {
     crmDir = d;
     var tabs = document.getElementById("crm-dir-tabs").children;
     for (var i = 0; i < tabs.length; i++) {
       tabs[i].classList.toggle("active", tabs[i].getAttribute("data-cd") === d);
     }
+    // Switching directory clears a debt focus (it belongs to the previous view).
+    crmDebtFilter = "";
     renderCrm();
+  };
+  // Tapping the "Owed to you" / "You owe" cards focuses the people list on
+  // debtors / creditors (#9). Owed-to-you lives under Customers; you-owe spans
+  // suppliers + expenses, so switch to suppliers as the primary creditor view.
+  window.crmFocusDebt = function (which) {
+    crmDebtFilter = which;
+    if (which === "owed") crmDir = "customers";
+    else if (which === "iowe") crmDir = "suppliers";
+    var tabs = document.getElementById("crm-dir-tabs").children;
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].classList.toggle("active", tabs[i].getAttribute("data-cd") === crmDir);
+    }
+    renderCrm();
+    var el = document.getElementById("crmlists");
+    if (el && el.scrollIntoView) el.scrollIntoView({behavior: "smooth", block: "start"});
   };
   window.renderCrm = function () {
     if (!crmData) return;
@@ -3184,12 +3230,37 @@ window.onerror = function (msg, src, line, col, err) {
     list = list.filter(function (c) {
       return !q || (c.name || "").toLowerCase().indexOf(q) >= 0;
     });
+    // Debt focus (#9): tapping the "Owed to you" / "You owe" cards filters the
+    // people list to just debtors / creditors, so the cards are a real link into
+    // a debtor/creditor registry rather than a cold number.
+    if (crmDebtFilter === "owed") {
+      list = list.filter(function (c) { return (c.owes_me || 0) > 0; });
+    } else if (crmDebtFilter === "iowe") {
+      list = list.filter(function (c) { return (c.i_owe || 0) > 0; });
+    }
+    // Sort debtors/creditors by amount (biggest first) when focused.
+    if (crmDebtFilter === "owed") list.sort(function (a, b) { return (b.owes_me||0) - (a.owes_me||0); });
+    else if (crmDebtFilter === "iowe") list.sort(function (a, b) { return (b.i_owe||0) - (a.i_owe||0); });
 
     var wrap = document.getElementById("crmlists");
     wrap.innerHTML = "";
+    // Show a clear-filter chip when a debt focus is active.
+    if (crmDebtFilter) {
+      var chip = document.createElement("div");
+      chip.className = "muted";
+      chip.style.cssText = "padding:4px 0;cursor:pointer";
+      chip.innerHTML = (crmDebtFilter === "owed" ? "Showing people who owe you"
+                        : "Showing people you owe") + " \u2014 <b>show all \u2715</b>";
+      chip.onclick = function () { crmDebtFilter = ""; renderCrm(); };
+      wrap.appendChild(chip);
+    }
     if (!list.length) {
-      wrap.innerHTML = '<div class="muted">No ' + crmDir +
-        ' yet. Record a sale (with a name) or a purchase to build your list.</div>';
+      var none = document.createElement("div");
+      none.className = "muted";
+      none.textContent = crmDebtFilter
+        ? ("No one " + (crmDebtFilter === "owed" ? "owes you" : "you owe") + " right now.")
+        : ("No " + crmDir + " yet. Record a sale (with a name) or a purchase to build your list.");
+      wrap.appendChild(none);
       document.getElementById("crmmsg").textContent = "";
       return;
     }
@@ -3872,21 +3943,26 @@ window.onerror = function (msg, src, line, col, err) {
     var card = document.createElement("div");
     card.className = "card"; card.style.padding = "4px 0";
     shown.forEach(function (t) {
-      var meta = [t.date || ""];
+      var meta = [fmtWhen(t.at, t.date)];   // date + time (#7) when available
       if (t.qty) meta.push(String(t.qty));
       if (t.vendor) meta.push(t.vendor);
       var div = document.createElement("div");
       div.className = "item";
       // ✏️ edit + 🗑 delete affordances per row. Edit opens a prefilled sheet
       // and re-applies effects server-side; delete reverses + removes.
+      // 🧾 receipt + 📄 invoice let you generate a document straight from a SALE
+      // row (no more hopping to chat "Bill a Customer" for a single item).
       var editBtn = t.id
         ? '<button class="linkbtn recedit" title="Edit">✏️</button>' : '';
       var delBtn = t.id
         ? '<button class="linkbtn recdel" title="Delete">🗑️</button>' : '';
+      var docBtns = (t.id && recTabType === "sale")
+        ? '<button class="linkbtn recrcpt" title="Receipt">🧾</button>' +
+          '<button class="linkbtn recinv" title="Invoice">📄</button>' : '';
       div.innerHTML = '<div><div class="name">' + escapeHtml(t.desc || "?") +
-        '</div><div class="meta">' + escapeHtml(meta.join(" \u00b7 ")) + '</div></div>' +
+        '</div><div class="meta">' + escapeHtml(meta.filter(Boolean).join(" \u00b7 ")) + '</div></div>' +
         '<div class="right"><div class="stock">' + naira(t.amount || 0) + '</div>' +
-        '<div>' + editBtn + delBtn + '</div></div>';
+        '<div>' + docBtns + editBtn + delBtn + '</div></div>';
       var eb = div.querySelector(".recedit");
       if (eb) eb.onclick = (function (row) {
         return function (ev) { ev.stopPropagation(); recOpenEdit(row); };
@@ -3895,6 +3971,14 @@ window.onerror = function (msg, src, line, col, err) {
       if (btn) btn.onclick = (function (id, label) {
         return function (ev) { ev.stopPropagation(); recDelete(id, label); };
       })(t.id, t.desc || "this entry");
+      var rb = div.querySelector(".recrcpt");
+      if (rb) rb.onclick = (function (id) {
+        return function (ev) { ev.stopPropagation(); recSendDoc(id, "receipt"); };
+      })(t.id);
+      var ib = div.querySelector(".recinv");
+      if (ib) ib.onclick = (function (id) {
+        return function (ev) { ev.stopPropagation(); recSendDoc(id, "invoice"); };
+      })(t.id);
       card.appendChild(div);
     });
     list.appendChild(card);
@@ -3902,6 +3986,24 @@ window.onerror = function (msg, src, line, col, err) {
     if (d.has_more) note += " · showing " + rows.length + " of " + d.count + " (narrow the date or export for all)";
     document.getElementById("rec-msg").textContent = note;
   }
+  // Generate a receipt or invoice for a single SALE record and deliver the PDF
+  // to the owner's chat (same pipeline as the on-demand receipt). One tap.
+  window.recSendDoc = function (id, kind) {
+    if (!id) return;
+    var msg = document.getElementById("rec-msg");
+    msg.textContent = (kind === "invoice" ? "Building invoice\u2026" : "Building receipt\u2026");
+    apiPost("api/receipt", { tx_id: id, kind: kind })
+      .then(function (r) {
+        msg.textContent = (r && r.message) || "Done.";
+        if (r && !r.delivered_to_chat && r.download_url) {
+          msg.textContent = (r.message || "") + " " + r.download_url;
+        }
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+      })
+      .catch(function (e) {
+        msg.textContent = (e && e.message) || ("Could not build the " + kind + ".");
+      });
+  };
   // Delete a recorded transaction (two-tap confirm). First tap arms; a second
   // tap within a few seconds confirms. Reversal happens server-side.
   var recPendingDelete = null;
