@@ -147,7 +147,13 @@ existing flat customer + all of WhatsApp is untouched until the owner opts in.
   GET /app/api/open-items, POST /app/api/settle-open, POST /app/api/site-label
   (template.yaml) → DEPLOY REQUIRED. CHAT surface for site is still deferred (a
   follow-on; the engine supports it).
-- **Stage 3 (multi-item invoice from open items)** — NOT STARTED.
+- **Stage 3 — SHIPPED (mini-app, commit c81da0a).** Combine several of a customer's
+  open items into ONE invoice or receipt: contact card "🧾 Bill / receipt items" →
+  picker (checkbox/date/site/balance + Select all + running total) → 📄 Invoice /
+  🧾 Receipt → POST /app/api/multi-doc → _multi_doc_send builds one PDF via
+  generate_invoice(items=...) + delivers to chat (tier-gated). generate_invoice
+  gained a proper kind='receipt' (RECEIPT title, Status: Paid, no due/bank block).
+  New route → deploy required.
 - **Stage 4 (pay-link on an account / "Build B")** — NOT STARTED; rests on 1–2.
 
 Sequenced so each stage ships value and stays backward-compatible. Pay-link A is
