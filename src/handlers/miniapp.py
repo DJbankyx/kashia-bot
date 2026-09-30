@@ -6485,12 +6485,16 @@ window.onerror = function (msg, src, line, col, err) {
       var row = document.createElement("div");
       row.textContent = n;
       row.style.cssText = "padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--line)";
-      // mousedown (not click) fires BEFORE the input's blur, so the pick lands.
-      row.addEventListener("mousedown", function (e) {
-        e.preventDefault();
+      // Pick the name. On mobile (Telegram WebView) mousedown often does NOT fire
+      // before blur, so the tap was doing nothing — handle BOTH touchstart and
+      // mousedown (fire before the input's blur so the pick lands).
+      var pickName = function (e) {
+        if (e) e.preventDefault();
         input.value = n;
         drop.classList.add("hidden"); drop.innerHTML = "";
-      });
+      };
+      row.addEventListener("touchstart", pickName, {passive: false});
+      row.addEventListener("mousedown", pickName);
       drop.appendChild(row);
     });
     drop.classList.remove("hidden");
@@ -6665,8 +6669,11 @@ window.onerror = function (msg, src, line, col, err) {
       if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
       loadSummary();
       invLoaded = false;
+      crmLoaded = false;   // a sale can create a NEW customer (e.g. Ade) — refresh
       var catView = document.getElementById("view-cat");
       if (catView && !catView.classList.contains("hidden")) loadInventory();
+      var crmView = document.getElementById("view-crm");
+      if (crmView && !crmView.classList.contains("hidden")) loadCrm();
     }
     function sendSale() {
       apiPost("api/transaction", body)
