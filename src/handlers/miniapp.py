@@ -2577,7 +2577,9 @@ _PAGE_HTML = """<!doctype html>
           <div class="chip" data-p="transfer" onclick="recPay('transfer')">🏦 Transfer</div>
           <div class="chip" data-p="credit" onclick="recPay('credit')">📝 Credit</div>
           <div class="chip" data-p="part" onclick="recPay('part')">💳 Part</div>
+          <div class="chip hidden" data-p="paylink" id="rec-pay-paylink" onclick="recPay('paylink')">🔗 Pay-link</div>
         </div>
+        <div class="sub2 hidden" id="rec-paylink-hint" style="margin-top:6px">Records the sale as owing, then makes a Paystack link to send. When they pay, it auto-clears the debt.</div>
       </div>
       <div class="field hidden" id="rec-deposit-wrap">
         <label id="rec-deposit-label">Deposit paid now (\u20a6)</label>
@@ -5561,6 +5563,10 @@ window.onerror = function (msg, src, line, col, err) {
     var partChip = document.querySelector('#rec-pay .chip[data-p="part"]');
     if (partChip) partChip.classList.toggle("hidden", isExpense);
     if (isExpense && recPayVal === "part") recPay("cash");
+    // Pay-link is a SALE-only collection method (you collect from a customer).
+    var plChip = document.getElementById("rec-pay-paylink");
+    if (plChip) plChip.classList.toggle("hidden", t !== "sale");
+    if (t !== "sale" && recPayVal === "paylink") recPay("cash");
     // Prepaid/periodic spread is an EXPENSE-only option.
     var spreadWrap = document.getElementById("rec-spread-wrap");
     if (spreadWrap) spreadWrap.classList.toggle("hidden", !isExpense);
@@ -5616,6 +5622,9 @@ window.onerror = function (msg, src, line, col, err) {
     var isPart = (p === "part");
     document.getElementById("rec-deposit-wrap").classList.toggle("hidden", !isPart);
     if (isPart) recBalanceHint();
+    // Pay-link explainer (#10) only when that method is chosen.
+    var plh = document.getElementById("rec-paylink-hint");
+    if (plh) plh.classList.toggle("hidden", p !== "paylink");
   };
   // Live "balance owed" preview under the deposit field.
   window.recBalanceHint = function () {
@@ -5860,13 +5869,23 @@ window.onerror = function (msg, src, line, col, err) {
       return;
     }
 
+    // PAY-LINK (#10): record the sale as OWING (credit), then mint a Paystack
+    // link for the amount. When the customer pays, the existing webhook
+    // auto-settles that debt as a repayment (no double-count). So under the
+    // hood it's a credit sale + a pay-link; it needs a customer name.
+    var isPayLink = (recPayVal === "paylink");
+
     // Part payment = deposit now + balance owed. If the deposit covers the full
     // amount, treat it as a normal (paid) transfer — mirrors the chat flow.
     var isPart = recPayVal === "part";
     var deposit = isPart ? (parseFloat(document.getElementById("rec-deposit").value) || 0) : 0;   // money, kobo
     if (isPart && deposit >= amount) { isPart = false; recPayVal = "transfer"; }
-    var isCredit = (recPayVal === "credit") || isPart;  // both create a debt
+    var isCredit = (recPayVal === "credit") || isPart || isPayLink;  // all create a debt
 
+    if (isPayLink && !who) {
+      err.textContent = "A pay-link sale needs a customer name (the link settles their debt).";
+      return;
+    }
     if (isCredit && !who) {
       err.textContent = recTypeVal === "purchase"
         ? "A credit/part purchase needs a supplier name."
@@ -5881,7 +5900,9 @@ window.onerror = function (msg, src, line, col, err) {
     var body = {
       submit_id: recSubmitId, type: recTypeVal, amount: amount,
       description: desc,
-      payment_method: isPart ? "deposit" : recPayVal,
+      // Pay-link records as a normal CREDIT sale (the engine has no 'paylink'
+      // method); the link is created after the save.
+      payment_method: isPart ? "deposit" : (isPayLink ? "credit" : recPayVal),
       vendor: who, has_credit: isCredit,
     };
     if (isPart) {
@@ -5914,17 +5935,40 @@ window.onerror = function (msg, src, line, col, err) {
     // sendSale posts the sale; on a soft guardrail (409 needs_confirm) it relabels
     // the Save button so a second tap re-posts with confirm:true (the two-tap
     // "proceed anyway" pattern — no confirm() dialog, unsupported in Telegram).
+    function afterSale() {
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+      loadSummary();
+      invLoaded = false;
+      var catView = document.getElementById("view-cat");
+      if (catView && !catView.classList.contains("hidden")) loadInventory();
+    }
     function sendSale() {
       apiPost("api/transaction", body)
         .then(function () {
+          // Pay-link (#10): the credit sale is recorded; now mint the link for
+          // this customer + amount and show it in the pay-link sheet to forward.
+          if (isPayLink) {
+            return apiPost("api/payment-request", {
+              amount: amount, description: desc || "Payment", customer: who
+            }).then(function (r) {
+              closeRecord();
+              afterSale();
+              // Reuse the pay-link result UI: open the sheet showing the URL.
+              plCtx = { name: who };
+              document.getElementById("pl-sub").textContent =
+                "Link created for " + who + " — send it to collect.";
+              var psel = document.getElementById("pl-product"); if (psel) psel.value = "";
+              document.getElementById("pl-amount").value = amount;
+              document.getElementById("pl-desc").value = desc || "";
+              document.getElementById("pl-err").textContent = "";
+              document.getElementById("pl-url").value = (r && r.payment_url) || "";
+              document.getElementById("pl-result").classList.remove("hidden");
+              document.getElementById("pl-create").disabled = false;
+              document.getElementById("payLinkOverlay").classList.remove("hidden");
+            });
+          }
           closeRecord();
-          if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
-          // Refresh dashboard + catalog so the new numbers show. (Inventory was
-          // merged into Catalog; guard the element in case a view is absent.)
-          loadSummary();
-          invLoaded = false;
-          var catView = document.getElementById("view-cat");
-          if (catView && !catView.classList.contains("hidden")) loadInventory();
+          afterSale();
         })
         .catch(function (e) {
           btn.disabled = false;
