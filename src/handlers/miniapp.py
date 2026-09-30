@@ -266,6 +266,8 @@ def lambda_handler(event, context):
             return _receipt_send(event, user_id)
         if method == "POST" and path.endswith("/app/api/quote"):
             return _quote_send(event, user_id)
+        if method == "POST" and path.endswith("/app/api/multi-doc"):
+            return _multi_doc_send(event, user_id)
         # ── Writes (Stage 2: recipe/BOM add/remove material) ──
         if method == "POST" and path.endswith("/app/api/recipe"):
             return _recipe_write(event, user_id)
@@ -1797,6 +1799,85 @@ def _quote_send(event, user_id: str):
         return _json(500, {"error": "could not generate the quote"})
 
 
+def _multi_doc_send(event, user_id: str):
+    """Stage 3: build ONE combined invoice or receipt from SEVERAL of a customer's
+    transactions (their open items, picked in the app), and deliver it to chat.
+    Body: {name, tx_ids:[...], kind:'invoice'|'receipt'}. Each picked tx becomes a
+    line item. Mirrors the chat 'Bill a Customer' output but via the mini-app's
+    JSON + S3-link delivery. Tier-gated. Never raises to a 500 without logging."""
+    from services.database import Database
+    from services.pdf_generator import PDFGenerator
+    from services.export_service import ExportService
+    from utils.money import money_round, to_money
+
+    data = _parse_body(event)
+    name = str(data.get("name") or "").strip() or "Customer"
+    kind = str(data.get("kind") or "invoice").strip().lower()
+    if kind not in ("invoice", "receipt"):
+        kind = "invoice"
+    tx_ids = data.get("tx_ids") or []
+    if not isinstance(tx_ids, list) or not tx_ids:
+        return _json(400, {"error": "pick at least one item"})
+    tx_ids = [str(t) for t in tx_ids if t][:50]
+
+    db = Database()
+    try:
+        from services.tier_manager import TierManager
+        allowed, msg = TierManager(database=db).check_can_generate_pdf(user_id)
+        if not allowed:
+            return _json(403, {"error": "pdf_paywalled",
+                               "message": msg or "Documents are a Basic/Pro feature."})
+    except Exception:
+        pass
+
+    try:
+        pdfgen = PDFGenerator(database=db)
+        # Fetch the chosen transactions (exact fetch; skip any that vanished).
+        items = []
+        total = to_money(0)
+        for tx_id in tx_ids:
+            tx = db.get_transaction(user_id, tx_id)
+            if not tx:
+                continue
+            amt = money_round(tx.get("amount", 0) or 0)
+            desc = (tx.get("item_name") or tx.get("description") or "Item")
+            qty = tx.get("quantity") or 1
+            items.append({"description": str(desc)[:60], "quantity": qty, "amount": amt})
+            total = to_money(total) + to_money(amt)
+        if not items:
+            return _json(404, {"error": "those items are no longer in your records"})
+        total = money_round(total)
+
+        if kind == "receipt":
+            # A combined RECEIPT is money already received — build it as an invoice
+            # layout titled Receipt (the receipt generator is single-tx; the
+            # multi-line document reuses the invoice renderer with kind='receipt').
+            filepath, filename = pdfgen.generate_invoice(
+                user_id, name, total, "", items=items, kind="receipt")
+            caption = "🧾 Receipt"
+        else:
+            filepath, filename = pdfgen.generate_invoice(
+                user_id, name, total, "", items=items, kind="invoice")
+            caption = "📄 Invoice"
+        if not filepath:
+            return _json(404, {"error": f"could not build the {kind}"})
+        svc = ExportService(database=db)
+        success, url = svc.deliver_file(user_id, filepath, filename, caption=caption)
+        return _json(200, {
+            "ok": bool(success),
+            "delivered_to_chat": bool(success),
+            "download_url": url or "",
+            "kind": kind,
+            "items": len(items),
+            "total": total,
+            "message": (f"{kind.title()} for {len(items)} item(s) sent to your chat."
+                        if success else f"Built the {kind} but couldn't deliver it — use the link."),
+        })
+    except Exception as e:
+        logger.error(f"miniapp multi-doc ({kind}) failed: {e}")
+        return _json(500, {"error": f"could not generate the {kind}"})
+
+
 def _debt_payment_write(event, user_id: str):
     """Record a debt payment from the app — a COLLECTION (a customer repays me)
     or a REPAYMENT (I pay a supplier). Mirrors the chat debt board EXACTLY:
@@ -2428,6 +2509,27 @@ _PAGE_HTML = """<!doctype html>
     </div>
   </div>
 
+  <!-- Multi-item document picker (Stage 3): pick several of a customer's unpaid
+       items → one invoice or receipt. -->
+  <div id="billItemsOverlay" class="overlay hidden">
+    <div class="sheet">
+      <h2>🧾 Bill / receipt</h2>
+      <div class="sub2" id="bi-sub">Pick items to combine into one document.</div>
+      <div style="margin:8px 0">
+        <button class="linkbtn" onclick="biSelectAll(true)" style="font-size:13px;color:var(--accent)">Select all</button>
+        <button class="linkbtn" onclick="biSelectAll(false)" style="font-size:13px;color:var(--hint);margin-left:10px">Clear</button>
+      </div>
+      <div id="bi-list" style="max-height:44vh;overflow-y:auto"><div class="muted">Loading…</div></div>
+      <div class="sub2" id="bi-total" style="margin-top:8px"></div>
+      <div class="sheeterr" id="bi-err"></div>
+      <div class="actions" style="margin-top:12px">
+        <button class="btn cancel" onclick="closeBillItems()">Close</button>
+        <button class="btn" id="bi-invoice" onclick="biSend('invoice')" style="background:var(--card);border:1px solid var(--line)">📄 Invoice</button>
+        <button class="btn save" id="bi-receipt" onclick="biSend('receipt')">🧾 Receipt</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Payment-links overlay: the owner's created pay-links + their status.
        Pending ones can be copied or cancelled; paid ones show as recorded. -->
   <div id="paymentLinksOverlay" class="overlay hidden">
@@ -2483,6 +2585,7 @@ _PAGE_HTML = """<!doctype html>
       <div id="cd-txlist"><div class="muted">Loading…</div></div>
       <div class="actions">
         <button class="btn cancel" onclick="closeContact()">Close</button>
+        <button class="btn hidden" id="cd-billitems" onclick="cdBillItems()" style="background:var(--card);border:1px solid var(--line)">🧾 Bill / receipt items</button>
         <button class="btn hidden" id="cd-quote" onclick="cdWriteQuote()" style="background:var(--card);border:1px solid var(--line)">📝 Write a quote</button>
         <button class="btn hidden" id="cd-paylink" onclick="cdGetPayLink()" style="background:var(--card);border:1px solid var(--line)">💳 Get pay-link</button>
         <button class="btn save hidden" id="cd-pay" onclick="cdRecordPayment()">💵 Record payment</button>
@@ -3677,6 +3780,13 @@ window.onerror = function (msg, src, line, col, err) {
       var showQuote = (isServices() || isHybrid()) && (isCollectable || c.owes_me > 0);
       quoteBtn.classList.toggle("hidden", !showQuote);
     }
+    // "Bill / receipt items" — combine several of this customer's UNPAID items
+    // into one invoice/receipt. Shown for a billable customer who owes something.
+    var billBtn = document.getElementById("cd-billitems");
+    if (billBtn) {
+      var showBill = (isCollectable || c.owes_me > 0);
+      billBtn.classList.toggle("hidden", !showBill);
+    }
 
     var phoneEl = document.getElementById("cd-phone");
     if (c.phone) { phoneEl.textContent = "📞 " + c.phone; phoneEl.classList.remove("hidden"); }
@@ -3850,6 +3960,95 @@ window.onerror = function (msg, src, line, col, err) {
       .catch(function (e) {
         btn.disabled = false; btn.textContent = "Send quote";
         err.textContent = (e && e.message) || "Could not send the quote.";
+      });
+  };
+
+  // ── Multi-item document (Stage 3): pick several unpaid items → one doc ──
+  var biCtx = null;   // {name}
+  var biItems = [];   // the customer's open items
+  var biPicked = {};  // {transaction_id: true}
+  window.cdBillItems = function () {
+    if (!cdCtx) return;
+    biCtx = { name: cdCtx.name || "" };
+    biItems = []; biPicked = {};
+    closeContact();
+    document.getElementById("bi-sub").textContent =
+      "Pick " + (biCtx.name || "the customer") + "'s items to combine into one document.";
+    document.getElementById("bi-err").textContent = "";
+    document.getElementById("bi-total").textContent = "";
+    document.getElementById("bi-list").innerHTML = '<div class="muted">Loading\u2026</div>';
+    document.getElementById("billItemsOverlay").classList.remove("hidden");
+    api("api/open-items?name=" + encodeURIComponent(biCtx.name) + "&direction=owed_to_me")
+      .then(function (d) {
+        biItems = (d && d.items) || [];
+        biRenderList();
+      })
+      .catch(function (e) {
+        document.getElementById("bi-list").innerHTML =
+          '<div class="err">' + escapeHtml((e && e.message) || "Could not load items") + '</div>';
+      });
+  };
+  function biRenderList() {
+    var box = document.getElementById("bi-list");
+    if (!biItems.length) {
+      box.innerHTML = '<div class="muted">No unpaid items for this customer.</div>';
+      return;
+    }
+    box.innerHTML = "";
+    biItems.forEach(function (it) {
+      var id = it.transaction_id;
+      var row = document.createElement("div");
+      row.className = "item tappable"; row.style.alignItems = "center";
+      var checked = biPicked[id] ? "\u2705" : "\u2b1c";
+      var meta = [it.date || ""];
+      if (it.site) meta.push(it.site);
+      row.innerHTML = '<div style="flex:1"><div class="name">' + checked + " " +
+        escapeHtml(it.description || "Item") + '</div><div class="meta">' +
+        escapeHtml(meta.filter(Boolean).join(" \u00b7 ")) + '</div></div>' +
+        '<div class="right"><div class="stock">' + naira(it.balance_owed || 0) + '</div></div>';
+      row.onclick = (function (tid) {
+        return function () {
+          biPicked[tid] = !biPicked[tid];
+          biRenderList();
+        };
+      })(id);
+      box.appendChild(row);
+    });
+    // Running total of the picked items.
+    var tot = 0, n = 0;
+    biItems.forEach(function (it) {
+      if (biPicked[it.transaction_id]) { tot += Number(it.balance_owed || 0); n += 1; }
+    });
+    document.getElementById("bi-total").textContent =
+      n ? (n + " item(s) selected \u00b7 " + naira(tot)) : "Nothing selected yet.";
+  }
+  window.biSelectAll = function (on) {
+    biItems.forEach(function (it) { biPicked[it.transaction_id] = !!on; });
+    biRenderList();
+  };
+  window.closeBillItems = function () {
+    document.getElementById("billItemsOverlay").classList.add("hidden");
+    biCtx = null; biItems = []; biPicked = {};
+  };
+  window.biSend = function (kind) {
+    var ids = [];
+    biItems.forEach(function (it) { if (biPicked[it.transaction_id]) ids.push(it.transaction_id); });
+    var err = document.getElementById("bi-err");
+    if (!ids.length) { err.textContent = "Pick at least one item first."; return; }
+    err.textContent = "";
+    var btn = document.getElementById(kind === "receipt" ? "bi-receipt" : "bi-invoice");
+    var label = btn.textContent;
+    btn.disabled = true; btn.textContent = "Sending\u2026";
+    apiPost("api/multi-doc", { name: (biCtx && biCtx.name) || "", tx_ids: ids, kind: kind })
+      .then(function (r) {
+        btn.disabled = false; btn.textContent = label;
+        closeBillItems();
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+        if (tg && tg.showAlert) tg.showAlert((r && r.message) || "Document sent to your chat.");
+      })
+      .catch(function (e) {
+        btn.disabled = false; btn.textContent = label;
+        err.textContent = (e && e.message) || "Could not build the document.";
       });
   };
 

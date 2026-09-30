@@ -214,10 +214,13 @@ class PDFGenerator:
             user = self.db.get_user(phone_number)
             business_name = user.get('business_name', 'My Business') if user else 'My Business'
 
-            # Quote vs invoice: same layout, different title / numbering / labels.
+            # Same layout; title / numbering / labels differ by kind. 'receipt'
+            # is used for a MULTI-ITEM receipt (the single-tx receipt has its own
+            # generator); quote is a pre-work estimate; else a standard invoice.
             is_quote = (kind == "quote")
-            doc_prefix = "QTE" if is_quote else "INV"
-            doc_word = "Quote" if is_quote else "Invoice"
+            is_receipt = (kind == "receipt")
+            doc_prefix = "QTE" if is_quote else ("RCP" if is_receipt else "INV")
+            doc_word = "Quote" if is_quote else ("Receipt" if is_receipt else "Invoice")
 
             # Generate document number
             invoice_number = self._generate_doc_number(phone_number, doc_prefix)
@@ -237,7 +240,9 @@ class PDFGenerator:
             self._add_logo_to_story(story, user)
 
             # Header
-            story.append(Paragraph("QUOTE" if is_quote else "INVOICE", self.styles['KashiaTitle']))
+            story.append(Paragraph(
+                "QUOTE" if is_quote else ("RECEIPT" if is_receipt else "INVOICE"),
+                self.styles['KashiaTitle']))
             story.append(Spacer(1, 5*mm))
 
             # Invoice details table (From | Invoice info). The "From" block uses
@@ -254,6 +259,12 @@ class PDFGenerator:
                     f"<b>Quote #:</b> {invoice_number}<br/>"
                     f"<b>Date:</b> {datetime.now().strftime('%d %B %Y')}<br/>"
                     f"<b>Valid until:</b> {due_label or '30 days'}"
+                )
+            elif is_receipt:
+                invoice_info = (
+                    f"<b>Receipt #:</b> {invoice_number}<br/>"
+                    f"<b>Date:</b> {datetime.now().strftime('%d %B %Y')}<br/>"
+                    f"<b>Status:</b> Paid"
                 )
             else:
                 invoice_info = (
@@ -362,6 +373,15 @@ class PDFGenerator:
                     self.styles['KashiaBody']
                 ))
                 story.append(Spacer(1, 8*mm))
+            elif is_receipt:
+                # A receipt is money ALREADY received — acknowledge payment, no
+                # bank/"please pay" block.
+                story.append(Paragraph(
+                    "<i>Payment received with thanks. This receipt confirms the "
+                    "items above have been paid.</i>",
+                    self.styles['KashiaBody']
+                ))
+                story.append(Spacer(1, 8*mm))
             else:
                 # Payment details (invoice only)
                 story.append(Paragraph("<b>Payment Details:</b>", self.styles['KashiaHeading']))
@@ -394,8 +414,12 @@ class PDFGenerator:
             story.append(Paragraph("<b>Terms &amp; Conditions:</b>", self.styles['KashiaSmall']))
             # Use custom T&C from user profile, or default
             custom_terms = user.get('terms_conditions', '') if user else ''
-            default_terms = ("Quotation valid until the date shown. Prices subject to change thereafter."
-                             if is_quote else "Payment is due upon receipt.")
+            if is_quote:
+                default_terms = "Quotation valid until the date shown. Prices subject to change thereafter."
+            elif is_receipt:
+                default_terms = "Paid in full. Thank you for your business!"
+            else:
+                default_terms = "Payment is due upon receipt."
             terms_text = custom_terms if custom_terms else default_terms
             story.append(Paragraph(
                 terms_text,
