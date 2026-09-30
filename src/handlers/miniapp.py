@@ -2170,10 +2170,16 @@ _PAGE_HTML = """<!doctype html>
 
   <div id="view-cat" class="hidden">
     <div class="row">
-      <div class="card"><div class="k">Products</div><div class="v" id="cat-count">—</div></div>
-      <div class="card tappable" onclick="focusCatalogList()"><div class="k">Total stock ›</div><div class="v" id="cat-units">—</div></div>
+      <div class="card"><div class="k">Products for sale</div><div class="v" id="cat-count">—</div><div class="sub" id="cat-count-sub"></div></div>
+      <div class="card tappable" onclick="focusCatalogList()"><div class="k">Items in stock ›</div><div class="v" id="cat-units">—</div><div class="sub">total quantity on hand</div></div>
     </div>
-    <div class="card"><div class="k">Stock value (at cost)</div><div class="v" id="cat-value">—</div></div>
+    <!-- Total inventory value, then the split: finished products vs raw materials.
+         Answers 'what is my stock worth, and how much is product vs material'. -->
+    <div class="card"><div class="k">Total inventory value (at cost)</div><div class="v" id="cat-value">—</div><div class="sub">everything you hold, valued at cost</div></div>
+    <div class="row" id="cat-value-split">
+      <div class="card"><div class="k">Product value</div><div class="v" id="cat-value-prod">—</div><div class="sub">finished / sellable goods</div></div>
+      <div class="card"><div class="k">Materials value</div><div class="v" id="cat-value-raw">—</div><div class="sub">raw materials + supplies</div></div>
+    </div>
     <div class="card hidden" id="cat-lowcard"><div class="k">Low stock</div><div class="v neg" id="cat-low">—</div></div>
     <button class="btn save" style="width:100%;margin-bottom:10px" onclick="openAddProduct()">➕ Add product</button>
     <button class="btn cancel hidden" id="cat-add-raw" style="width:100%;margin-bottom:10px" onclick="openAddRawMaterial()">🧱 Add raw material</button>
@@ -2249,6 +2255,20 @@ _PAGE_HTML = """<!doctype html>
       <div class="actions">
         <button class="btn cancel" onclick="closeAddProduct()">Cancel</button>
         <button class="btn save" id="add-save" onclick="saveAddProduct()">Add</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Product quick-view: read-first detail card (tap a product). Edit opens the
+       full edit sheet. -->
+  <div id="qvOverlay" class="overlay hidden">
+    <div class="sheet">
+      <h2 id="qv-name">Product</h2>
+      <div class="sub2" id="qv-type"></div>
+      <div id="qv-body" style="margin-top:10px"></div>
+      <div class="actions" style="margin-top:16px">
+        <button class="btn cancel" onclick="closeQuickView()">Close</button>
+        <button class="btn save" onclick="qvEdit()">✏️ Edit</button>
       </div>
     </div>
   </div>
@@ -3274,15 +3294,31 @@ window.onerror = function (msg, src, line, col, err) {
       return t === "" || t === "product" || t === "finished_product";
     }
     var totUnits = 0, totValue = 0, lowCount = 0, prodCount = 0;
+    var prodValue = 0, rawValue = 0;   // split (#dashboard): products vs materials
     invData.forEach(function (p) {
       totUnits += Number(p.stock || 0);
-      totValue += Number(p.stock_value || 0);
+      var sv = Number(p.stock_value || 0);
+      totValue += sv;
       if (p.low_stock) lowCount += 1;
-      if (isSellable(p)) prodCount += 1;
+      if (isSellable(p)) { prodCount += 1; prodValue += sv; }
+      else {
+        // Raw materials + supplies hold value; overhead is a rate, no stock value.
+        var it = (p.item_type || "").toLowerCase();
+        if (it === "raw_material" || it === "supply" || it === "consumable") rawValue += sv;
+      }
     });
     document.getElementById("cat-count").textContent = prodCount.toLocaleString();
+    var countSub = document.getElementById("cat-count-sub");
+    if (countSub) countSub.textContent = invData.length + " items total";
     document.getElementById("cat-units").textContent = totUnits.toLocaleString();
     document.getElementById("cat-value").textContent = naira(totValue);
+    var pv = document.getElementById("cat-value-prod");
+    var rv = document.getElementById("cat-value-raw");
+    if (pv) pv.textContent = naira(prodValue);
+    if (rv) rv.textContent = naira(rawValue);
+    // Hide the split row entirely for trading (no raw materials) to avoid clutter.
+    var splitRow = document.getElementById("cat-value-split");
+    if (splitRow) splitRow.classList.toggle("hidden", !usesRecipes() && rawValue <= 0);
     var lowCard = document.getElementById("cat-lowcard");
     if (lowCount > 0) {
       document.getElementById("cat-low").textContent = lowCount + " item(s)";
@@ -3343,7 +3379,7 @@ window.onerror = function (msg, src, line, col, err) {
         (p.stock_value ? naira(p.stock_value) : "") + '</div></div>';
       div.onclick = p.has_variants
         ? (function (prod) { return function () { openVarView(prod); }; })(p)
-        : (function (prod) { return function () { openSheet(prod); }; })(p);
+        : (function (prod) { return function () { openQuickView(prod); }; })(p);
       card.appendChild(div);
     }
 
@@ -4738,6 +4774,54 @@ window.onerror = function (msg, src, line, col, err) {
       });
     });
   }
+  // ── Product quick-view (read-first) ──
+  // Tapping a product opens this summary FIRST (stock, cost, price, margin, unit,
+  // recipe cost, category) instead of jumping straight into the edit form. Edit
+  // opens the full sheet. Variant products still drill via openVarView.
+  var qvProduct = null;
+  var IT_LABELS = { finished_product: "\\ud83c\\udfed Finished product", raw_material: "\\ud83e\\uddf1 Raw material",
+                    supply: "\\ud83e\\uddf0 Supply", overhead: "\\u26a1 Overhead", service: "\\ud83d\\udee0\\ufe0f Service",
+                    product: "\\ud83d\\udce6 Product", "": "\\ud83d\\udce6 Product" };
+  window.openQuickView = function (p) {
+    qvProduct = p;
+    var it = (p.item_type || "").toLowerCase();
+    var isOverhead = (it === "overhead");
+    var isSell = (it === "" || it === "product" || it === "finished_product");
+    document.getElementById("qv-name").textContent = p.name || "Product";
+    document.getElementById("qv-type").textContent =
+      (IT_LABELS[it] || IT_LABELS[""]) + (p.category ? (" \u00b7 " + p.category) : "");
+    var rows = [];
+    function row(k, v) { rows.push('<div class="item"><div class="meta">' + k +
+      '</div><div class="right"><div class="stock">' + v + '</div></div></div>'); }
+    var unit = p.unit || "";
+    if (!isOverhead) {
+      row("In stock", Number(p.stock || 0).toLocaleString() + (unit ? " " + escapeHtml(unit) : "") +
+          (p.low_stock ? '  \\ud83d\\udd34 low' : ''));
+    }
+    // Cost (overhead = rate per unit of usage).
+    if (p.cost) row(isOverhead ? "Rate per " + escapeHtml(unit || "unit") : "Cost per " + escapeHtml(unit || "unit"), naira(p.cost));
+    if (p.has_recipe && isSell) row("Cost", naira(p.cost || 0) + " (from recipe)");
+    if (isSell && p.sale_price) row("Selling price", naira(p.sale_price));
+    // Margin when both price + cost are known.
+    if (isSell && p.sale_price > 0 && p.cost > 0) {
+      var m = (p.sale_price - p.cost);
+      var pct = Math.round(m / p.sale_price * 100);
+      row("Margin", naira(m) + " (" + pct + "%)");
+    }
+    if (!isOverhead && p.stock_value) row("Stock value (at cost)", naira(p.stock_value));
+    if (p.reorder_level) row("Reorder at", Number(p.reorder_level).toLocaleString() + (unit ? " " + escapeHtml(unit) : ""));
+    document.getElementById("qv-body").innerHTML = rows.join("") ||
+      '<div class="muted">No details set yet. Tap Edit to add price, cost, stock.</div>';
+    document.getElementById("qvOverlay").classList.remove("hidden");
+  };
+  window.closeQuickView = function () {
+    document.getElementById("qvOverlay").classList.add("hidden");
+  };
+  window.qvEdit = function () {
+    var p = qvProduct;
+    closeQuickView();
+    if (p) openSheet(p);
+  };
   window.openSheet = function (p) {
     editing = p;
     document.getElementById("sh-name").textContent = p.name || "Product";
