@@ -68,3 +68,27 @@ Then #10 + #11 — fold into the open-items/sub-accounts build (they belong toge
 - Set Recipe = behaves well now. ✅
 - The chat "Bill a Customer" multi-item invoice/receipt works well (screenshots) —
   it's the MODEL to mirror into the mini app for #8.
+
+---
+## STATUS — ALL SHIPPED (2026-09-30, commits 2072e6e → 1f1c715)
+
+Worked in passes, each verified (py_compile + check_syntax + built-page encode +
+0 surrogates + esprima) and pushed:
+
+- Pass 1 `2072e6e` — #1 pay-link settlement booked as a REPAYMENT not a sale (fixes
+  the P&L double-count; contact tx list shows 🧾 "Payment received"), #2 debtor age
+  in days restored, #4 mini-app keyboard dismiss on tap-outside, + time in the
+  contact tx list.
+- Pass 2 `662de5f` — #8 receipt/invoice from a Records SALE row (🧾/📄), #9 tappable
+  Owed-to-you / You-owe cards → debtor/creditor lists, + time in the Records list.
+- Pass 3 `c5ee432` — #5 primary-unit labeling + unit datalist + inline
+  teach-a-conversion + edit-sheet "Primary unit"; #6 material vs overhead split in
+  Add-raw (chat + mini app).
+- Pass 4 `b10fb88` — #11 link lifecycle (14d+ stale badge + Remove on paid/cancelled,
+  new route /app/api/delete-payment-request), #7 time in payment-links, #3 prefill
+  hint when a product has no price.
+- Pass 5 `1f1c715` — #10 "🔗 Pay-link" as a payment method at record time (records a
+  credit sale + mints a pay-link; the webhook auto-settles it as a repayment).
+
+⚠️ DEPLOY REQUIRED — template.yaml gained /app/api/delete-payment-request (Pass 4).
+`cd ~/projects/kashia-bot && ./deploy.sh dev`, then reopen the app from the ☰ menu.
