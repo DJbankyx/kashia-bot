@@ -23,12 +23,20 @@ From live use of the deployed build. Sorted; status tracked.
 - **Removed the "≡ Navigation" chat row.** Text replies now get "Anything else?"
   with ☰ Menu + 📊 Dashboard instead of the throwaway Navigation label.
 
+## DONE — link marker (commit 81b11a1)
+- **Debts with a live pay-link now warn the owner** ("🔗 A pay-link is out …") in
+  BOTH the mini-app contact card and the chat debt person-card, so they don't
+  double-collect. db.has_pending_link / pending_link_names. Recording payment
+  auto-cancels the link (from the earlier money-safety fix).
+
 ## TODO — UX
 - **Services: "Write a quote" on the customer card.** Add a quote action (services
   industry) — generate_invoice already supports kind="quote"; wire a button.
-- **Mark debts that already have a live pay-link** ("🔗 link sent — awaiting
-  payment") so the owner knows not to also collect manually. (Owner asked: "how
-  does the user know which debt is for a link to repay vs press Pay".)
+
+## TODO — dashboard (bigger)
+- **Products & materials dashboard richer + clearer** (owner ask): split Product
+  value vs Raw-materials value vs Total inventory value; tap a product → quick-view
+  with details (stock/cost/price/margin/unit/recipe cost). Own batch.
 
 ## TODO — Products & materials dashboard (make it richer + clearer)
 - The three stats (Products / Total stock / Stock value) are unclear. Wanted:
