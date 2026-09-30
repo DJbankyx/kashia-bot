@@ -131,7 +131,17 @@ existing flat customer + all of WhatsApp is untouched until the owner opts in.
   kobo-precise; lump field stays authoritative for reports. Verified via a
   round-trip test (list, cash excluded, "I pick" 4000 on oil spills 1000 to rice,
   lump reconciled 10k→6k).
-- **Stage 2 (sub-accounts / site layer)** — NOT STARTED.
+- **Stage 2 — SHIPPED (engine, commit 0080a06).** Option 1 (site as a TAG, no
+  contact re-keying). A credit sale carries an optional `site`; the SAME customer
+  stays one contact with one lump total, the per-site breakdown derived from the
+  items' `site`. `open_items.sites_summary` returns BOTH views (per-site balances +
+  customer total); `settle_open_items(site=…)` pays ONE site's items only (Delta
+  paid, Asaba untouched); `get_site_label`/`set_site_label` store the owner's
+  user-defined layer name (default "Location"). Engine-only (no UI yet),
+  backward-compatible, kobo-precise. Verified round-trip (Delta 8k / Asaba 4k stay
+  separate; pay 6k to Delta → Delta 2k + Asaba 4k, lump 12k→6k). NEXT: wire `site`
+  into the chat + mini-app record/CRM surfaces (choose/name a site, show balances by
+  site).
 - **Stage 3 (multi-item invoice from open items)** — NOT STARTED.
 - **Stage 4 (pay-link on an account / "Build B")** — NOT STARTED; rests on 1–2.
 
