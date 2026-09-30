@@ -122,8 +122,19 @@ existing flat customer + all of WhatsApp is untouched until the owner opts in.
 4. migration → flat until necessary (#4).
 
 ## Status
-DESIGN ONLY — nothing built. Sequenced so each stage ships value and stays
-backward-compatible. Pay-link A is already live (deploy pending). "Build B" becomes
-Stage 4 here, on top of the open-item + sub-account foundation, so allocation is
-"I pick" (what the owner wanted) rather than a guessed automatic rule.
+- **Stage 1 — SHIPPED (engine, commit fbbe48d).** `features/open_items.py`
+  (`OpenItems`): each unpaid credit sale/purchase (`balance_owed>0`) is an open
+  item. `list_open_items` (oldest-first), `open_total`, and `settle_open_items`
+  (pay CHOSEN items first = "I pick", spill oldest-first, reconcile the lump debt
+  field). `transactions.record_transaction_web` now stamps `balance_owed` +
+  `open_item=True` on every credit sale. Backward-compatible, engine-only (no UI),
+  kobo-precise; lump field stays authoritative for reports. Verified via a
+  round-trip test (list, cash excluded, "I pick" 4000 on oil spills 1000 to rice,
+  lump reconciled 10k→6k).
+- **Stage 2 (sub-accounts / site layer)** — NOT STARTED.
+- **Stage 3 (multi-item invoice from open items)** — NOT STARTED.
+- **Stage 4 (pay-link on an account / "Build B")** — NOT STARTED; rests on 1–2.
+
+Sequenced so each stage ships value and stays backward-compatible. Pay-link A is
+live. Allocation is "I pick" (what the owner wanted) rather than a guessed rule.
 Related: docs/PAYLINK_PRODUCT_PICKER_PLAN.md, docs/PAYMENT_COLLECTION_PLAN.md.
