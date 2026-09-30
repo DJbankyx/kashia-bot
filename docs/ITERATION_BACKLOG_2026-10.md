@@ -11,20 +11,24 @@ From live use of the deployed build. Sorted; status tracked.
   records a debt payment / settles a site), the customer's PENDING links are now
   auto-cancelled (db.cancel_pending_requests_for) so they can't be double-paid.
 
-## TODO — naming / wording
-- **Rename "Catalog" → "Inventory Management"** (or similar). Users find "Catalog"
-  ambiguous. Touches: bottom-tab label, chat "Catalog — Products & Materials" menu,
-  the catalog-nudge copy ("Open catalog" / "Finish setting up your catalog"), any
-  "catalog" in prompts. Keep it consistent across mini-app + chat.
-- **Pay-link sheet / message wording still says "debt".** The webhook book_line is
-  already sale-vs-repayment aware; audit the pay-link SHEET subtitles + any
-  remaining "debt"-only copy so a fresh-sale link doesn't read as debt.
+## DONE — naming / wording (commit 6544a12)
+- **Renamed "Catalog" → "Inventory"** across mini-app (tab, trading TERM, nudge,
+  search placeholder) + chat (home menu, mfg section, onboarding). Button ids
+  unchanged.
+- **Pay-link wording** audited — the sheet is already neutral ("...can pay
+  online"); the webhook message is already sale-vs-repayment aware. No user-facing
+  "debt-only" copy remained.
+
+## DONE — UX (commit 6544a12)
+- **Removed the "≡ Navigation" chat row.** Text replies now get "Anything else?"
+  with ☰ Menu + 📊 Dashboard instead of the throwaway Navigation label.
 
 ## TODO — UX
-- **Persistent "Navigation" label before Menu (chat).** The "≡ Navigation" row is
-  too sticky/repetitive after actions — trim or stop re-sending it every message.
 - **Services: "Write a quote" on the customer card.** Add a quote action (services
   industry) — generate_invoice already supports kind="quote"; wire a button.
+- **Mark debts that already have a live pay-link** ("🔗 link sent — awaiting
+  payment") so the owner knows not to also collect manually. (Owner asked: "how
+  does the user know which debt is for a link to repay vs press Pay".)
 
 ## TODO — Products & materials dashboard (make it richer + clearer)
 - The three stats (Products / Total stock / Stock value) are unclear. Wanted:
