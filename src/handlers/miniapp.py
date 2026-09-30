@@ -264,6 +264,8 @@ def lambda_handler(event, context):
         # ── Writes (generate + deliver a payment receipt PDF, on-demand) ──
         if method == "POST" and path.endswith("/app/api/receipt"):
             return _receipt_send(event, user_id)
+        if method == "POST" and path.endswith("/app/api/quote"):
+            return _quote_send(event, user_id)
         # ── Writes (Stage 2: recipe/BOM add/remove material) ──
         if method == "POST" and path.endswith("/app/api/recipe"):
             return _recipe_write(event, user_id)
@@ -1744,6 +1746,57 @@ def _receipt_send(event, user_id: str):
         return _json(500, {"error": f"could not generate the {kind}"})
 
 
+def _quote_send(event, user_id: str):
+    """Generate + deliver a QUOTE PDF for a customer (services/hybrid — a pre-work
+    price estimate, not a bill). Body: {customer, amount, description}. Reuses
+    PDFGenerator.generate_invoice(kind='quote') + the same S3/deliver pipeline as
+    receipts. Tier-gated like the other PDFs. Returns the standard delivery dict."""
+    from services.database import Database
+    from services.pdf_generator import PDFGenerator
+    from services.export_service import ExportService
+    from utils.money import money_round
+
+    data = _parse_body(event)
+    customer = str(data.get("customer") or "").strip() or "Customer"
+    description = str(data.get("description") or "").strip() or "Services"
+    try:
+        amount = money_round(data.get("amount") or 0)
+    except Exception:
+        amount = 0
+    if not amount or amount <= 0:
+        return _json(400, {"error": "amount must be greater than 0"})
+
+    db = Database()
+    try:
+        from services.tier_manager import TierManager
+        allowed, msg = TierManager(database=db).check_can_generate_pdf(user_id)
+        if not allowed:
+            return _json(403, {"error": "pdf_paywalled",
+                               "message": msg or "Quotes are a Basic/Pro feature."})
+    except Exception:
+        pass
+
+    try:
+        pdfgen = PDFGenerator(database=db)
+        items = [{"description": description[:60], "quantity": 1, "amount": amount}]
+        filepath, filename = pdfgen.generate_invoice(
+            user_id, customer, amount, description[:60], items=items, kind="quote")
+        if not filepath:
+            return _json(404, {"error": "could not build the quote"})
+        svc = ExportService(database=db)
+        success, url = svc.deliver_file(user_id, filepath, filename, caption="📝 Quote")
+        return _json(200, {
+            "ok": bool(success),
+            "delivered_to_chat": bool(success),
+            "download_url": url or "",
+            "message": ("Quote sent to your chat." if success
+                        else "Built the quote but couldn't deliver it — use the link."),
+        })
+    except Exception as e:
+        logger.error(f"miniapp quote failed: {e}")
+        return _json(500, {"error": "could not generate the quote"})
+
+
 def _debt_payment_write(event, user_id: str):
     """Record a debt payment from the app — a COLLECTION (a customer repays me)
     or a REPAYMENT (I pay a supplier). Mirrors the chat debt board EXACTLY:
@@ -2354,6 +2407,27 @@ _PAGE_HTML = """<!doctype html>
     <div id="crmmsg" class="muted"></div>
   </div>
 
+  <!-- Write-a-quote sheet (services/hybrid): a pre-work price estimate. -->
+  <div id="quoteOverlay" class="overlay hidden">
+    <div class="sheet">
+      <h2>📝 Write a quote</h2>
+      <div class="sub2" id="qt-sub">A price estimate to send before the work.</div>
+      <div class="field" style="margin-top:12px">
+        <label>What's it for?</label>
+        <input id="qt-desc" placeholder="e.g. Office deep-clean, 3 rooms">
+      </div>
+      <div class="field">
+        <label>Amount (₦)</label>
+        <input id="qt-amount" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 25000">
+      </div>
+      <div class="sheeterr" id="qt-err"></div>
+      <div class="actions">
+        <button class="btn cancel" onclick="closeQuote()">Close</button>
+        <button class="btn save" id="qt-send" onclick="qtSend()">Send quote</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Payment-links overlay: the owner's created pay-links + their status.
        Pending ones can be copied or cancelled; paid ones show as recorded. -->
   <div id="paymentLinksOverlay" class="overlay hidden">
@@ -2409,6 +2483,7 @@ _PAGE_HTML = """<!doctype html>
       <div id="cd-txlist"><div class="muted">Loading…</div></div>
       <div class="actions">
         <button class="btn cancel" onclick="closeContact()">Close</button>
+        <button class="btn hidden" id="cd-quote" onclick="cdWriteQuote()" style="background:var(--card);border:1px solid var(--line)">📝 Write a quote</button>
         <button class="btn hidden" id="cd-paylink" onclick="cdGetPayLink()" style="background:var(--card);border:1px solid var(--line)">💳 Get pay-link</button>
         <button class="btn save hidden" id="cd-pay" onclick="cdRecordPayment()">💵 Record payment</button>
       </div>
@@ -3589,11 +3664,18 @@ window.onerror = function (msg, src, line, col, err) {
     // pure supplier OR an expense payee (you PAY them; you don't bill them). The
     // old check only excluded "supplier", so it wrongly showed on expense payees.
     var payLinkBtn = document.getElementById("cd-paylink");
+    var ct = String(c.type || "").toLowerCase();
+    var isCollectable = (ct === "customer" || ct === "both" || ct === "client");
     if (payLinkBtn) {
-      var ct = String(c.type || "").toLowerCase();
-      var isCollectable = (ct === "customer" || ct === "both" || ct === "client");
       var canBill = isCollectable || (c.owes_me > 0);
       payLinkBtn.classList.toggle("hidden", !canBill);
+    }
+    // "Write a quote" — a pre-work estimate, most useful for services/hybrid, and
+    // only for a customer/client (someone you'd bill), not a supplier.
+    var quoteBtn = document.getElementById("cd-quote");
+    if (quoteBtn) {
+      var showQuote = (isServices() || isHybrid()) && (isCollectable || c.owes_me > 0);
+      quoteBtn.classList.toggle("hidden", !showQuote);
     }
 
     var phoneEl = document.getElementById("cd-phone");
@@ -3729,6 +3811,46 @@ window.onerror = function (msg, src, line, col, err) {
     // "in" = they owe me (collect); "out" = I owe them (repay).
     if (c.owes_me > 0) openPay(c.name, c.owes_me, "in");
     else if (c.i_owe > 0) openPay(c.name, c.i_owe, "out");
+  };
+
+  // ── Write a quote (services/hybrid): a pre-work price estimate ──
+  var qtCtx = null;   // {name}
+  window.cdWriteQuote = function () {
+    if (!cdCtx) return;
+    qtCtx = { name: cdCtx.name || "" };
+    closeContact();
+    document.getElementById("qt-sub").textContent =
+      qtCtx.name ? ("A price estimate for " + qtCtx.name + " — sent to your chat as a PDF.")
+                 : "A price estimate — sent to your chat as a PDF.";
+    document.getElementById("qt-desc").value = "";
+    document.getElementById("qt-amount").value = "";
+    document.getElementById("qt-err").textContent = "";
+    document.getElementById("qt-send").disabled = false;
+    document.getElementById("quoteOverlay").classList.remove("hidden");
+  };
+  window.closeQuote = function () {
+    document.getElementById("quoteOverlay").classList.add("hidden");
+    qtCtx = null;
+  };
+  window.qtSend = function () {
+    var err = document.getElementById("qt-err");
+    err.textContent = "";
+    var amt = parseFloat(document.getElementById("qt-amount").value);
+    if (!(amt > 0)) { err.textContent = "Enter an amount greater than 0."; return; }
+    var desc = (document.getElementById("qt-desc").value || "").trim();
+    var btn = document.getElementById("qt-send");
+    btn.disabled = true; btn.textContent = "Sending\u2026";
+    apiPost("api/quote", { customer: (qtCtx && qtCtx.name) || "", amount: amt, description: desc })
+      .then(function (r) {
+        btn.textContent = "Send quote";
+        closeQuote();
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+        if (tg && tg.showAlert) tg.showAlert((r && r.message) || "Quote sent to your chat.");
+      })
+      .catch(function (e) {
+        btn.disabled = false; btn.textContent = "Send quote";
+        err.textContent = (e && e.message) || "Could not send the quote.";
+      });
   };
 
   // ── Payment collection: create a Paystack pay-link for this customer ──
