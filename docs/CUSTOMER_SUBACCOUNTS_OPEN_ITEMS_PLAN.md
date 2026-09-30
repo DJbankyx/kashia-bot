@@ -137,11 +137,16 @@ existing flat customer + all of WhatsApp is untouched until the owner opts in.
   items' `site`. `open_items.sites_summary` returns BOTH views (per-site balances +
   customer total); `settle_open_items(site=…)` pays ONE site's items only (Delta
   paid, Asaba untouched); `get_site_label`/`set_site_label` store the owner's
-  user-defined layer name (default "Location"). Engine-only (no UI yet),
-  backward-compatible, kobo-precise. Verified round-trip (Delta 8k / Asaba 4k stay
-  separate; pay 6k to Delta → Delta 2k + Asaba 4k, lump 12k→6k). NEXT: wire `site`
-  into the chat + mini-app record/CRM surfaces (choose/name a site, show balances by
-  site).
+  user-defined layer name (default "Location"). Engine, backward-compatible,
+  kobo-precise. Verified round-trip (Delta 8k / Asaba 4k stay separate; pay 6k to
+  Delta → Delta 2k + Asaba 4k, lump 12k→6k).
+- **Stage 1+2 MINI-APP UI — SHIPPED (commit 7cc0b20).** Record a credit/part/
+  pay-link SALE with an optional Site (labelled with the owner's layer name); the
+  contact card shows the open balance grouped BY SITE with a per-site "Pay" that
+  settles only that site's items; a "⚙ <label>" control names the layer. New routes:
+  GET /app/api/open-items, POST /app/api/settle-open, POST /app/api/site-label
+  (template.yaml) → DEPLOY REQUIRED. CHAT surface for site is still deferred (a
+  follow-on; the engine supports it).
 - **Stage 3 (multi-item invoice from open items)** — NOT STARTED.
 - **Stage 4 (pay-link on an account / "Build B")** — NOT STARTED; rests on 1–2.
 
