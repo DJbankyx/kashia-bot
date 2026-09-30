@@ -251,11 +251,16 @@ def _handle_collection(metadata, data, reference):
             fee_naira = 0
 
         # AUTO-SETTLE vs fresh sale (owner decision: auto-reconcile). If the
-        # customer has an open receivable, settle it; otherwise record a fresh
-        # paid sale. Either way a SALE is logged (mirrors debt._apply_directed_
-        # payment: settle_debt + a settling sale), so income is captured once.
-        # Settlement uses the REQUESTED amount (what actually pays down the debt),
-        # never the fee-inflated gross.
+        # customer has an open receivable, the payment SETTLES it (a REPAYMENT,
+        # NOT new revenue — the original credit sale already recognised the
+        # income). Only the portion BEYOND any debt is a genuine new sale.
+        # Settlement uses the REQUESTED amount (never the fee-inflated gross).
+        #
+        # ACCOUNTING-CRITICAL: a settled portion must be recorded so
+        # accounting._is_debt_settlement recognises it (description "Debt
+        # repayment from …" / category "Debt Repayment"), EXACTLY like the chat
+        # debt._apply_directed_payment does — otherwise it's double-counted as
+        # revenue on top of the original credit sale (the Muyideen bug).
         settled = 0
         if customer_name:
             try:
@@ -268,14 +273,39 @@ def _handle_collection(metadata, data, reference):
             except Exception as e:
                 logger.warning(f"collection settle_debt failed: {e}")
 
-        sale = db.save_transaction(
-            owner_id, amount_naira, "sale", description, "Sales & Income",
-            vendor=customer_name, payment_method="cash",
-            extra_details={"source": "payment_collection", "paystack_ref": reference,
-                           "payreq_id": payreq_id, "settled_receivable": settled,
-                           "gross_charged": gross_naira, "paystack_fee": fee_naira},
-        )
-        paid_tx_id = (sale or {}).get("transaction_id", "")
+        # The part of the payment that is NOT settling a debt = a real new sale.
+        sale_portion = money_round(amount_naira - settled)
+        if sale_portion < 0:
+            sale_portion = 0
+
+        common_extra = {"source": "payment_collection", "paystack_ref": reference,
+                        "payreq_id": payreq_id, "gross_charged": gross_naira,
+                        "paystack_fee": fee_naira}
+        paid_tx_id = ""
+
+        # 1) Settled portion → a REPAYMENT row (kept OUT of P&L). Mirror the chat:
+        #    type='sale', description "Debt repayment from {name}" so
+        #    _is_debt_settlement catches it (it also cash-tracks the collection).
+        if settled > 0:
+            rep = db.save_transaction(
+                owner_id, settled, "sale",
+                f"Debt repayment from {customer_name}", "Debt Repayment",
+                vendor=customer_name, payment_method="cash",
+                extra_details=dict(common_extra, settled_receivable=settled,
+                                   kind="debt_repayment"),
+            )
+            paid_tx_id = (rep or {}).get("transaction_id", "")
+
+        # 2) Remainder (or the whole thing when there was no debt) → a real SALE.
+        if sale_portion > 0 or settled == 0:
+            sale = db.save_transaction(
+                owner_id, (sale_portion if settled > 0 else amount_naira), "sale",
+                description, "Sales & Income",
+                vendor=customer_name, payment_method="cash",
+                extra_details=dict(common_extra, settled_receivable=settled),
+            )
+            # Prefer the sale's id as the primary paid_tx_id when there is one.
+            paid_tx_id = (sale or {}).get("transaction_id", "") or paid_tx_id
 
         if payreq_id:
             db.mark_payment_request_paid(owner_id, payreq_id, paid_tx_id)
@@ -301,11 +331,22 @@ def _handle_collection(metadata, data, reference):
         fee_line = (f"\n\u2139\uFE0F Customer also paid \u20a6{fee_naira:,.0f} "
                     f"Paystack fee (not counted as your income)."
                     if fee_naira else "")
+        # Book line reflects what actually happened so a REPAYMENT isn't called a
+        # sale (that was the confusing part): all-debt → repayment; mixed → both;
+        # no-debt → sale.
+        if settled and sale_portion <= 0:
+            book_line = ("It's recorded as a debt repayment (not new income \u2014 "
+                         "the original sale already counted).")
+        elif settled and sale_portion > 0:
+            book_line = (f"\u20a6{settled:,.0f} clears old debt; "
+                         f"\u20a6{sale_portion:,.0f} is a new paid sale.")
+        else:
+            book_line = "It's recorded as a paid sale in your books."
         safe_ref = str(reference).replace("\\", "\\\\").replace("_", "\\_").replace("*", "\\*")
         client.send_text(recipient, (
             f"\U0001F4B0 *Payment received!*\n\n"
             f"\u20a6{amount_naira:,.0f}{who} for {description}.{settle_line}{fee_line}\n\n"
-            f"It's recorded as a paid sale in your books.\n\n"
+            f"{book_line}\n\n"
             f"\U0001F9FE Need a receipt? Open the app \u2192 Customers \u2192 "
             f"\U0001F4B3 Payment links \u2192 tap \U0001F9FE Receipt on this payment.\n\n"
             f"Ref: {safe_ref}"

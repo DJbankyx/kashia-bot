@@ -1320,6 +1320,7 @@ def _contact_detail(event, user_id: str):
         elif t.get("type") in ("purchase", "expense", "sale_return"):
             total_out += amt
 
+    from services.accounting import _is_debt_settlement as _is_settle
     rows = []
     for t in mine[:20]:
         item = (t.get("item_name") or t.get("description") or "").strip()
@@ -1328,8 +1329,14 @@ def _contact_detail(event, user_id: str):
             "amount": int(t.get("amount", 0) or 0),
             "item": item[:40],
             "date": str(t.get("date", "") or ""),
+            # Full timestamp (#7): the app can show time alongside date.
+            "at": str(t.get("created_at", "") or t.get("at", "") or ""),
             "qty": str(t.get("quantity", "") or ""),
             "payment": str(t.get("payment_method", "") or ""),
+            # A debt repayment/collection is money received to clear a debt, NOT a
+            # fresh sale — the app renders it with a distinct label/icon so it's
+            # not confused with a new sale (the Muyideen display bug).
+            "is_payment": bool(_is_settle(t)),
         })
 
     dates = [t.get("date") for t in mine if t.get("date")]
@@ -2553,6 +2560,15 @@ window.onerror = function (msg, src, line, col, err) {
 (function () {
   var tg = window.Telegram && window.Telegram.WebApp;
   if (tg) { tg.ready(); tg.expand(); }
+  // Dismiss the keyboard when tapping an empty area (no input). Telegram's
+  // WebView keeps the keyboard up otherwise, which the owner found frustrating.
+  // If the tap target isn't a form field (or inside one), blur the focused input.
+  document.addEventListener("touchend", function (e) {
+    var t = e.target;
+    if (t && t.closest && t.closest("input, textarea, select, button, a, [contenteditable]")) return;
+    var a = document.activeElement;
+    if (a && a.blur && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) a.blur();
+  }, true);
   var initData = (tg && tg.initData) || "";
   // Quick chips = the common ranges. Specific Quarter/Month/Year (any one, not
   // just the current) live in the "More periods…" dropdown so the user is never
@@ -2716,6 +2732,20 @@ window.onerror = function (msg, src, line, col, err) {
 
   // Web page (not a PDF) so the ₦ glyph is safe and reads cleaner than "NGN".
   function naira(n) { return "\u20a6" + Number(n||0).toLocaleString("en-NG"); }
+  // Show date + time when a full timestamp is available, else just the date.
+  // `at` is an ISO timestamp (created_at); `date` is the YYYY-MM-DD fallback.
+  function fmtWhen(at, date) {
+    if (at) {
+      var d = new Date(at);
+      if (!isNaN(d.getTime())) {
+        var hh = ("0" + d.getHours()).slice(-2);
+        var mm = ("0" + d.getMinutes()).slice(-2);
+        var day = at.slice(0, 10);
+        return day + " " + hh + ":" + mm;
+      }
+    }
+    return date || "";
+  }
   function setSigned(id, n) {
     var el = document.getElementById(id);
     if (!el) return;
@@ -3261,14 +3291,19 @@ window.onerror = function (msg, src, line, col, err) {
     var ICON = { sale: "💰", purchase: "📦", expense: "💸",
                  sale_return: "↩️", purchase_return: "↩️", income: "💰" };
     rows.forEach(function (t) {
-      var ic = ICON[t.type] || "•";
-      var meta = [t.date || ""];
-      if (t.qty) meta.push(String(t.qty));
+      // A debt repayment/collection is money received to CLEAR a debt, not a
+      // fresh sale — show it distinctly (🧾 + "Payment received") so it isn't
+      // confused with a new sale in the customer's history.
+      var isPay = !!t.is_payment;
+      var ic = isPay ? "🧾" : (ICON[t.type] || "•");
+      var title = isPay ? "Payment received" : (t.item || t.type || "?");
+      var meta = [fmtWhen(t.at, t.date)];
+      if (!isPay && t.qty) meta.push(String(t.qty));
       if (t.payment) meta.push(t.payment);
       var div = document.createElement("div");
       div.className = "item";
-      div.innerHTML = '<div><div class="name">' + ic + " " + escapeHtml(t.item || t.type || "?") +
-        '</div><div class="meta">' + escapeHtml(meta.join(" · ")) + '</div></div>' +
+      div.innerHTML = '<div><div class="name">' + ic + " " + escapeHtml(title) +
+        '</div><div class="meta">' + escapeHtml(meta.filter(Boolean).join(" · ")) + '</div></div>' +
         '<div class="right"><div class="stock">' + naira(t.amount || 0) + '</div></div>';
       card.appendChild(div);
     });

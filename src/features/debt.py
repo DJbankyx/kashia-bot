@@ -172,6 +172,13 @@ class DebtHandler:
         # Tappable people. Sort each side oldest-first so the most urgent
         # debts surface at the top of the list.
         rows = []
+        # Show the AGE of each debt in the row (was computed for sorting but never
+        # displayed — the "days not showing" report). e.g. "· 5 days" / "· 1 day"
+        # / "· today". Keeps the colour dot too.
+        def _age_text(age):
+            if age <= 0:
+                return "today"
+            return f"{age} day" if age == 1 else f"{age} days"
         if debtors:
             rows.append({"id": "debt_noop", "title": "─── 💰 Owed to you ───"})
             for d in sorted(debtors, key=lambda x: -self._age_days(x))[:12]:
@@ -180,7 +187,8 @@ class DebtHandler:
                 flag = self._bucket_label(age).split(" ")[0]  # colour dot only
                 rows.append({
                     "id": f"debt_person_in_{name}"[:60],
-                    "title": f"{flag} {name} · {format_amount(d.get('amount', 0))}"[:60],
+                    "title": (f"{flag} {name} · {format_amount(d.get('amount', 0))} · "
+                              f"{_age_text(age)}")[:60],
                 })
         def _creditor_rows(items):
             for c in sorted(items, key=lambda x: -self._age_days(x))[:12]:
@@ -189,7 +197,8 @@ class DebtHandler:
                 flag = self._bucket_label(age).split(" ")[0]
                 rows.append({
                     "id": f"debt_person_out_{name}"[:60],
-                    "title": f"{flag} {name} · {format_amount(c.get('amount', 0))}"[:60],
+                    "title": (f"{flag} {name} · {format_amount(c.get('amount', 0))} · "
+                              f"{_age_text(age)}")[:60],
                 })
 
         if creditors:
