@@ -616,6 +616,25 @@ class Database:
             logger.error(f"list_payment_requests failed: {e}")
             return []
 
+    def cancel_pending_requests_for(self, phone_number, customer_name):
+        """Cancel a customer's PENDING pay-links (they paid another way, so the
+        link is stale and shouldn't stay live for a double-payment). Matches by
+        customer name (case-insensitive). Returns the count cancelled. Never
+        raises. Paid links are left untouched."""
+        want = str(customer_name or "").strip().lower()
+        if not want:
+            return 0
+        n = 0
+        try:
+            for r in self.list_payment_requests(phone_number, status="pending", limit=100):
+                cn = str(r.get("customer_name") or r.get("vendor") or "").strip().lower()
+                if cn and cn == want:
+                    if self.cancel_payment_request(phone_number, r.get("transaction_id")):
+                        n += 1
+        except Exception as e:
+            logger.warning(f"cancel_pending_requests_for failed: {e}")
+        return n
+
     # ==========================================
     # ACCOUNT TRANSFER / RECOVERY
     # ==========================================

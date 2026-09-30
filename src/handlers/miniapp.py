@@ -1459,6 +1459,13 @@ def _settle_open_write(event, user_id: str):
     except Exception as e:
         logger.warning(f"settle-open repayment row failed: {e}")
 
+    # They paid manually → cancel any of this customer's PENDING pay-links so a
+    # stale link can't be double-paid later.
+    try:
+        db.cancel_pending_requests_for(user_id, name)
+    except Exception:
+        pass
+
     return _json(200, {"ok": True, "applied": applied,
                        "remaining_payment": res.get("remaining_payment", 0),
                        "items": res.get("items", [])})
@@ -1786,6 +1793,13 @@ def _debt_payment_write(event, user_id: str):
                 f"Debt repayment to {name}", "Debt Repayment",
                 vendor=name, payment_method="cash",
                 extra_details={"source": "miniapp", "debt_payment": True})
+        # Paid manually → cancel this customer's stale PENDING pay-links so they
+        # can't be double-paid (only for money-in / a customer collection).
+        if direction == "in":
+            try:
+                db.cancel_pending_requests_for(user_id, name)
+            except Exception:
+                pass
         return _json(200, {
             "ok": True, "name": name, "direction": direction,
             "amount": amount, "remaining": int(remaining or 0),
@@ -3731,7 +3745,8 @@ window.onerror = function (msg, src, line, col, err) {
     plFillProducts();
     document.getElementById("pl-err").textContent = "";
     document.getElementById("pl-result").classList.add("hidden");
-    document.getElementById("pl-create").disabled = false;
+    var _plc = document.getElementById("pl-create");
+    _plc.disabled = false; _plc.textContent = "Create link"; _plc.classList.remove("hidden");
     document.getElementById("payLinkOverlay").classList.remove("hidden");
   };
   window.closePayLink = function () {
@@ -3750,7 +3765,12 @@ window.onerror = function (msg, src, line, col, err) {
       amount: amt, description: desc, customer: (plCtx && plCtx.name) || ""
     })
       .then(function (r) {
-        btn.textContent = "Create link";
+        // A link now EXISTS — keep the button LOCKED so a second tap can't mint a
+        // duplicate link (which was creating double entries). To make another,
+        // the owner closes + reopens. Hide it entirely and show the result.
+        btn.disabled = true;
+        btn.textContent = "\u2705 Link created";
+        btn.classList.add("hidden");
         var urlBox = document.getElementById("pl-url");
         urlBox.value = r.payment_url || "";
         document.getElementById("pl-result").classList.remove("hidden");
@@ -6249,7 +6269,10 @@ window.onerror = function (msg, src, line, col, err) {
               document.getElementById("pl-err").textContent = "";
               document.getElementById("pl-url").value = (r && r.payment_url) || "";
               document.getElementById("pl-result").classList.remove("hidden");
-              document.getElementById("pl-create").disabled = false;
+              // A link already exists (created with the sale) — hide Create so a
+              // second tap can't mint a duplicate.
+              var _plc2 = document.getElementById("pl-create");
+              _plc2.disabled = true; _plc2.classList.add("hidden");
               document.getElementById("payLinkOverlay").classList.remove("hidden");
             });
           }
