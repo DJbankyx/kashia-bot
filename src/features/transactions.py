@@ -1456,6 +1456,19 @@ class TransactionHandler:
                     debt_recorded = owed
                 except Exception as e:
                     logger.warning(f"web save: record_debt failed: {e}")
+                # OPEN-ITEM stamp (Stage 1): record the per-sale unpaid balance on
+                # the row so it's an individual open item the owner can pay against
+                # selectively ("rice paid, oil owing"). A FULL credit sale never
+                # stamped balance_owed before (only deposits did) — do it here so
+                # every credit row is trackable. Reports still read the lump field;
+                # this is purely additive. See features/open_items.py.
+                if tx_id:
+                    try:
+                        self.db.update_transaction(phone_number, tx_id,
+                                                   {"balance_owed": money_round(owed),
+                                                    "open_item": True})
+                    except Exception as e:
+                        logger.warning(f"web save: open-item stamp failed: {e}")
 
             return {
                 "ok": True,
