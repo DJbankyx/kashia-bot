@@ -2107,7 +2107,7 @@ _PAGE_HTML = """<!doctype html>
 
   <div class="tabs">
     <div class="tab active" id="tab-dash" onclick="showTab('dash')">📊 Dashboard</div>
-    <div class="tab" id="tab-cat" onclick="showTab('cat')">📦 Catalog</div>
+    <div class="tab" id="tab-cat" onclick="showTab('cat')">📦 Inventory</div>
     <div class="tab" id="tab-crm" onclick="showTab('crm')">👥 Customers</div>
     <div class="tab" id="tab-rec" onclick="showTab('rec')">📋 Records</div>
   </div>
@@ -2117,12 +2117,12 @@ _PAGE_HTML = """<!doctype html>
     <!-- Stage 4: catalog-first setup nudge. Gentle + dismissable; never blocks. -->
     <div id="catnudge" class="hidden" style="background:var(--card);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:12px;padding:12px 14px;margin-bottom:12px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
-        <div style="font-weight:700;font-size:14px" id="catnudge-title">Finish setting up your catalog</div>
+        <div style="font-weight:700;font-size:14px" id="catnudge-title">Finish setting up your inventory</div>
         <div onclick="dismissNudge()" style="cursor:pointer;color:var(--hint);font-size:18px;line-height:1">✕</div>
       </div>
-      <div class="sub2" style="margin:4px 0 8px">Good catalog setup drives accurate cost, margin and reports.</div>
+      <div class="sub2" style="margin:4px 0 8px">Good inventory setup drives accurate cost, margin and reports.</div>
       <div id="catnudge-tips"></div>
-      <button class="btn save" style="width:100%;margin-top:8px" onclick="showTab('cat')">📦 Open catalog</button>
+      <button class="btn save" style="width:100%;margin-top:8px" onclick="showTab('cat')">📦 Open inventory</button>
     </div>
     <div class="chips" id="chips"></div>
     <div class="chips hidden" id="dash-more-panel" style="flex-wrap:wrap"></div>
@@ -2174,7 +2174,7 @@ _PAGE_HTML = """<!doctype html>
     <div class="card hidden" id="cat-lowcard"><div class="k">Low stock</div><div class="v neg" id="cat-low">—</div></div>
     <button class="btn save" style="width:100%;margin-bottom:10px" onclick="openAddProduct()">➕ Add product</button>
     <button class="btn cancel hidden" id="cat-add-raw" style="width:100%;margin-bottom:10px" onclick="openAddRawMaterial()">🧱 Add raw material</button>
-    <input class="search" id="catsearch" placeholder="Search catalog..." oninput="renderCatalog()">
+    <input class="search" id="catsearch" placeholder="Search inventory..." oninput="renderCatalog()">
     <div id="catgroups"><div class="muted">Loading...</div></div>
     <div id="catmsg" class="muted"></div>
   </div>
@@ -2865,7 +2865,7 @@ window.onerror = function (msg, src, line, col, err) {
   var TERMS = {
     trading: {
       sale: "Sale", sales: "Sales", purchase: "Purchase", purchases: "Purchases",
-      catalog: "Catalog", customers: "Customers", cogs: "Cost of sales",
+      catalog: "Inventory", customers: "Customers", cogs: "Cost of sales",
       sale_emoji: "\\ud83d\\udcb0", purchase_emoji: "\\ud83d\\udce6",
       // Record-form inner labels. Trading == the original hardcoded HTML strings
       // (byte-for-byte), so the control never changes.

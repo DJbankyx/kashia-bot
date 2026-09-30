@@ -347,7 +347,7 @@ class OnboardingHandler:
             lines.append(f"📋 *Next:* add your {setup_word} in the Catalog so")
             lines.append("every sale shows profit and stock stays accurate.")
             return [button_response("\n".join(lines), [
-                {"id": "menu_catalog", "title": "📋 Set Up Catalog Now"},
+                {"id": "menu_catalog", "title": "📋 Set Up Inventory Now"},
                 {"id": "menu_home", "title": "⏭️ Skip for now"},
             ])]
 
@@ -368,7 +368,7 @@ class OnboardingHandler:
             text_response("\n".join(lines)),
             text_response("\n".join(catalog_lines)),
             button_response("Set up your catalog?", [
-                {"id": "menu_catalog", "title": "📋 Set Up Catalog Now"},
+                {"id": "menu_catalog", "title": "📋 Set Up Inventory Now"},
                 {"id": "menu_home", "title": "⏭️ Skip for now"},
             ]),
         ]

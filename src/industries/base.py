@@ -148,7 +148,7 @@ class BaseIndustry:
                     {"id": "menu_report", "title": "📊 Reports", "description": "Today, this week, this month"},
                     {"id": "menu_debts", "title": "💳 Debts & Credits", "description": "Who owes, who I owe"},
                     {"id": "menu_contacts", "title": "📇 Contacts", "description": "Customers & suppliers"},
-                    {"id": "menu_catalog", "title": "📋 Catalog", "description": self.TERMS['catalog']},
+                    {"id": "menu_catalog", "title": "📋 Inventory", "description": self.TERMS['catalog']},
                     {"id": "menu_export", "title": "📁 Export & Docs", "description": "Excel, invoices, receipts"},
                 ]
             }

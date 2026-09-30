@@ -464,11 +464,16 @@ class KashiaBot:
             # Don't add after text that's asking for input (ending with : or ?)
             if content.strip().endswith(":") or content.strip().endswith("_"):
                 return responses
-            # Append a menu button after the text
+            # Append quick nav after the text. No throwaway "Navigation" label —
+            # a short useful hint + Menu and a Dashboard shortcut (the two things
+            # owners actually reach for).
             from utils.whatsapp_ui import button_response
             responses.append(button_response(
-                "☰ Navigation",
-                [{"id": "menu_home", "title": "☰ Menu"}]
+                "Anything else?",
+                [
+                    {"id": "menu_home", "title": "☰ Menu"},
+                    {"id": "menu_dashboard", "title": "📊 Dashboard"},
+                ]
             ))
 
         return responses

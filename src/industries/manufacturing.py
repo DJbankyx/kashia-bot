@@ -81,7 +81,7 @@ class ManufacturingIndustry(BaseIndustry):
                          "description": "Profile, bank, address"},
                         {"id": "sec_production", "title": "🏭 Production",
                          "description": "History, materials, batches"},
-                        {"id": "sec_inventory", "title": "📋 Catalog — Products & Materials",
+                        {"id": "sec_inventory", "title": "📋 Inventory — Products & Materials",
                          "description": "Your products, materials, stock, recipes, costs"},
                         {"id": "sec_business", "title": "💼 Business",
                          "description": "Reports, debts, docs, export"},
