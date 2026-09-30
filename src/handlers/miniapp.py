@@ -675,7 +675,7 @@ def _product_write(event, user_id: str):
         # / raw_material / supply). Only accept known values; trading omits it and
         # ensure_item_types will auto-tag as before.
         req_type = str(data.get("item_type", "") or "").strip()
-        if req_type in ("finished_product", "raw_material", "supply"):
+        if req_type in ("finished_product", "raw_material", "supply", "overhead"):
             products[new_key]["item_type"] = req_type
         # Optional cost + unit on creation. Useful for "Add raw material" (you
         # register stock you already have on hand, with what it cost you and its
@@ -2042,20 +2042,39 @@ _PAGE_HTML = """<!doctype html>
       </div>
       <!-- Raw-material extras: only shown when adding a raw material directly.
            A raw material you already have on hand can carry what it cost you, its
-           stock unit, and an opening quantity, without being tied to any product
-           yet. All optional. -->
+           PRIMARY (base) stock unit, an opening quantity, and taught conversions
+           — without being tied to any product yet. All optional. -->
       <div id="add-raw-extra" class="hidden">
+        <!-- Material vs Overhead (#6): a raw material is stock-tracked and
+             deducted on production; an overhead is a rate × usage, not stocked. -->
         <div class="field">
-          <label>Cost per unit (optional)</label>
+          <label>What kind is this?</label>
+          <div class="chips" id="add-raw-kind">
+            <div class="chip active" data-rk="raw_material" onclick="addRawSetKind('raw_material')">🧱 Raw material</div>
+            <div class="chip" data-rk="overhead" onclick="addRawSetKind('overhead')">⚡ Overhead</div>
+          </div>
+          <div class="sub2" id="add-raw-kind-hint" style="margin-top:6px">Raw material: stock-tracked, deducted on production (e.g. nylon in kg).</div>
+        </div>
+        <div class="field">
+          <label id="add-cost-label">Cost per unit (optional)</label>
           <input id="add-cost" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 400">
         </div>
         <div class="field">
-          <label>Stock unit (optional)</label>
-          <input id="add-unit" placeholder="e.g. kg, bag, litre">
+          <label>Primary (base) unit — how you track its stock</label>
+          <input id="add-unit" list="add-unit-list" placeholder="e.g. kg, bag, litre">
+          <datalist id="add-unit-list"></datalist>
+          <div class="sub2" style="margin-top:6px">This is the PRIMARY unit — cost + stock are counted in it. Standard units (kg, g, litre, ml, m, piece) already convert; teach custom ones below.</div>
         </div>
-        <div class="field">
+        <div class="field" id="add-stock-wrap">
           <label>Opening stock on hand (optional)</label>
           <input id="add-stock" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 10">
+        </div>
+        <!-- Teach a custom conversion (#5), e.g. "1 bag = 20 pieces". Resolved by
+             the units engine so any unit you use later maps back to the base. -->
+        <div class="field" id="add-conv-wrap">
+          <label>Teach a unit (optional)</label>
+          <input id="add-conv" placeholder="e.g. 1 bag = 20 pieces">
+          <div class="sub2" style="margin-top:6px">Only needed for custom units (bag, carton, truck). Add more from the item's edit screen later.</div>
         </div>
       </div>
       <div class="sheeterr" id="add-err"></div>
@@ -2407,7 +2426,7 @@ _PAGE_HTML = """<!doctype html>
       </div>
       <div class="row">
         <div class="field" style="flex:1">
-          <label>Unit</label>
+          <label>Primary unit</label>
           <input id="sh-unit" placeholder="e.g. piece, kg">
         </div>
         <div class="field" style="flex:1" id="sh-reorder-wrap">
@@ -4749,13 +4768,48 @@ window.onerror = function (msg, src, line, col, err) {
     var cost = document.getElementById("add-cost"); if (cost) cost.value = "";
     var unit = document.getElementById("add-unit"); if (unit) unit.value = "";
     var stk = document.getElementById("add-stock"); if (stk) stk.value = "";
-    // Hide the type chooser (it's fixed to raw material here) and show the extras.
+    var conv = document.getElementById("add-conv"); if (conv) conv.value = "";
+    // Hide the type chooser (kind is chosen inside the extras) and show the extras.
     document.getElementById("add-type-wrap").classList.add("hidden");
     addItemType = "raw_material";
+    addRawSetKind("raw_material");     // default; also relabels cost + toggles stock
+    addRawFillUnits();                 // suggest existing units in the datalist
     document.getElementById("add-raw-extra").classList.remove("hidden");
     document.getElementById("addOverlay").classList.remove("hidden");
     document.getElementById("add-name").focus();
   };
+  // Raw-material KIND (#6): raw_material (stock-tracked) vs overhead (rate×usage).
+  var addRawKind = "raw_material";
+  window.addRawSetKind = function (k) {
+    addRawKind = k;
+    var chips = document.querySelectorAll("#add-raw-kind .chip");
+    for (var i = 0; i < chips.length; i++) {
+      chips[i].classList.toggle("active", chips[i].getAttribute("data-rk") === k);
+    }
+    var isOh = (k === "overhead");
+    // Overhead cost is a RATE per unit of usage, and it isn't stocked.
+    var lbl = document.getElementById("add-cost-label");
+    if (lbl) lbl.textContent = isOh ? "Rate per unit of usage (optional)" : "Cost per unit (optional)";
+    var sw = document.getElementById("add-stock-wrap");
+    if (sw) sw.classList.toggle("hidden", isOh);
+    var hint = document.getElementById("add-raw-kind-hint");
+    if (hint) hint.textContent = isOh
+      ? "Overhead: a rate \u00d7 usage with no stock (e.g. electricity in kW, labour in minutes)."
+      : "Raw material: stock-tracked, deducted on production (e.g. nylon in kg).";
+  };
+  // Suggest already-registered units so the owner reuses "kg"/"bag" consistently.
+  function addRawFillUnits() {
+    var dl = document.getElementById("add-unit-list");
+    if (!dl) return;
+    var seen = {}; dl.innerHTML = "";
+    (invData || []).forEach(function (p) {
+      var u = (p.unit || p.base_unit || "").trim();
+      if (u && !seen[u.toLowerCase()]) {
+        seen[u.toLowerCase()] = 1;
+        var o = document.createElement("option"); o.value = u; dl.appendChild(o);
+      }
+    });
+  }
   window.closeAddProduct = function () {
     document.getElementById("addOverlay").classList.add("hidden");
   };
@@ -4768,16 +4822,20 @@ window.onerror = function (msg, src, line, col, err) {
     var btn = document.getElementById("add-save");
     btn.disabled = true; err.textContent = "";
     var body = { action: "add", name: name, category: cat };
-    // Raw-material mode forces the type + carries the optional cost/unit/stock.
-    // Otherwise only mfg/hybrid tag an item type; trading stays a plain product.
+    var convRule = "";   // a taught conversion to apply after the add, if any
+    // Raw-material mode forces the type (material vs overhead) + carries the
+    // optional cost/unit/stock. Otherwise only mfg/hybrid tag an item type;
+    // trading stays a plain product.
     if (addRawMode) {
-      body.item_type = "raw_material";
+      // #6: material vs overhead. An overhead is a rate×usage with no stock.
+      body.item_type = (addRawKind === "overhead") ? "overhead" : "raw_material";
       var cv = (document.getElementById("add-cost").value || "").trim();
       var uv = (document.getElementById("add-unit").value || "").trim();
       var sv = (document.getElementById("add-stock").value || "").trim();
       if (cv !== "") body.cost = parseFloat(cv);
       if (uv !== "") body.unit = uv;
-      if (sv !== "") body.stock = parseFloat(sv);
+      if (sv !== "" && addRawKind !== "overhead") body.stock = parseFloat(sv);
+      convRule = (document.getElementById("add-conv").value || "").trim();
     } else if (usesRecipes() && addItemType) {
       body.item_type = addItemType;
       // A raw material / supply added via the type chooser can also carry its
@@ -4794,6 +4852,15 @@ window.onerror = function (msg, src, line, col, err) {
     apiPost("api/product", body)
       .then(function (j) {
         if (j.product) (invData = invData || []).push(j.product);
+        // If the owner taught a conversion (#5), apply it to the new item via the
+        // existing set_conversion action (engine validates + rebuilds unit_defs).
+        if (convRule && j.product && j.product.key) {
+          return apiPost("api/product", {
+            action: "set_conversion", key: j.product.key, rule: convRule
+          }).catch(function () { /* non-fatal: the item is already created */ });
+        }
+      })
+      .then(function () {
         closeAddProduct();
         renderCatalog();
         if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");

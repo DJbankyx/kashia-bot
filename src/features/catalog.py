@@ -298,6 +298,12 @@ class CatalogHandler:
         if button_id == "cat_add_raw":
             return self._start_add_raw_material(phone_number)
 
+        if button_id == "cat_addraw_material":
+            return self._start_add_raw_kind(phone_number, "raw_material")
+
+        if button_id == "cat_addraw_overhead":
+            return self._start_add_raw_kind(phone_number, "overhead")
+
         if button_id == "cat_recipe":
             # Delegate to production handler's recipe setup
             # Return a marker that the router will handle
@@ -1063,17 +1069,36 @@ class CatalogHandler:
     # ADD RAW MATERIAL (chat registry — parity with the Mini App)
     # ─────────────────────────────────────────────────────────
     def _start_add_raw_material(self, phone_number: str) -> list:
-        """Start the chat flow to register a raw material directly (not tied to
-        any product's recipe yet). Mirrors the Mini App "🧱 Add raw material".
-        name → optional unit → optional cost → optional opening stock."""
+        """Start the chat flow to register a raw material or overhead directly (not
+        tied to any product's recipe yet). Mirrors the Mini App "🧱 Add raw
+        material". First choose the KIND, then name → primary unit → cost →
+        (materials only) opening stock → optional taught conversion."""
+        return [button_response(
+            "🧱 *Add Raw Material / Overhead*\n\n"
+            "What kind is it?\n\n"
+            "🧱 *Raw material* — stock-tracked, deducted on production (e.g. nylon in kg).\n"
+            "⚡ *Overhead* — a rate × usage, not stocked (e.g. electricity, labour).",
+            [
+                {"id": "cat_addraw_material", "title": "🧱 Raw material"},
+                {"id": "cat_addraw_overhead", "title": "⚡ Overhead"},
+            ]
+        )]
+
+    def _start_add_raw_kind(self, phone_number: str, kind: str) -> list:
+        """After the kind is chosen, ask for the name and remember the kind."""
         self.session.save(phone_number, states.CATALOG_ADD_DATA, {
             "cat_step": "adding_raw_name",
+            "raw_kind": "overhead" if kind == "overhead" else "raw_material",
         })
+        label = "Overhead" if kind == "overhead" else "Raw Material"
+        emoji = "⚡" if kind == "overhead" else "🧱"
+        egs = ("Electricity, Labour, Machine Hours" if kind == "overhead"
+               else "Nylon, Flour, Sugar, Bottle Caps")
         return [text_response(
-            "🧱 *Add Raw Material*\n\n"
-            "What's the raw material called?\n\n"
-            "_e.g. Nylon, Flour, Sugar, Bottle Caps_\n\n"
-            "_Type *back* to cancel_"
+            f"{emoji} *Add {label}*\n\n"
+            f"What's it called?\n\n"
+            f"_e.g. {egs}_\n\n"
+            f"_Type *back* to cancel_"
         )]
 
     def _handle_add_raw_material(self, phone_number: str, text: str, context: dict) -> list:
@@ -1082,10 +1107,13 @@ class CatalogHandler:
         Money is kobo-precise; stock is fractional; unit is a plain primary_unit."""
         step = context.get("cat_step", "")
 
+        raw_kind = context.get("raw_kind", "raw_material")
+        is_overhead = (raw_kind == "overhead")
+
         if step == "adding_raw_name":
             name = text.strip()
             if len(name) < 2:
-                return [text_response("Please enter the raw material name (at least 2 characters):")]
+                return [text_response("Please enter the name (at least 2 characters):")]
             # Find-or-create via the shared registry. Returns "" for a reserved
             # menu label or a save failure — surface a helpful error.
             key = self.ensure_raw_material(phone_number, name)
@@ -1094,14 +1122,25 @@ class CatalogHandler:
                     "⚠️ That name can't be used (it clashes with a menu option). "
                     "Try a different name:"
                 )]
+            # Overhead is a rate × usage, not stock — tag its item_type now.
+            if is_overhead:
+                products = self._get_products(phone_number)
+                if isinstance(products.get(key), dict):
+                    products[key]["item_type"] = "overhead"
+                    self._save_products(phone_number, products)
             context["cat_step"] = "adding_raw_unit"
             context["raw_key"] = key
             context["raw_name"] = name.strip()
             self.session.save(phone_number, states.CATALOG_ADD_DATA, context)
+            unit_q = ("📏 What unit is the usage measured in? (this is the PRIMARY unit)\n\n"
+                      "_e.g. kW, hour, minute_"
+                      if is_overhead else
+                      "📏 What unit do you track its stock in? (this is the PRIMARY unit)\n\n"
+                      "_e.g. kg, litre, bag, piece_")
+            emoji = "⚡" if is_overhead else "🧱"
             return [text_response(
-                f"🧱 *{name.strip().title()}*\n\n"
-                f"📏 What unit do you track its stock in?\n\n"
-                f"_e.g. kg, litre, bag, piece_\n\n"
+                f"{emoji} *{name.strip().title()}*\n\n"
+                f"{unit_q}\n\n"
                 f"_Type *skip* if you're not sure yet_"
             )]
 
@@ -1120,10 +1159,14 @@ class CatalogHandler:
             context["cat_step"] = "adding_raw_cost"
             self.session.save(phone_number, states.CATALOG_ADD_DATA, context)
             unit_word = prod.get("primary_unit", "") or "unit"
+            cost_q = (f"💰 What's the RATE per {unit_word}? (rate × usage = cost)\n\n"
+                      f"_e.g. 0.06 per kW, 1.5 per minute (sub-naira is fine)_"
+                      if is_overhead else
+                      f"💰 How much does ONE {unit_word} cost you?\n\n"
+                      f"_e.g. 400, 1.2K, 0.06 (sub-naira is fine)_")
             return [text_response(
-                f"💰 How much does ONE {unit_word} cost you?\n\n"
-                f"_e.g. 400, 1.2K, 0.06 (sub-naira is fine)_\n\n"
-                f"_Type *skip* if you don't want to set a cost now_"
+                f"{cost_q}\n\n"
+                f"_Type *skip* if you don't want to set it now_"
             )]
 
         if step == "adding_raw_cost":
@@ -1132,14 +1175,22 @@ class CatalogHandler:
             prod = products.get(key)
             if not isinstance(prod, dict):
                 self.session.reset(phone_number)
-                return [text_response("❓ That material is no longer in your catalog.")]
+                return [text_response("❓ That item is no longer in your catalog.")]
             if text.lower() not in ("skip", "none", "-", "0"):
                 amount = parse_amount(text)
                 if not amount:
-                    return [text_response("💰 Enter a cost (e.g. 400, 1.2K) or type *skip*:")]
+                    return [text_response("💰 Enter a value (e.g. 400, 1.2K) or type *skip*:")]
                 from utils.money import money_round
-                prod["landing_cost"] = money_round(amount)
+                # Overhead stores the rate under 'rate'; a material stores its
+                # buy-cost under 'landing_cost'. (Recipe cost math reads each.)
+                if is_overhead:
+                    prod["rate"] = money_round(amount)
+                else:
+                    prod["landing_cost"] = money_round(amount)
                 self._save_products(phone_number, products)
+            # Overhead has NO stock — finish here. Materials go on to opening stock.
+            if is_overhead:
+                return self._finish_add_raw(phone_number, context)
             context["cat_step"] = "adding_raw_stock"
             self.session.save(phone_number, states.CATALOG_ADD_DATA, context)
             unit_word = prod.get("primary_unit", "") or "units"
@@ -1163,28 +1214,44 @@ class CatalogHandler:
                     return [text_response("📦 Enter a quantity (e.g. 10, 2.5) or type *skip*:")]
                 prod["stock"] = qty
                 self._save_products(phone_number, products)
-            self.session.reset(phone_number)
+            return self._finish_add_raw(phone_number, context)
 
-            # Confirmation summary.
-            cost = prod.get("landing_cost", 0) or 0
-            unit_word = prod.get("primary_unit", "")
-            stock = prod.get("stock", 0) or 0
-            bits = []
+        return self.show_menu(phone_number)
+
+    def _finish_add_raw(self, phone_number: str, context: dict) -> list:
+        """Shared finisher for the add-raw-material/overhead flow: confirm summary
+        + next-action buttons, then reset the session."""
+        key = context.get("raw_key", "")
+        name = context.get("raw_name", "Item")
+        is_overhead = (context.get("raw_kind") == "overhead")
+        products = self._get_products(phone_number)
+        prod = products.get(key) or {}
+        self.session.reset(phone_number)
+
+        unit_word = prod.get("primary_unit", "")
+        stock = prod.get("stock", 0) or 0
+        rate = prod.get("rate", 0) or 0
+        cost = prod.get("landing_cost", 0) or 0
+        bits = []
+        if is_overhead:
+            if rate:
+                bits.append(f"{format_amount(rate)}/{unit_word or 'unit'} (rate)")
+        else:
             if stock:
                 bits.append(f"{self._fmt_qty(stock)}{(' ' + unit_word) if unit_word else ''} on hand")
             if cost:
                 bits.append(f"{format_amount(cost)}/{unit_word or 'unit'}")
-            detail = (" — " + " · ".join(bits)) if bits else ""
-            return [
-                text_response(f"✅ Raw material registered: *{name.title()}*{detail}"),
-                button_response("What's next?", [
-                    {"id": "cat_add_raw", "title": "🧱 Add Another"},
-                    {"id": "cat_recipe", "title": "📋 Set Recipe"},
-                    {"id": "menu_home", "title": "☰ Menu"},
-                ])
-            ]
-
-        return self.show_menu(phone_number)
+        detail = (" — " + " · ".join(bits)) if bits else ""
+        label = "Overhead" if is_overhead else "Raw material"
+        return [
+            text_response(f"✅ {label} registered: *{name.title()}*{detail}"),
+            button_response("What's next?", [
+                {"id": "cat_add_raw", "title": "➕ Add Another"},
+                {"id": "cat_recipe", "title": "📋 Set Recipe"},
+                {"id": "menu_home", "title": "☰ Menu"},
+            ])
+        ]
+        # (unreachable) legacy detail view kept below
         """Show full detail for a single product/material."""
         products = self._get_products(phone_number)
         if product_key not in products:
