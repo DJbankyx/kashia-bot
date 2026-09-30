@@ -33,10 +33,16 @@ From live use of the deployed build. Sorted; status tracked.
 - **Services: "Write a quote" on the customer card.** Add a quote action (services
   industry) — generate_invoice already supports kind="quote"; wire a button.
 
-## TODO — dashboard (bigger)
-- **Products & materials dashboard richer + clearer** (owner ask): split Product
-  value vs Raw-materials value vs Total inventory value; tap a product → quick-view
-  with details (stock/cost/price/margin/unit/recipe cost). Own batch.
+## DONE — richer Inventory dashboard (commit df41c65)
+- Clearer header ('Products for sale' + N items total, 'Items in stock', 'Total
+  inventory value'); VALUE SPLIT into Product value vs Materials value; product
+  QUICK-VIEW on tap (type, category, stock, cost/rate, recipe-cost note, price,
+  margin %, stock value, reorder) with an Edit button. Split row hides for trading.
+
+## TODO — remaining
+- **Services: "Write a quote" on the customer card** (generate_invoice kind=quote).
+- **Main dashboard** could still be richer (owner said "make that dashboard
+  generally better") — scope TBD (charts, trends, quick actions).
 
 ## TODO — Products & materials dashboard (make it richer + clearer)
 - The three stats (Products / Total stock / Stock value) are unclear. Wanted:
