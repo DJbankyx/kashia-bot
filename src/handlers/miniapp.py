@@ -254,6 +254,13 @@ def lambda_handler(event, context):
             return _delete_payment_request_write(event, user_id)
         if method == "GET" and path.endswith("/app/api/payment-requests"):
             return _payment_requests_read(event, user_id)
+        # ── Sub-accounts / open items (Stage 1+2) ──
+        if method == "GET" and path.endswith("/app/api/open-items"):
+            return _open_items_read(event, user_id)
+        if method == "POST" and path.endswith("/app/api/settle-open"):
+            return _settle_open_write(event, user_id)
+        if method == "POST" and path.endswith("/app/api/site-label"):
+            return _site_label_write(event, user_id)
         # ── Writes (generate + deliver a payment receipt PDF, on-demand) ──
         if method == "POST" and path.endswith("/app/api/receipt"):
             return _receipt_send(event, user_id)
@@ -430,9 +437,19 @@ def _summary(event, user_id: str):
     industry = (user.get("industry_class")
                 or user.get("business_type") or "trading")
 
+    # The owner's chosen name for the sub-account layer (Stage 2), so the UI can
+    # label the Site field / cards (Mall / Property / Location …). Default kept in
+    # the engine helper.
+    try:
+        from features.open_items import get_site_label as _gsl
+        site_label = _gsl(db, user_id)
+    except Exception:
+        site_label = "Location"
+
     return _json(200, {
         "business": business,
         "industry": industry,
+        "site_label": site_label,
         "period": period,
         "period_label": label,
         "pnl": {
@@ -1188,6 +1205,8 @@ def _transaction_write(event, user_id: str):
         "has_credit": bool(data.get("has_credit")),
         "deposit_amount": data.get("deposit_amount"),
         "balance_owed": data.get("balance_owed"),
+        # Optional sub-account/site tag (Stage 2) — carried onto the open item.
+        "site": (data.get("site") or "").strip(),
         # The handler already ran the (pre-claim) sale guardrail above, so tell
         # the engine's defense-in-depth guard not to re-block this call.
         "confirm": True,
@@ -1356,6 +1375,104 @@ def _contact_detail(event, user_id: str):
         "transactions": rows,
         "has_more": len(mine) > 20,
     })
+
+
+def _open_items_read(event, user_id: str):
+    """Stage 1/2 view: a contact's OPEN (unpaid) sales, grouped BY SITE. Query:
+    ?name=<contact>&direction=owed_to_me|i_owe. Returns the per-site summary +
+    the flat item list so the app can show 'Delta ₦8k / Asaba ₦4k' + let the owner
+    pay a chosen site. Contact lump total still drives the headline number."""
+    from services.database import Database
+    from features.open_items import OpenItems, get_site_label
+    qs = event.get("queryStringParameters") or {}
+    name = (qs.get("name") or "").strip()
+    direction = (qs.get("direction") or "owed_to_me").strip()
+    if direction not in ("owed_to_me", "i_owe"):
+        direction = "owed_to_me"
+    if not name:
+        return _json(400, {"error": "contact name required"})
+    db = Database()
+    oi = OpenItems(db)
+    summary = oi.sites_summary(user_id, name, direction)
+    items = oi.list_open_items(user_id, name, direction)
+    return _json(200, {
+        "ok": True,
+        "name": name,
+        "direction": direction,
+        "site_label": get_site_label(db, user_id),
+        "total": summary["total"],
+        "sites": summary["sites"],
+        "has_sites": summary["has_sites"],
+        "items": items,
+    })
+
+
+def _settle_open_write(event, user_id: str):
+    """Apply a debt payment to a contact's open items (optionally one SITE and/or
+    picked item ids), then LOG the repayment cash row so accounting keeps it out of
+    P&L. Body: {name, amount, direction?, site?, picked_ids?}. Mirrors the chat
+    debt repayment (settle + log a 'Debt Repayment' row)."""
+    from services.database import Database
+    from features.open_items import OpenItems
+    data = _parse_body(event)
+    name = (data.get("name") or "").strip()
+    direction = (data.get("direction") or "owed_to_me").strip()
+    if direction not in ("owed_to_me", "i_owe"):
+        direction = "owed_to_me"
+    site = data.get("site")
+    if site is not None:
+        site = str(site).strip() or None
+    picked = data.get("picked_ids") or None
+    try:
+        from utils.money import money_round
+        amount = money_round(data.get("amount") or 0)
+    except Exception:
+        amount = 0
+    if not name:
+        return _json(400, {"error": "contact name required"})
+    if not amount or amount <= 0:
+        return _json(400, {"error": "amount must be greater than 0"})
+
+    db = Database()
+    oi = OpenItems(db)
+    res = oi.settle_open_items(user_id, name, amount, direction=direction,
+                               picked_ids=picked, site=site)
+    if not res.get("ok"):
+        return _json(400, {"error": res.get("error") or "could not apply the payment"})
+
+    # Log the cash movement as a REPAYMENT so it's out of the P&L (mirror chat +
+    # the collection webhook). owed_to_me repayment = money IN (a 'sale' row with
+    # category 'Debt Repayment'); i_owe repayment = money OUT (an 'expense' row).
+    applied = res["applied"]
+    try:
+        where = f" ({site})" if site else ""
+        if direction == "owed_to_me":
+            db.save_transaction(user_id, applied, "sale",
+                                f"Debt repayment from {name}{where}", "Debt Repayment",
+                                vendor=name, payment_method="cash",
+                                extra_details={"source": "open_item_settle", "site": site or ""})
+        else:
+            db.save_transaction(user_id, applied, "expense",
+                                f"Debt repayment to {name}{where}", "Debt Repayment",
+                                vendor=name, payment_method="cash",
+                                extra_details={"source": "open_item_settle", "site": site or ""})
+    except Exception as e:
+        logger.warning(f"settle-open repayment row failed: {e}")
+
+    return _json(200, {"ok": True, "applied": applied,
+                       "remaining_payment": res.get("remaining_payment", 0),
+                       "items": res.get("items", [])})
+
+
+def _site_label_write(event, user_id: str):
+    """Set the owner's name for the sub-account layer (Stage 2). Body: {label}."""
+    from services.database import Database
+    from features.open_items import set_site_label
+    data = _parse_body(event)
+    label = str(data.get("label") or "").strip()
+    db = Database()
+    stored = set_site_label(db, user_id, label)
+    return _json(200, {"ok": True, "site_label": stored})
 
 
 def _num_or_str(v):
@@ -2192,6 +2309,7 @@ _PAGE_HTML = """<!doctype html>
       <div class="chip" data-cd="expenses" onclick="crmSetDir('expenses')">🧾 Expenses</div>
     </div>
     <div style="text-align:right;margin:2px 0 6px">
+      <button class="linkbtn" onclick="openSiteLabel()" style="font-size:13px;color:var(--hint);margin-right:10px" id="crm-sitelabel-btn">⚙ Location name</button>
       <button class="linkbtn" onclick="openPaymentLinks()" style="font-size:13px;color:var(--hint)">💳 Payment links</button>
     </div>
     <input class="search" id="crmsearch" placeholder="Search people..." oninput="renderCrm()">
@@ -2212,6 +2330,23 @@ _PAGE_HTML = """<!doctype html>
     </div>
   </div>
 
+  <!-- Site-label setting (Stage 2): the owner names the sub-account layer. -->
+  <div id="siteLabelOverlay" class="overlay hidden">
+    <div class="sheet">
+      <h2>Name your location layer</h2>
+      <div class="sub2">What do you call the places a customer can owe at? (e.g. Mall, Property, Branch, Outlet, Project). Leave blank for "Location".</div>
+      <div class="field" style="margin-top:12px">
+        <label>Layer name</label>
+        <input id="sitelabel-input" placeholder="e.g. Mall" maxlength="24">
+      </div>
+      <div class="sheeterr" id="sitelabel-err"></div>
+      <div class="actions">
+        <button class="btn cancel" onclick="closeSiteLabel()">Cancel</button>
+        <button class="btn save" id="sitelabel-save" onclick="saveSiteLabel()">Save</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Contact detail sheet -->
   <div id="cdOverlay" class="overlay hidden">
     <div class="sheet">
@@ -2224,6 +2359,13 @@ _PAGE_HTML = """<!doctype html>
       <div class="card"><div class="k">Last transaction</div><div class="v" id="cd-last" style="font-size:16px">—</div></div>
       <div class="card hidden" id="cd-debtcard">
         <div class="k" id="cd-debt-k">Balance</div><div class="v" id="cd-debt">—</div>
+      </div>
+      <!-- By-site balances (Stage 2): shown only when this customer's debt is
+           split across sites. Each row = one site + its balance + a Pay button
+           that settles ONLY that site's items. -->
+      <div class="card hidden" id="cd-sitescard">
+        <div class="k" id="cd-sites-k">By location</div>
+        <div id="cd-sites"></div>
       </div>
       <div class="sub2 hidden" id="cd-phone"></div>
       <div class="seclabel">Transactions</div>
@@ -2586,6 +2728,15 @@ _PAGE_HTML = """<!doctype html>
         <input id="rec-deposit" type="number" inputmode="decimal" min="0" step="any" placeholder="amount paid so far" oninput="recBalanceHint()">
         <div class="sub2" id="rec-balance-hint"></div>
       </div>
+      <!-- Sub-account / SITE (Stage 2): tag an owing sale to a site so the same
+           customer's balances stay separate (Delta vs Asaba). Only meaningful for
+           a sale that creates a debt (credit / part / pay-link). Optional. -->
+      <div class="field hidden" id="rec-site-wrap">
+        <label id="rec-site-label">Location (optional)</label>
+        <input id="rec-site" list="rec-site-list" placeholder="e.g. Ikeja shop, Delta">
+        <datalist id="rec-site-list"></datalist>
+        <div class="sub2" id="rec-site-hint">Tag this sale to a site so this customer's balance there stays separate.</div>
+      </div>
       <div class="sheeterr" id="rec-err"></div>
       <div class="actions">
         <button class="btn cancel" onclick="closeRecord()">Cancel</button>
@@ -2683,7 +2834,7 @@ window.onerror = function (msg, src, line, col, err) {
   // show). NO cost/accounting math lives in JS — the engine owns that.
   // Default "trading" keeps the control industry byte-for-byte unchanged even
   // before summary loads. Manufacturing + Hybrid share the mfg model (recipes).
-  var APP = { industry: "trading" };
+  var APP = { industry: "trading", siteLabel: "Location", knownSites: [] };
   function isTrading()  { return APP.industry === "trading"; }
   function isMfg()      { return APP.industry === "manufacturing"; }
   function isServices() { return APP.industry === "services"; }
@@ -2989,6 +3140,7 @@ window.onerror = function (msg, src, line, col, err) {
         // Stage 0: capture the industry from the summary payload so catalog +
         // other tabs can shape their UI. Falls back to "trading" (control).
         if (d.industry) APP.industry = d.industry;
+        if (d.site_label) APP.siteLabel = d.site_label;   // Stage 2 layer name
         // Stage 3: apply industry wording to static labels (once).
         applyIndustryLabels();
         // Stage 4: catalog-first setup nudge (gentle, dismissable).
@@ -3376,6 +3528,9 @@ window.onerror = function (msg, src, line, col, err) {
       debtCard.classList.add("hidden");
       payBtn.classList.add("hidden");
     }
+    // By-site balances (Stage 2): load open items grouped by site. Shown only
+    // when the debt is actually split across named sites.
+    cdLoadSites(c);
     // "Get pay-link" — only for people you COLLECT from: a customer, a
     // customer+supplier ("both"), or anyone who currently owes you. Hidden for a
     // pure supplier OR an expense payee (you PAY them; you don't bill them). The
@@ -3441,6 +3596,63 @@ window.onerror = function (msg, src, line, col, err) {
       box.appendChild(more);
     }
   }
+  // Stage 2: load this contact's open balance grouped by site + render a Pay
+  // button per site. Only shown when the debt is split across NAMED sites.
+  function cdLoadSites(c) {
+    var card = document.getElementById("cd-sitescard");
+    var box = document.getElementById("cd-sites");
+    if (!card || !box) return;
+    card.classList.add("hidden"); box.innerHTML = "";
+    var owes = (c.owes_me || 0) > 0, iowe = (c.i_owe || 0) > 0;
+    if (!owes && !iowe) return;
+    var direction = owes ? "owed_to_me" : "i_owe";
+    api("api/open-items?name=" + encodeURIComponent(c.name) + "&direction=" + direction)
+      .then(function (d) {
+        if (!d || !d.has_sites) return;   // flat customer → no by-site card
+        document.getElementById("cd-sites-k").textContent = "By " + (d.site_label || "location").toLowerCase();
+        // Remember sites so the record sheet can suggest them.
+        (d.sites || []).forEach(function (s) {
+          if (s.site && APP.knownSites.indexOf(s.site) < 0) APP.knownSites.push(s.site);
+        });
+        box.innerHTML = "";
+        (d.sites || []).forEach(function (s) {
+          var row = document.createElement("div");
+          row.className = "item"; row.style.alignItems = "center";
+          var label = s.site || "No location";
+          row.innerHTML = '<div style="flex:1"><div class="name">' + escapeHtml(label) +
+            '</div><div class="meta">' + s.count + ' item(s)</div></div>' +
+            '<div class="right" style="align-items:center;gap:6px">' +
+            '<div class="stock">' + naira(s.balance) + '</div></div>';
+          var right = row.querySelector(".right");
+          // Only offer Pay for money OWED TO YOU (a collection). "You owe" is
+          // informational here (repay via the normal Record payment).
+          if (owes && s.balance > 0) {
+            var b = document.createElement("button");
+            b.className = "linkbtn"; b.style.cssText = "padding:4px 8px;color:var(--accent)";
+            b.textContent = "Pay";
+            b.addEventListener("click", (function (site, bal) {
+              return function () { cdPaySite(c.name, site, bal, direction); };
+            })(s.site, s.balance));
+            right.appendChild(b);
+          }
+          box.appendChild(row);
+        });
+        card.classList.remove("hidden");
+      })
+      .catch(function () { /* non-fatal — the flat balance card still shows */ });
+  }
+  // Settle ONE site's items for this contact (site-level "I pick"). Prompts for
+  // the amount via the existing pay sheet, pre-scoped to the site.
+  window.cdPaySite = function (name, site, balance, direction) {
+    cdSiteCtx = { name: name, site: site, direction: direction };
+    closeContact();
+    openPay(name, balance, direction === "owed_to_me" ? "in" : "out");
+    // Tag the pay sheet so savePay routes through the open-item settle endpoint
+    // scoped to this site.
+    var t = document.getElementById("pay-title");
+    if (t) t.textContent = "Payment for " + (site || "location") + " — " + name;
+  };
+  var cdSiteCtx = null;
   window.closeContact = function () {
     document.getElementById("cdOverlay").classList.add("hidden");
     cdCtx = null;
@@ -3577,6 +3789,35 @@ window.onerror = function (msg, src, line, col, err) {
   };
   window.closePaymentLinks = function () {
     document.getElementById("paymentLinksOverlay").classList.add("hidden");
+  };
+  // Site-label setting (Stage 2): name the sub-account layer.
+  window.openSiteLabel = function () {
+    var inp = document.getElementById("sitelabel-input");
+    if (inp) inp.value = (APP.siteLabel && APP.siteLabel !== "Location") ? APP.siteLabel : "";
+    document.getElementById("sitelabel-err").textContent = "";
+    document.getElementById("sitelabel-save").disabled = false;
+    document.getElementById("siteLabelOverlay").classList.remove("hidden");
+  };
+  window.closeSiteLabel = function () {
+    document.getElementById("siteLabelOverlay").classList.add("hidden");
+  };
+  window.saveSiteLabel = function () {
+    var v = (document.getElementById("sitelabel-input").value || "").trim();
+    var btn = document.getElementById("sitelabel-save");
+    btn.disabled = true;
+    apiPost("api/site-label", { label: v })
+      .then(function (r) {
+        APP.siteLabel = (r && r.site_label) || "Location";
+        // Reflect the new label on the CRM link + record field immediately.
+        var b = document.getElementById("crm-sitelabel-btn");
+        if (b) b.textContent = "\u2699 " + APP.siteLabel + " name";
+        closeSiteLabel();
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        document.getElementById("sitelabel-err").textContent = (e && e.message) || "Could not save.";
+      });
   };
   function renderPaymentLinks(rows) {
     var list = document.getElementById("pll-list");
@@ -3729,6 +3970,7 @@ window.onerror = function (msg, src, line, col, err) {
   window.closePay = function () {
     document.getElementById("payOverlay").classList.add("hidden");
     payCtx = null;
+    cdSiteCtx = null;   // clear any site scoping
   };
   window.payHint = function () {
     if (!payCtx) return;
@@ -3744,21 +3986,29 @@ window.onerror = function (msg, src, line, col, err) {
     if (v <= 0) { err.textContent = "Enter an amount greater than 0."; return; }
     var btn = document.getElementById("pay-save");
     btn.disabled = true;
+    function done() {
+      closePay();
+      crmLoaded = false; loadCrm();   // a payment moves cash + the balance
+      loadSummary();
+    }
+    function fail(e) {
+      btn.disabled = false;
+      err.textContent = (e && e.message) || "Could not record the payment.";
+    }
+    // Site-scoped payment (Stage 2): route through the open-item settle endpoint
+    // so it clears ONLY that site's items (the engine logs the repayment row).
+    if (cdSiteCtx && cdSiteCtx.name === payCtx.name) {
+      apiPost("api/settle-open", {
+        name: cdSiteCtx.name, amount: v,
+        direction: cdSiteCtx.direction, site: cdSiteCtx.site
+      }).then(function () { cdSiteCtx = null; done(); }).catch(fail);
+      return;
+    }
     var body = {
       submit_id: "pay_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
       name: payCtx.name, amount: v, direction: payCtx.direction
     };
-    apiPost("api/debt-payment", body)
-      .then(function (r) {
-        closePay();
-        // Refresh CRM + dashboard (a payment moves cash + the balance).
-        crmLoaded = false; loadCrm();
-        loadSummary();
-      })
-      .catch(function (e) {
-        btn.disabled = false;
-        err.textContent = e.message || "Could not record the payment.";
-      });
+    apiPost("api/debt-payment", body).then(done).catch(fail);
   };
 
   // ── Cash adjustment (manual cash in/out that isn't a sale/purchase/expense) ──
@@ -5625,7 +5875,34 @@ window.onerror = function (msg, src, line, col, err) {
     // Pay-link explainer (#10) only when that method is chosen.
     var plh = document.getElementById("rec-paylink-hint");
     if (plh) plh.classList.toggle("hidden", p !== "paylink");
+    // SITE field (Stage 2): only for a SALE that creates a debt (credit/part/
+    // pay-link) — that's when a per-site open balance is created.
+    var owes = (recTypeVal === "sale") && (p === "credit" || p === "part" || p === "paylink");
+    var sw = document.getElementById("rec-site-wrap");
+    if (sw) {
+      sw.classList.toggle("hidden", !owes);
+      if (owes) recFillSites();
+    }
   };
+  // Populate the site datalist from sites already used on open items across the
+  // catalog of contacts (best-effort; falls back to empty). Also relabels the
+  // field with the owner's chosen layer name.
+  function recFillSites() {
+    var lblEl = document.getElementById("rec-site-label");
+    if (lblEl) lblEl.textContent = (APP.siteLabel || "Location") + " (optional)";
+    var dl = document.getElementById("rec-site-list");
+    if (!dl) return;
+    // Reuse any sites we've already seen this session (collected when contact
+    // cards load their site summaries); keep it simple + non-blocking.
+    dl.innerHTML = "";
+    var seen = {};
+    (APP.knownSites || []).forEach(function (s) {
+      if (s && !seen[s.toLowerCase()]) {
+        seen[s.toLowerCase()] = 1;
+        var o = document.createElement("option"); o.value = s; dl.appendChild(o);
+      }
+    });
+  }
   // Live "balance owed" preview under the deposit field.
   window.recBalanceHint = function () {
     var amount = parseFloat(document.getElementById("rec-amount").value) || 0;   // money, kobo
@@ -5653,6 +5930,7 @@ window.onerror = function (msg, src, line, col, err) {
     recType("sale"); recPay("cash");
     document.getElementById("rec-desc").value = "";
     document.getElementById("rec-amount").value = "";
+    var _rs = document.getElementById("rec-site"); if (_rs) _rs.value = "";
     document.getElementById("rec-qty").value = "1";
     // No product picked yet → no alternative units to choose.
     var _us = document.getElementById("rec-unit-sel");
@@ -5908,6 +6186,14 @@ window.onerror = function (msg, src, line, col, err) {
     if (isPart) {
       body.deposit_amount = deposit;
       body.balance_owed = amount - deposit;
+    }
+    // Site tag (Stage 2) — only for a debt sale (credit/part/pay-link).
+    if (isCredit) {
+      var siteV = (document.getElementById("rec-site").value || "").trim();
+      if (siteV) {
+        body.site = siteV;
+        if (APP.knownSites.indexOf(siteV) < 0) APP.knownSites.push(siteV);
+      }
     }
     if (!isExpense) {
       body.quantity = String(qty);
