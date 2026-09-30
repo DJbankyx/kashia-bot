@@ -261,7 +261,32 @@ class DebtHandler:
         if reason:
             body.append(f"📝 {reason}")
 
+        # BY-SITE breakdown (Stage 2): if this customer's debt is split across
+        # named sites, show each site + its balance, with a tap to pay THAT site
+        # only. Reuses the open-items engine; flat customers see nothing extra.
+        site_rows = []
+        if direction == "in":
+            try:
+                from features.open_items import OpenItems, get_site_label
+                oi = OpenItems(self.db)
+                summ = oi.sites_summary(phone_number, name, "owed_to_me")
+                if summ.get("has_sites"):
+                    label = get_site_label(self.db, phone_number)
+                    body.append(f"\n📍 By {label.lower()}:")
+                    for s in summ.get("sites", []):
+                        sname = s.get("site") or "No location"
+                        body.append(f"  • {sname}: {format_amount(s.get('balance', 0))}")
+                        if s.get("site") and s.get("balance", 0) > 0:
+                            site_rows.append({
+                                "id": f"debt_paysite_{name}::{s['site']}"[:60],
+                                "title": f"💵 Pay {sname} ({format_amount(s['balance'])})"[:60],
+                            })
+            except Exception as e:
+                logger.warning(f"debt card site summary failed: {e}")
+
         rows = [{"id": pay_id, "title": pay_title}]
+        # Per-site pay options (Stage 2) sit just under the general pay action.
+        rows.extend(site_rows[:6])
         # Settle-in-full pre-fills the exact outstanding amount.
         rows.append({
             "id": f"debt_settle_{direction}_{name}"[:60],
@@ -346,6 +371,12 @@ class DebtHandler:
             return self._start_payment_amount(phone_number, button_id[11:], "in")
         if button_id.startswith("debt_payout_"):
             return self._start_payment_amount(phone_number, button_id[12:], "out")
+        # Site-scoped pay (Stage 2): "debt_paysite_<name>::<site>" — pay down ONE
+        # site's items for this customer. Ask the amount, remembering the site.
+        if button_id.startswith("debt_paysite_"):
+            rest = button_id[len("debt_paysite_"):]
+            nm, _, site = rest.partition("::")
+            return self._start_payment_amount(phone_number, nm, "in", site=site)
 
         if button_id == "debt_remind":
             return self._show_remind_list(phone_number)
@@ -556,16 +587,22 @@ class DebtHandler:
             sections=[{"title": "", "rows": rows}]
         )]
 
-    def _start_payment_amount(self, phone_number: str, name: str, direction: str) -> list:
-        """After picking a person + direction, ask how much was paid."""
-        self.session.save(phone_number, states.DEBT_PAYMENT, {
+    def _start_payment_amount(self, phone_number: str, name: str, direction: str,
+                              site: str = None) -> list:
+        """After picking a person + direction, ask how much was paid.
+        `site` (Stage 2) scopes the payment to one site's open items."""
+        ctx = {
             "debt_step": "ask_pay_amount",
             "pay_name": name,
             "pay_direction": direction,   # 'in' (they paid me) | 'out' (I paid them)
-        })
+        }
+        if site:
+            ctx["pay_site"] = site
+        self.session.save(phone_number, states.DEBT_PAYMENT, ctx)
         who = f"*{name}* paid you" if direction == "in" else f"you paid *{name}*"
+        where = f" for *{site}*" if site else ""
         return [text_response(
-            f"💵 How much did {who}?\n\n_e.g. 50000, 150K. Type the amount._"
+            f"💵 How much did {who}{where}?\n\n_e.g. 50000, 150K. Type the amount._"
         )]
 
     def _settle_in_full(self, phone_number: str, name: str, direction: str) -> list:
@@ -589,11 +626,43 @@ class DebtHandler:
         transaction. direction 'in' = they repaid me; 'out' = I repaid them."""
         name = context.get("pay_name", "")
         direction = context.get("pay_direction", "in")
+        pay_site = context.get("pay_site")   # Stage 2: scope payment to one site
         amount = parse_amount(text)
         if not amount:
             return [text_response("💵 Please type a valid amount (e.g. 50000, 150K).")]
         amount = float(amount)
         try:
+            if direction == "in" and pay_site:
+                # SITE-scoped repayment (Stage 2): reduce only that site's open
+                # items (+ reconcile the lump), then log the repayment row so P&L
+                # stays right. Reuses the open-item engine.
+                from features.open_items import OpenItems
+                from utils.money import money_round
+                res = OpenItems(self.db).settle_open_items(
+                    phone_number, name, amount, direction="owed_to_me", site=pay_site)
+                if not res.get("ok"):
+                    self.session.reset(phone_number)
+                    return [text_response(
+                        f"⚠️ {res.get('error') or 'Could not apply that payment'}."
+                    )] + self._debt_board(phone_number)
+                applied = money_round(res.get("applied", 0))
+                self.db.save_transaction(
+                    phone_number, applied, "sale",
+                    f"Debt repayment from {name} ({pay_site})", "Debt Repayment",
+                    vendor=name, payment_method="cash",
+                    extra_details={"source": "open_item_settle", "site": pay_site})
+                self.session.reset(phone_number)
+                left = money_round(res.get("remaining_payment", 0))
+                extra = (f"\n💵 {format_amount(left)} was more than that location owed "
+                         f"— only {format_amount(applied)} applied." if left > 0 else "")
+                return [
+                    text_response(f"✅ Applied {format_amount(applied)} to *{name}* "
+                                  f"at *{pay_site}*.{extra}"),
+                    button_response("What's next?", [
+                        {"id": "menu_debts", "title": "💳 View Debts"},
+                        {"id": "menu_home", "title": "☰ Menu"},
+                    ])
+                ]
             if direction == "in":
                 # A customer repaid a debt they owed me → reduce owed_to_me, log income.
                 remaining = self.db.settle_debt(phone_number, name, amount, 'owed_to_me')
