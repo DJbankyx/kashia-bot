@@ -616,6 +616,35 @@ class Database:
             logger.error(f"list_payment_requests failed: {e}")
             return []
 
+    def has_pending_link(self, phone_number, customer_name):
+        """True if this customer has a live PENDING pay-link out (so the owner
+        knows a link is already awaiting payment and shouldn't also collect
+        manually). Matches by customer name, case-insensitive. Never raises."""
+        want = str(customer_name or "").strip().lower()
+        if not want:
+            return False
+        try:
+            for r in self.list_payment_requests(phone_number, status="pending", limit=100):
+                cn = str(r.get("customer_name") or r.get("vendor") or "").strip().lower()
+                if cn and cn == want:
+                    return True
+        except Exception as e:
+            logger.warning(f"has_pending_link failed: {e}")
+        return False
+
+    def pending_link_names(self, phone_number):
+        """Set of lowercased customer names that currently have a PENDING pay-link.
+        One query for the whole CRM list (cheaper than per-contact). Never raises."""
+        out = set()
+        try:
+            for r in self.list_payment_requests(phone_number, status="pending", limit=100):
+                cn = str(r.get("customer_name") or r.get("vendor") or "").strip().lower()
+                if cn:
+                    out.add(cn)
+        except Exception as e:
+            logger.warning(f"pending_link_names failed: {e}")
+        return out
+
     def cancel_pending_requests_for(self, phone_number, customer_name):
         """Cancel a customer's PENDING pay-links (they paid another way, so the
         link is stale and shouldn't stay live for a double-payment). Matches by

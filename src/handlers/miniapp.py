@@ -1374,6 +1374,9 @@ def _contact_detail(event, user_id: str):
         "last_date": max(dates) if dates else "",
         "transactions": rows,
         "has_more": len(mine) > 20,
+        # Does this customer have a live PENDING pay-link out? (So the card can
+        # warn the owner not to ALSO collect manually — avoids double payment.)
+        "has_pending_link": db.has_pending_link(user_id, name),
     })
 
 
@@ -3579,6 +3582,18 @@ window.onerror = function (msg, src, line, col, err) {
         (d.first_date === d.last_date) ? d.last_date : (d.first_date + " → " + d.last_date);
     }
     if (d && d.count != null) document.getElementById("cd-txns").textContent = d.count;
+    // Pending pay-link warning (#link-marker): if a link is already out for this
+    // customer, tell the owner so they don't ALSO collect manually (double-pay).
+    var dcard = document.getElementById("cd-debtcard");
+    var existingWarn = document.getElementById("cd-linkwarn");
+    if (existingWarn) existingWarn.remove();
+    if (d && d.has_pending_link && dcard && !dcard.classList.contains("hidden")) {
+      var w = document.createElement("div");
+      w.id = "cd-linkwarn"; w.className = "sub2";
+      w.style.cssText = "margin-top:6px;color:var(--accent)";
+      w.textContent = "\\ud83d\\udd17 A pay-link is out for this customer \u2014 they may pay online. If you record it here, the link is auto-cancelled.";
+      dcard.appendChild(w);
+    }
     if (!rows.length) { box.innerHTML = '<div class="muted">No transactions yet.</div>'; return; }
     box.innerHTML = "";
     var card = document.createElement("div");

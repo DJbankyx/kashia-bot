@@ -261,6 +261,17 @@ class DebtHandler:
         if reason:
             body.append(f"📝 {reason}")
 
+        # Pending pay-link warning: if a link is already out for this person, tell
+        # the owner so they don't ALSO collect manually. Recording a payment here
+        # auto-cancels the stale link (see cancel_pending_requests_for).
+        if direction == "in":
+            try:
+                if self.db.has_pending_link(phone_number, name):
+                    body.append("🔗 A pay-link is out for them — they may pay online. "
+                                "Recording payment here cancels that link.")
+            except Exception as e:
+                logger.warning(f"debt card pending-link check failed: {e}")
+
         # BY-SITE breakdown (Stage 2): if this customer's debt is split across
         # named sites, show each site + its balance, with a tap to pay THAT site
         # only. Reuses the open-items engine; flat customers see nothing extra.
