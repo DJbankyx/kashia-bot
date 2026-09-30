@@ -39,10 +39,21 @@ From live use of the deployed build. Sorted; status tracked.
   QUICK-VIEW on tap (type, category, stock, cost/rate, recipe-cost note, price,
   margin %, stock value, reorder) with an Edit button. Split row hides for trading.
 
+## DONE — services quote (commit 0ca55fa)
+- "📝 Write a quote" on the customer card (services/hybrid + billable contact) →
+  POST /app/api/quote → quote PDF via generate_invoice(kind='quote'), delivered to
+  chat. New route → deploy required.
+
 ## TODO — remaining
-- **Services: "Write a quote" on the customer card** (generate_invoice kind=quote).
 - **Main dashboard** could still be richer (owner said "make that dashboard
   generally better") — scope TBD (charts, trends, quick actions).
+
+## \u26a0 DEPLOY OUTSTANDING — a large stack is pushed but undeployed
+New API routes across recent batches: /app/api/delete-payment-request, /open-items,
+/settle-open, /site-label, /quote. Plus engine/JS: pay-link double-fix, sub-accounts
+(open items + site) engine + UI, rename Catalog→Inventory, nav trim, link marker,
+richer inventory dashboard. Owner: `cd ~/projects/kashia-bot && ./deploy.sh dev`
+then reopen the app from the ☰ menu.
 
 ## TODO — Products & materials dashboard (make it richer + clearer)
 - The three stats (Products / Total stock / Stock value) are unclear. Wanted:
