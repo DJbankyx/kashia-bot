@@ -250,6 +250,8 @@ def lambda_handler(event, context):
             return _payment_request_write(event, user_id)
         if method == "POST" and path.endswith("/app/api/cancel-payment-request"):
             return _cancel_payment_request_write(event, user_id)
+        if method == "POST" and path.endswith("/app/api/delete-payment-request"):
+            return _delete_payment_request_write(event, user_id)
         if method == "GET" and path.endswith("/app/api/payment-requests"):
             return _payment_requests_read(event, user_id)
         # ── Writes (generate + deliver a payment receipt PDF, on-demand) ──
@@ -1730,8 +1732,22 @@ def _payment_requests_read(event, user_id: str):
     status = (params.get("status") or "").strip().lower() or None
     db = Database()
     rows = db.list_payment_requests(user_id, status=status, limit=50)
+    # A pending link older than this many days is flagged STALE in the UI (#11).
+    # It stays payable (we don't kill the Paystack link), but the owner sees it's
+    # been sitting unpaid and can cancel/remove it.
+    from datetime import datetime, timedelta
+    STALE_DAYS = 14
+    stale_before = (datetime.now() - timedelta(days=STALE_DAYS))
     out = []
     for r in rows:
+        created_full = str(r.get("created_at") or "")
+        is_stale = False
+        if str(r.get("status")) == "pending" and created_full:
+            try:
+                cdt = datetime.fromisoformat(created_full)
+                is_stale = cdt < stale_before
+            except Exception:
+                is_stale = False
         out.append({
             "payreq_id": str(r.get("transaction_id") or ""),
             "status": str(r.get("status") or ""),
@@ -1739,9 +1755,12 @@ def _payment_requests_read(event, user_id: str):
             "description": str(r.get("description") or ""),
             "customer": str(r.get("customer_name") or ""),
             "payment_url": str(r.get("payment_url") or ""),
-            "created_at": str(r.get("created_at") or "")[:10],
-            "paid_at": str(r.get("paid_at") or "")[:10],
+            # Full timestamp (#7) so the list can show date + time.
+            "created_at": created_full,
+            "paid_at": str(r.get("paid_at") or ""),
             "paid_tx_id": str(r.get("paid_tx_id") or ""),
+            "stale": is_stale,
+            "stale_days": STALE_DAYS,
         })
     return _json(200, {"ok": True, "requests": out})
 
@@ -1757,6 +1776,21 @@ def _cancel_payment_request_write(event, user_id: str):
     ok = db.cancel_payment_request(user_id, payreq_id)
     if not ok:
         return _json(400, {"error": "could not cancel — it may be paid or already cancelled"})
+    return _json(200, {"ok": True, "payreq_id": payreq_id})
+
+
+def _delete_payment_request_write(event, user_id: str):
+    """Remove a PAID/CANCELLED payment link from the list (#11). Body: {payreq_id}.
+    A live pending link must be cancelled first. Does not touch the paid sale."""
+    from services.database import Database
+    data = _parse_body(event)
+    payreq_id = str(data.get("payreq_id") or "").strip()
+    if not payreq_id:
+        return _json(400, {"error": "payreq_id required"})
+    db = Database()
+    ok = db.delete_payment_request(user_id, payreq_id)
+    if not ok:
+        return _json(400, {"error": "could not remove — cancel a pending link first"})
     return _json(200, {"ok": True, "payreq_id": payreq_id})
 
 
@@ -3451,12 +3485,22 @@ window.onerror = function (msg, src, line, col, err) {
   // description. Choosing "Something else" leaves whatever's typed.
   window.plPickProduct = function () {
     var sel = document.getElementById("pl-product");
+    var err = document.getElementById("pl-err");
+    if (err) err.textContent = "";
     if (!sel || !sel.value) return;
     var p = (invData || []).filter(function (x) { return x.key === sel.value; })[0];
     if (!p) return;
     var price = parseFloat(p.sale_price || p.price || 0);
-    if (price > 0) document.getElementById("pl-amount").value = price;
     document.getElementById("pl-desc").value = p.name || "";
+    if (price > 0) {
+      document.getElementById("pl-amount").value = price;
+    } else {
+      // #3: no selling price set on this product — say so instead of leaving the
+      // owner wondering why the amount didn't fill. They just type it in.
+      document.getElementById("pl-amount").value = "";
+      if (err) err.textContent = "No selling price set for " + (p.name || "this item") +
+        " — type the amount, or set a price in the catalog.";
+    }
   };
   window.cdGetPayLink = function () {
     if (!cdCtx) return;
@@ -3547,9 +3591,12 @@ window.onerror = function (msg, src, line, col, err) {
       div.className = "item"; div.style.alignItems = "center";
       var info = document.createElement("div");
       info.style.flex = "1";
-      var meta = [(BADGE[r.status] || r.status)];
+      // Stale pending links (#11) get a badge so old unpaid links stand out.
+      var badge = (BADGE[r.status] || r.status);
+      if (r.stale) badge += " \u00b7 \u26a0\ufe0f " + r.stale_days + "d+ unpaid";
+      var meta = [badge];
       if (r.customer) meta.push(escapeHtml(r.customer));
-      meta.push(escapeHtml(r.created_at || ""));
+      meta.push(escapeHtml(fmtWhen(r.created_at, (r.created_at || "").slice(0,10))));  // date + time (#7)
       info.innerHTML = '<div class="name">' + escapeHtml(r.description || "Payment") + '</div>' +
         '<div class="meta">' + meta.join(" \u00b7 ") + '</div>';
       var right = document.createElement("div");
@@ -3580,6 +3627,15 @@ window.onerror = function (msg, src, line, col, err) {
         rcpt.textContent = "🧾 Receipt";
         rcpt.addEventListener("click", function () { pllReceipt(r.paid_tx_id, rcpt); });
         right.appendChild(rcpt);
+      }
+      // Paid or cancelled links can be REMOVED from the list (#11) once the owner
+      // is done with them. Pending links must be cancelled first (server-guarded).
+      if (r.status === "paid" || r.status === "cancelled") {
+        var rm = document.createElement("button");
+        rm.className = "linkbtn"; rm.style.cssText = "padding:4px 8px;color:var(--neg)";
+        rm.textContent = "Remove";
+        rm.addEventListener("click", function () { pllDelete(r.payreq_id, rm); });
+        right.appendChild(rm);
       }
       div.appendChild(info); div.appendChild(right);
       card.appendChild(div);
@@ -3621,6 +3677,30 @@ window.onerror = function (msg, src, line, col, err) {
         var err = document.createElement("div");
         err.className = "err"; err.style.fontSize = "12px";
         err.textContent = (e && e.message) || "Could not cancel";
+        btn.parentNode.appendChild(err);
+      });
+  };
+  // Remove a paid/cancelled link from the list (#11). Two-tap confirm.
+  var pllPendingDel = null;
+  window.pllDelete = function (payreqId, btn) {
+    if (!payreqId) return;
+    if (pllPendingDel !== payreqId) {
+      pllPendingDel = payreqId;
+      btn.textContent = "Tap again";
+      setTimeout(function () {
+        if (pllPendingDel === payreqId) { pllPendingDel = null; btn.textContent = "Remove"; }
+      }, 3000);
+      return;
+    }
+    pllPendingDel = null;
+    btn.disabled = true; btn.textContent = "Removing\u2026";
+    apiPost("api/delete-payment-request", { payreq_id: payreqId })
+      .then(function () { openPaymentLinks(); })   // refresh the list
+      .catch(function (e) {
+        btn.disabled = false; btn.textContent = "Remove";
+        var err = document.createElement("div");
+        err.className = "err"; err.style.fontSize = "12px";
+        err.textContent = (e && e.message) || "Could not remove";
         btn.parentNode.appendChild(err);
       });
   };

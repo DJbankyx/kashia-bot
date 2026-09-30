@@ -574,6 +574,26 @@ class Database:
             logger.error(f"cancel_payment_request failed: {e}")
             return False
 
+    def delete_payment_request(self, phone_number, payreq_id):
+        """Remove a payment request from the list (owner is done with it). Only a
+        PAID or CANCELLED request may be removed — a pending link that's still
+        live should be cancelled first (so we never silently drop a payable link
+        the webhook could still reconcile). This deletes the row; it does NOT touch
+        the paid SALE the payment produced. Returns True/False. Never raises."""
+        try:
+            req = self.get_payment_request(phone_number, payreq_id)
+            if not req:
+                return False
+            if str(req.get("status")) not in ("paid", "cancelled"):
+                return False   # refuse to remove a live pending link
+            self.transactions.delete_item(
+                Key={"phone_number": phone_number, "transaction_id": payreq_id})
+            logger.info(f"Deleted payment request {payreq_id} from list")
+            return True
+        except Exception as e:
+            logger.error(f"delete_payment_request failed: {e}")
+            return False
+
     def list_payment_requests(self, phone_number, status=None, limit=50):
         """List an owner's payment requests (newest first), optionally filtered by
         status ('pending'/'paid'/'cancelled'). Queries the user's rows + filters
