@@ -2304,15 +2304,15 @@ _PAGE_HTML = """<!doctype html>
 
   <div id="view-cat" class="hidden">
     <div class="row">
-      <div class="card"><div class="k">Products for sale</div><div class="v" id="cat-count">—</div><div class="sub" id="cat-count-sub"></div></div>
-      <div class="card tappable" onclick="focusCatalogList()"><div class="k">Items in stock ›</div><div class="v" id="cat-units">—</div><div class="sub">total quantity on hand</div></div>
+      <div class="card tappable" onclick="catShow('product')"><div class="k">Products for sale ›</div><div class="v" id="cat-count">—</div><div class="sub">tap to see your products</div></div>
+      <div class="card tappable" onclick="catShow('raw')" id="cat-rawcount-card"><div class="k">Raw materials ›</div><div class="v" id="cat-rawcount">—</div><div class="sub">tap to see your materials</div></div>
     </div>
-    <!-- Total inventory value, then the split: finished products vs raw materials.
-         Answers 'what is my stock worth, and how much is product vs material'. -->
-    <div class="card"><div class="k">Total inventory value (at cost)</div><div class="v" id="cat-value">—</div><div class="sub">everything you hold, valued at cost</div></div>
+    <!-- Total inventory value, then the split: products vs raw materials. Each
+         value card is tappable → the filtered list for that type. -->
+    <div class="card"><div class="k">Total inventory value (at cost)</div><div class="v" id="cat-value">—</div><div class="sub" id="cat-value-sub">everything you hold, valued at cost</div></div>
     <div class="row" id="cat-value-split">
-      <div class="card"><div class="k">Product value</div><div class="v" id="cat-value-prod">—</div><div class="sub">finished / sellable goods</div></div>
-      <div class="card"><div class="k">Materials value</div><div class="v" id="cat-value-raw">—</div><div class="sub">raw materials + supplies</div></div>
+      <div class="card tappable" onclick="catShow('product')"><div class="k">Product value ›</div><div class="v" id="cat-value-prod">—</div><div class="sub">finished / sellable goods</div></div>
+      <div class="card tappable" onclick="catShow('raw')"><div class="k">Materials value ›</div><div class="v" id="cat-value-raw">—</div><div class="sub">raw materials + supplies</div></div>
     </div>
     <div class="card hidden" id="cat-lowcard"><div class="k">Low stock</div><div class="v neg" id="cat-low">—</div></div>
     <button class="btn save" style="width:100%;margin-bottom:10px" onclick="openAddProduct()">➕ Add product</button>
@@ -3026,6 +3026,7 @@ window.onerror = function (msg, src, line, col, err) {
   var curPeriod = "month";
   var invData = null;
   var invLoaded = false;
+  var catFilter = "";   // "" | "product" | "raw" — tap a stat to show just that type
   var crmData = null;
   var crmLoaded = false;
   // Custom date range (single day or range). When set, overrides curPeriod.
@@ -3454,6 +3455,16 @@ window.onerror = function (msg, src, line, col, err) {
     var s = document.getElementById("catsearch");
     if (s) s.focus();
   };
+  // Tap a stat (Products / Raw materials / their value) → show just that type's
+  // filtered list, scrolled into view. The '›' arrows drill here (no more loop).
+  window.catShow = function (which) {
+    catFilter = (which === "raw") ? "raw" : "product";
+    renderCatalog();
+    var groups = document.getElementById("catgroups");
+    if (groups && groups.scrollIntoView) {
+      groups.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
 
   window.renderCatalog = function () {
     if (!invData) return;
@@ -3471,32 +3482,34 @@ window.onerror = function (msg, src, line, col, err) {
       var t = (p.item_type || "").toLowerCase();
       return t === "" || t === "product" || t === "finished_product";
     }
-    var totUnits = 0, totValue = 0, lowCount = 0, prodCount = 0;
-    var prodValue = 0, rawValue = 0;   // split (#dashboard): products vs materials
+    function isRawish(p) {
+      var it = (p.item_type || "").toLowerCase();
+      return it === "raw_material" || it === "supply" || it === "consumable";
+    }
+    var totValue = 0, lowCount = 0, prodCount = 0, rawCount = 0;
+    var prodValue = 0, rawValue = 0;   // split: products vs materials
     invData.forEach(function (p) {
-      totUnits += Number(p.stock || 0);
       var sv = Number(p.stock_value || 0);
       totValue += sv;
       if (p.low_stock) lowCount += 1;
       if (isSellable(p)) { prodCount += 1; prodValue += sv; }
-      else {
-        // Raw materials + supplies hold value; overhead is a rate, no stock value.
-        var it = (p.item_type || "").toLowerCase();
-        if (it === "raw_material" || it === "supply" || it === "consumable") rawValue += sv;
-      }
+      else if (isRawish(p)) { rawCount += 1; rawValue += sv; }
     });
     document.getElementById("cat-count").textContent = prodCount.toLocaleString();
-    var countSub = document.getElementById("cat-count-sub");
-    if (countSub) countSub.textContent = invData.length + " items total";
-    document.getElementById("cat-units").textContent = totUnits.toLocaleString();
+    var rc = document.getElementById("cat-rawcount");
+    if (rc) rc.textContent = rawCount.toLocaleString();
     document.getElementById("cat-value").textContent = naira(totValue);
     var pv = document.getElementById("cat-value-prod");
     var rv = document.getElementById("cat-value-raw");
     if (pv) pv.textContent = naira(prodValue);
     if (rv) rv.textContent = naira(rawValue);
-    // Hide the split row entirely for trading (no raw materials) to avoid clutter.
+    // Raw-materials count card + value split only for businesses that keep
+    // materials (mfg/hybrid, or any catalog that actually has some).
+    var showRaw = usesRecipes() || rawCount > 0 || rawValue > 0;
+    var rawCard = document.getElementById("cat-rawcount-card");
+    if (rawCard) rawCard.classList.toggle("hidden", !showRaw);
     var splitRow = document.getElementById("cat-value-split");
-    if (splitRow) splitRow.classList.toggle("hidden", !usesRecipes() && rawValue <= 0);
+    if (splitRow) splitRow.classList.toggle("hidden", !showRaw);
     var lowCard = document.getElementById("cat-lowcard");
     if (lowCount > 0) {
       document.getElementById("cat-low").textContent = lowCount + " item(s)";
@@ -3535,26 +3548,34 @@ window.onerror = function (msg, src, line, col, err) {
 
     // Render one product row into a card.
     function appendRow(card, p) {
-      var badges = "";
-      if (p.low_stock) badges += '<span class="badge low">low</span>';
-      if (p.has_variants) badges += '<span class="badge var">variants</span>';
-      var sub = [];
-      if (p.cost) sub.push("cost " + naira(p.cost));
-      if (p.sale_price) sub.push("price " + naira(p.sale_price));
-      // OVERHEAD is a rate/allocation (e.g. rent, electricity per unit), not a
-      // physical count — showing "0 unit" reads like out-of-stock. Show the
-      // unit/rate label only, no quantity number.
       var isOverhead = typeGroup(p) === "overhead";
+      var stk = Number(p.stock || 0);
+      // Stock tag: Out / Low / In stock (skip for overhead, which isn't counted).
+      var badges = "";
+      if (!isOverhead) {
+        if (stk <= 0) badges += '<span class="badge low">out</span>';
+        else if (p.low_stock) badges += '<span class="badge low">low</span>';
+        else badges += '<span class="badge">in stock</span>';
+      }
+      if (p.has_variants) badges += '<span class="badge var">variants</span>';
+      // Sub line: cost/price (and margin % when both known) — the useful detail.
+      var sub = [];
+      if (p.cost) sub.push((isOverhead ? "rate " : "cost ") + naira(p.cost));
+      if (p.sale_price) sub.push("price " + naira(p.sale_price));
+      if (p.sale_price > 0 && p.cost > 0) {
+        sub.push(Math.round((p.sale_price - p.cost) / p.sale_price * 100) + "% margin");
+      }
+      // OVERHEAD is a rate/allocation, not a physical count — show unit, no qty.
       var stockLine = isOverhead
         ? escapeHtml(p.unit || "")
-        : (Number(p.stock||0).toLocaleString() + ' ' + escapeHtml(p.unit || ""));
+        : (stk.toLocaleString() + ' ' + escapeHtml(p.unit || ""));
       var div = document.createElement("div");
       div.className = "item tappable";
-      div.innerHTML = '<div><div class="name">' + escapeHtml(p.name || "?") + badges +
+      div.innerHTML = '<div><div class="name">' + escapeHtml(p.name || "?") + ' ' + badges +
         '</div><div class="meta">' + (sub.join(" \u00b7 ") || "no price/cost set") + '</div></div>' +
         '<div class="right"><div class="stock">' + stockLine +
         (p.has_variants ? ' \u203a' : '') + '</div><div class="meta">' +
-        (p.stock_value ? naira(p.stock_value) : "") + '</div></div>';
+        (p.stock_value ? naira(p.stock_value) + " value" : "") + '</div></div>';
       div.onclick = p.has_variants
         ? (function (prod) { return function () { openVarView(prod); }; })(p)
         : (function (prod) { return function () { openQuickView(prod); }; })(p);
@@ -3562,13 +3583,27 @@ window.onerror = function (msg, src, line, col, err) {
     }
 
     wrap.innerHTML = "";
-    TYPE_ORDER.forEach(function (g) {
+    // When a stat was tapped, show ONLY that type + a clear chip (so the "›"
+    // arrows actually drill into a filtered list instead of looping to the page).
+    // "product" filter also includes finished_product/plain; "raw" = materials
+    // + supplies.
+    var FILTER_MAP = { product: ["product"], raw: ["raw", "supply"] };
+    if (catFilter) {
+      var chip = document.createElement("div");
+      chip.className = "muted"; chip.style.cssText = "padding:6px 2px;cursor:pointer";
+      chip.innerHTML = "Showing " + (catFilter === "raw" ? "raw materials" : "products") +
+        " only \u2014 <b>show all \u2715</b>";
+      chip.onclick = function () { catFilter = ""; renderCatalog(); };
+      wrap.appendChild(chip);
+    }
+    var showGroups = catFilter ? (FILTER_MAP[catFilter] || [catFilter]) : TYPE_ORDER;
+    showGroups.forEach(function (g) {
       var items = byType[g];
       if (!items || !items.length) return;
       var gValue = 0;
       items.forEach(function (p) { gValue += Number(p.stock_value || 0); });
 
-      // Type section header (Products / Raw materials / …).
+      // Type section header (Products / Raw materials / …) with the type TOTAL.
       var head = document.createElement("div");
       head.className = "k";
       head.style.margin = "16px 2px 6px";
