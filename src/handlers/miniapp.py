@@ -27,7 +27,7 @@ logger.setLevel(logging.INFO)
 # Period keys the Mini App may request. All are resolved by
 # features.reports._date_range (single source of truth for boundaries), so the
 # web numbers always match the chat dashboard for the same range.
-VALID_PERIODS = ("today", "week", "month", "last_month", "quarter", "year")
+VALID_PERIODS = ("today", "week", "month", "last_month", "quarter", "year", "all")
 
 _DATE_RE = None  # compiled lazily
 
@@ -2950,7 +2950,7 @@ _PAGE_HTML = """<!doctype html>
         <label id="rec-site-label">Location (optional)</label>
         <input id="rec-site" list="rec-site-list" placeholder="e.g. Ikeja shop, Delta">
         <datalist id="rec-site-list"></datalist>
-        <div class="sub2" id="rec-site-hint">Tag this sale to a site so this customer's balance there stays separate.</div>
+        <div class="sub2" id="rec-site-hint">Tag this sale to a location/branch. On a credit sale it also keeps that customer's balance there separate.</div>
       </div>
       <div class="sheeterr" id="rec-err"></div>
       <div class="actions">
@@ -3022,7 +3022,7 @@ window.onerror = function (msg, src, line, col, err) {
   // Quick chips = the common ranges. Specific Quarter/Month/Year (any one, not
   // just the current) live in the "More periods…" dropdown so the user is never
   // stuck on the current quarter.
-  var PERIODS = [["today","Today"],["week","Week"],["month","This month"],["last_month","Last month"]];
+  var PERIODS = [["today","Today"],["week","Week"],["month","This month"],["last_month","Last month"],["all","All time"]];
   var curPeriod = "month";
   var invData = null;
   var invLoaded = false;
@@ -4533,7 +4533,7 @@ window.onerror = function (msg, src, line, col, err) {
 
   // ── Records tab: period/date-scoped transaction list + export ──
   var REC_PERIODS = [["today","Today"],["week","Week"],["month","This month"],
-                     ["last_month","Last month"]];
+                     ["last_month","Last month"],["all","All time"]];
   var recExpFilter = "";   // active expense-name drill (Expenses tab); "" = all
   window.recSetType = function (t) {
     recTabType = t;
@@ -6350,13 +6350,15 @@ window.onerror = function (msg, src, line, col, err) {
     // Pay-link explainer (#10) only when that method is chosen.
     var plh = document.getElementById("rec-paylink-hint");
     if (plh) plh.classList.toggle("hidden", p !== "paylink");
-    // SITE field (Stage 2): only for a SALE that creates a debt (credit/part/
-    // pay-link) — that's when a per-site open balance is created.
-    var owes = (recTypeVal === "sale") && (p === "credit" || p === "part" || p === "paylink");
+    // SITE field (Stage 2): shown for ANY sale now (owner wanted to tag a
+    // location on cash/transfer sales too, not just debt sales). On a debt sale
+    // it also keeps that customer's per-site balance separate; on a paid sale
+    // it's just a location tag on the row.
+    var showSite = (recTypeVal === "sale");
     var sw = document.getElementById("rec-site-wrap");
     if (sw) {
-      sw.classList.toggle("hidden", !owes);
-      if (owes) recFillSites();
+      sw.classList.toggle("hidden", !showSite);
+      if (showSite) recFillSites();
     }
   };
   // Populate the site datalist from sites already used on open items across the
@@ -6666,8 +6668,9 @@ window.onerror = function (msg, src, line, col, err) {
       body.deposit_amount = deposit;
       body.balance_owed = amount - deposit;
     }
-    // Site tag (Stage 2) — only for a debt sale (credit/part/pay-link).
-    if (isCredit) {
+    // Site tag (Stage 2) — for ANY sale (location tag; on a debt sale it also
+    // keeps the per-site balance separate). The field is only shown for sales.
+    if (recTypeVal === "sale") {
       var siteV = (document.getElementById("rec-site").value || "").trim();
       if (siteV) {
         body.site = siteV;

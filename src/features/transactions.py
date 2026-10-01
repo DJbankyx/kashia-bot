@@ -1421,6 +1421,21 @@ class TransactionHandler:
             if tx_type == "sale":
                 self._stamp_sale_cost(phone_number, tx_id, tx_data)
 
+            # ── Site tag on a PAID sale (Stage 2) ──
+            # The site/location field now shows for every sale, not just debt
+            # sales. For a credit/part sale the site is stamped in the debt
+            # branch below (alongside balance_owed); here we stamp it on a sale
+            # that does NOT create a debt so a plain cash/transfer sale still
+            # carries its location tag. Guard on `not has_credit` to avoid a
+            # redundant second write.
+            if tx_type == "sale" and tx_id and not has_credit:
+                site = str(tx_data.get("site") or "").strip()
+                if site:
+                    try:
+                        self.db.update_transaction(phone_number, tx_id, {"site": site})
+                    except Exception as e:
+                        logger.warning(f"web save: site tag failed: {e}")
+
             # ── Expense classification default (mfg/hybrid/services) ──
             if tx_type == "expense" and tx_id:
                 try:

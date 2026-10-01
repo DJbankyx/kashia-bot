@@ -236,8 +236,11 @@ def build_debt_notification(db, phone, report_type, now):
     greeting = _time_greeting(now)
 
     if report_type == 'weekly':
-        # Full weekly debt overview
-        msg = f"{greeting} Here's your weekly debt overview:\n\n"
+        # Full weekly debt overview. The figures are CURRENT outstanding
+        # balances (a snapshot), not a weekly total — "weekly" is the report
+        # cadence. Stamp an as-of date so it's unambiguous.
+        as_of = now.strftime("%d %b %Y")
+        msg = f"{greeting} Here's your debt overview · as of {as_of}:\n\n"
         if debtors:
             msg += f"💰 *People who owe you:*\n"
             for d in debtors[:5]:
@@ -268,7 +271,11 @@ def build_debt_notification(db, phone, report_type, now):
             return None
 
         msg = f"{greeting}\n\n"
-        msg += f"📋 *Quick Debt Reminder:*\n\n"
+        # These are CURRENT outstanding balances (a point-in-time snapshot), not
+        # a period total — label them "as of <date>" so they read like the dated
+        # summary above and nobody mistakes them for today's activity.
+        as_of = now.strftime("%d %b %Y")
+        msg += f"📋 *Quick Debt Reminder* · as of {as_of}\n\n"
 
         for d in debtors[:3]:
             msg += f"  • {d['name']}: ₦{d['amount']:,}\n"

@@ -1300,6 +1300,12 @@ def _date_range(period: str):
         end   = now.strftime("%Y-%m-%d")
         return start, end, str(now.year)
 
+    if period == "all":
+        # All time — the widest practical window (well before any business
+        # could have recorded a transaction) up to today. period_pnl /
+        # period_cashflow accept arbitrary start/end, so no new math is needed.
+        return "2000-01-01", now.strftime("%Y-%m-%d"), "All time"
+
     # Default: this month
     start = now.strftime("%Y-%m-01")
     end   = now.strftime("%Y-%m-%d")
