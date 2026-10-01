@@ -80,6 +80,31 @@ quote, Stage-3 multi-item docs, Ade name-picker fix. Owner:
 (The Ade name-picker fix + this inventory redesign only take effect after deploy +
 reopening the app from the ☰ menu button.)
 
+## DONE — testing round (commit cc2357f)
+- **"All time" period** added to the Dashboard AND Records period chips.
+  `_date_range` gains an `all` branch (2000-01-01 → today, label "All time");
+  `VALID_PERIODS` accepts `all` so endpoints don't downgrade it to this-month.
+- **Site/location tag on ANY sale.** The "Mall/Location (optional)" field used to
+  appear only for debt sales (credit/part/pay-link); now shown for every sale,
+  sent on submit, and persisted server-side on paid sales too (debt sales still
+  stamp it in the open-item branch). Hint reworded to be method-neutral.
+- **Dated debt reminder.** The nightly "Quick Debt Reminder" + weekly overview
+  are current outstanding snapshots (not period totals) but showed no date →
+  added an "as of <date>" label so they read like the dated P&L summary.
+
+## TODO — NEXT FEATURE: smart pay-link (Build B / Stage 4)
+Owner's #1 complaint, confirmed again this round:
+- Today a pay-link is a flat amount, NOT tied to a debt/open item. You can mint a
+  link for ANY amount for a customer who already has one out, and the link
+  doesn't know WHAT it settles.
+- When a customer part-pays an issued link IN CASH, the link auto-cancels (good),
+  but the bot does NOT recognise the remaining balance or reissue a link for just
+  the balance. It should.
+- BUILD: create a pay-link FROM a chosen owed balance / open item so it carries
+  the exact amount + what it settles; recompute the balance after any payment
+  (cash or online) and offer a link for the REMAINING balance; block/duplicate-warn
+  if a live link already covers that balance.
+
 ## Answered
 - "If I tap Pay, does it cancel the active link?" → NOW YES (auto-cancel pending
   links on manual payment, commit 6169ffc).
