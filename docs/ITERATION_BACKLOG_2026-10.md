@@ -44,26 +44,41 @@ From live use of the deployed build. Sorted; status tracked.
   POST /app/api/quote → quote PDF via generate_invoice(kind='quote'), delivered to
   chat. New route → deploy required.
 
+## DONE — Inventory dashboard redesign v2 (commit 4f3c048)
+- Owner said v1 was STILL ambiguous ("what does items-in-stock represent? the
+  pointer links back to the same page"). Rebuilt so the stat cards are TAPPABLE
+  and drill into a FILTERED list:
+  - 'Products for sale ›' + 'Raw materials ›' count cards, and 'Product value ›'
+    / 'Materials value ›' cards, each `catShow('product'|'raw')` → `catFilter`
+    gates `renderCatalog` via `FILTER_MAP` (product=product; raw=raw+supply) with
+    a 'show all ✕' clear chip. The '›' arrows now DRILL instead of looping.
+  - Removed the ambiguous 'Items in stock' card.
+  - Each row carries a stock tag (out / low / in stock), margin %, and a 'value'
+    suffix; each type section shows its item count + total value at the top.
+  - Raw-materials count card + value split only shown when the business keeps
+    materials (mfg/hybrid, or any catalog that actually has some).
+
 ## TODO — remaining
 - **Main dashboard** could still be richer (owner said "make that dashboard
   generally better") — scope TBD (charts, trends, quick actions).
+- **Pay-link tied to a specific debt/open item (Build B / Stage 4).** Owner's #1
+  complaint: can mint a link for ANY amount for a customer who already has a link
+  out, and the link doesn't know WHAT it settles. Build: create a pay-link FROM a
+  chosen owed balance / open item so it carries the amount + what it settles, and
+  block / warn on duplicates. Highest-value next feature.
+- **Location-name affordance "too casual."** The site/location name under
+  Customers reads as throwaway; needs a clearer label + a one-line explainer so
+  owners know what it does.
 
 ## \u26a0 DEPLOY OUTSTANDING — a large stack is pushed but undeployed
 New API routes across recent batches: /app/api/delete-payment-request, /open-items,
-/settle-open, /site-label, /quote. Plus engine/JS: pay-link double-fix, sub-accounts
-(open items + site) engine + UI, rename Catalog→Inventory, nav trim, link marker,
-richer inventory dashboard. Owner: `cd ~/projects/kashia-bot && ./deploy.sh dev`
-then reopen the app from the ☰ menu.
-
-## TODO — Products & materials dashboard (make it richer + clearer)
-- The three stats (Products / Total stock / Stock value) are unclear. Wanted:
-  - Split **Product value** vs **Raw-materials value** vs a **Total inventory value**.
-  - Clicking a product opens a **quick-view** with details (stock, cost, price,
-    margin, unit, recipe cost if any). (Row tap already opens the edit sheet —
-    make it a richer read-first view.)
-  - Generally make the Products dashboard better/clearer.
-- Dashboard (main) could also be richer — owner said "make that dashboard generally
-  better" (scope TBD).
+/settle-open, /site-label, /quote, /multi-doc. Plus engine/JS: pay-link double-fix,
+sub-accounts (open items + site) engine + UI, rename Catalog→Inventory, nav trim,
+link marker, richer inventory dashboard v1 + v2 (tappable filtered list), services
+quote, Stage-3 multi-item docs, Ade name-picker fix. Owner:
+`cd ~/projects/kashia-bot && ./deploy.sh dev` then reopen the app from the ☰ menu.
+(The Ade name-picker fix + this inventory redesign only take effect after deploy +
+reopening the app from the ☰ menu button.)
 
 ## Answered
 - "If I tap Pay, does it cancel the active link?" → NOW YES (auto-cancel pending
