@@ -1967,6 +1967,32 @@ def _payment_request_write(event, user_id: str):
         return _json(400, {"error": "enter an amount greater than 0"})
     description = (data.get("description") or "").strip() or "Payment"
     customer = (data.get("customer") or "").strip()
+    # Build B: tie the link to a specific owed balance.
+    debt_contact = (data.get("debt_contact") or "").strip() or (customer or None)
+    open_item_ids = data.get("open_item_ids") or None
+    if open_item_ids and not isinstance(open_item_ids, list):
+        open_item_ids = [open_item_ids]
+    force = bool(data.get("force"))
+
+    db = Database()
+
+    # DUPLICATE-LINK BLOCK (Build B): the owner could previously mint link after
+    # link for the same customer's debt. If a live pending link already exists for
+    # this contact, refuse (409) with the existing link's details so the UI can
+    # ask "a link for ₦X is already out — create another anyway?". `force` passes.
+    if debt_contact and not force:
+        existing = db.pending_link_for_contact(user_id, debt_contact)
+        if existing:
+            return _json(409, {
+                "error": "needs_confirm",
+                "reason": "a pay-link is already out for this customer",
+                "existing": {
+                    "amount": existing.get("amount"),
+                    "reference": existing.get("paystack_ref"),
+                    "created_at": existing.get("created_at"),
+                    "payment_url": existing.get("payment_url"),
+                },
+            })
 
     payreq_id = "payreq#" + _uuid.uuid4().hex[:12]
     svc = PaystackService()
@@ -1977,10 +2003,11 @@ def _payment_request_write(event, user_id: str):
 
     ref = res["reference"]
     url = res["payment_url"]
-    db = Database()
     stored = db.create_payment_request(
         user_id, float(amount), description, payreq_id, ref,
-        customer_name=customer or None, payment_url=url)
+        customer_name=customer or None, payment_url=url,
+        debt_contact=debt_contact, open_item_ids=open_item_ids,
+        balance_at_create=amount if debt_contact else None)
     if not stored:
         # The link exists but we couldn't persist the request → the webhook won't
         # find it to auto-mark paid. Fail loudly rather than hand out a link that
@@ -4139,14 +4166,18 @@ window.onerror = function (msg, src, line, col, err) {
   };
   window.cdGetPayLink = function () {
     if (!cdCtx) return;
-    plCtx = { name: cdCtx.name || "" };
+    // Build B: tie the link to this customer's owed balance. debt_contact tells
+    // the server to recompute the remaining balance when the link is paid and to
+    // block a duplicate live link for the same debt.
+    var owes = (cdCtx && cdCtx.owes_me > 0) ? cdCtx.owes_me : 0;
+    plCtx = { name: cdCtx.name || "", debt_contact: (owes > 0 ? (cdCtx.name || "") : "") };
     closeContact();
     document.getElementById("pl-sub").textContent =
-      plCtx.name ? ("Create a link " + plCtx.name + " can pay online.")
-                 : "Create a link the customer can pay online.";
+      owes > 0 ? ("Owes " + naira(owes) + " now \u2014 this link is for that balance.")
+               : (plCtx.name ? ("Create a link " + plCtx.name + " can pay online.")
+                             : "Create a link the customer can pay online.");
     // Prefill the amount with what they owe (common case: collect a debt).
-    document.getElementById("pl-amount").value =
-      (cdCtx && cdCtx.owes_me > 0) ? cdCtx.owes_me : "";
+    document.getElementById("pl-amount").value = (owes > 0) ? owes : "";
     document.getElementById("pl-desc").value = "";
     var psel = document.getElementById("pl-product"); if (psel) psel.value = "";
     plFillProducts();
@@ -4167,26 +4198,46 @@ window.onerror = function (msg, src, line, col, err) {
     if (!(amt > 0)) { err.textContent = "Enter an amount greater than 0."; return; }
     var desc = (document.getElementById("pl-desc").value || "").trim();
     var btn = document.getElementById("pl-create");
-    btn.disabled = true; btn.textContent = "Creating…";
-    apiPost("api/payment-request", {
-      amount: amt, description: desc, customer: (plCtx && plCtx.name) || ""
-    })
-      .then(function (r) {
-        // A link now EXISTS — keep the button LOCKED so a second tap can't mint a
-        // duplicate link (which was creating double entries). To make another,
-        // the owner closes + reopens. Hide it entirely and show the result.
-        btn.disabled = true;
-        btn.textContent = "\u2705 Link created";
-        btn.classList.add("hidden");
-        var urlBox = document.getElementById("pl-url");
-        urlBox.value = r.payment_url || "";
-        document.getElementById("pl-result").classList.remove("hidden");
-        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+
+    function onOk(r) {
+      // A link now EXISTS — keep the button LOCKED so a second tap can't mint a
+      // duplicate link. To make another, the owner closes + reopens.
+      btn.disabled = true;
+      btn.textContent = "\u2705 Link created";
+      btn.classList.add("hidden");
+      document.getElementById("pl-url").value = r.payment_url || "";
+      document.getElementById("pl-result").classList.remove("hidden");
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    }
+
+    // force=true re-sends after the owner confirms a duplicate link.
+    function doPost(force) {
+      btn.disabled = true; btn.textContent = "Creating\u2026";
+      apiPost("api/payment-request", {
+        amount: amt, description: desc,
+        customer: (plCtx && plCtx.name) || "",
+        debt_contact: (plCtx && plCtx.debt_contact) || "",
+        force: !!force
       })
-      .catch(function (e) {
-        btn.disabled = false; btn.textContent = "Create link";
-        err.textContent = (e && e.message) || "Could not create the link.";
-      });
+        .then(onOk)
+        .catch(function (e) {
+          btn.disabled = false; btn.textContent = "Create link";
+          // Build B: duplicate live link for this customer → 409 needs_confirm.
+          // Ask the owner before minting a second link for the same debt.
+          var body = e && e.body;
+          if (e && e.status === 409 && body && body.error === "needs_confirm") {
+            var ex = body.existing || {};
+            var exAmt = (ex.amount != null) ? naira(ex.amount) : "a link";
+            var ok = window.confirm("A pay-link for " + exAmt +
+              " is already out for this customer. Create another anyway?");
+            if (ok) { doPost(true); return; }
+            err.textContent = "No new link created \u2014 the existing one is still live.";
+            return;
+          }
+          err.textContent = (e && e.message) || "Could not create the link.";
+        });
+    }
+    doPost(false);
   };
   window.plCopy = function () {
     var urlBox = document.getElementById("pl-url");

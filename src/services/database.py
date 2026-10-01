@@ -478,7 +478,8 @@ class Database:
     def create_payment_request(self, phone_number, amount, description,
                                payreq_id, paystack_ref, customer_name=None,
                                invoice_number=None, debt_contact=None,
-                               payment_url=None):
+                               payment_url=None, open_item_ids=None,
+                               balance_at_create=None):
         """Persist a pending payment request. `payreq_id` is the caller-generated
         sort key ("payreq#<uuid>"); `paystack_ref` is the unique Paystack
         reference. Money is kobo-precise. Returns the stored row, or None on
@@ -503,7 +504,17 @@ class Database:
             if invoice_number:
                 item["invoice_number"] = str(invoice_number)
             if debt_contact:
-                item["debt_link"] = {"contact": str(debt_contact)}
+                # Build B: tie the link to a specific owed balance so the webhook
+                # can settle the exact open items and we can block duplicate links
+                # for the same balance. open_item_ids may be empty → settle
+                # oldest-first against the contact. balance_at_create is the owed
+                # total when minted (display / staleness).
+                link = {"contact": str(debt_contact)}
+                if open_item_ids:
+                    link["open_item_ids"] = [str(i) for i in open_item_ids]
+                if balance_at_create is not None:
+                    link["balance_at_create"] = money_round(balance_at_create)
+                item["debt_link"] = link
             if payment_url:
                 item["payment_url"] = str(payment_url)
             self.transactions.put_item(Item=self._sanitize_for_dynamo(item))
@@ -631,6 +642,25 @@ class Database:
         except Exception as e:
             logger.warning(f"has_pending_link failed: {e}")
         return False
+
+    def pending_link_for_contact(self, phone_number, customer_name):
+        """Return the most recent PENDING pay-link row for this customer, or None.
+        Build B uses this to block a duplicate live link for the same balance (the
+        owner was able to mint link after link for the same debt). Matches by
+        customer name, case-insensitive. Never raises."""
+        want = str(customer_name or "").strip().lower()
+        if not want:
+            return None
+        try:
+            # list_payment_requests is already newest-first, so the first match is
+            # the most recent pending link for this contact.
+            for r in self.list_payment_requests(phone_number, status="pending", limit=100):
+                cn = str(r.get("customer_name") or r.get("vendor") or "").strip().lower()
+                if cn and cn == want:
+                    return r
+        except Exception as e:
+            logger.warning(f"pending_link_for_contact failed: {e}")
+        return None
 
     def pending_link_names(self, phone_number):
         """Set of lowercased customer names that currently have a PENDING pay-link.

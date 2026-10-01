@@ -92,7 +92,24 @@ reopening the app from the ☰ menu button.)
   are current outstanding snapshots (not period totals) but showed no date →
   added an "as of <date>" label so they read like the dated P&L summary.
 
-## TODO — NEXT FEATURE: smart pay-link (Build B / Stage 4)
+## DONE — smart pay-link (Build B / Stage 4) · see docs/SMART_PAYLINK_BUILD_B_PLAN.md
+A pay-link is now tied to a customer's owed balance:
+- Minted FROM the contact's owed total (amount prefilled; "Owes ₦X now — this link
+  is for that balance"). The link carries debt_contact (+ open_item_ids plumbing).
+- DUPLICATE BLOCK: a 2nd link for a customer who already has a live pending link
+  returns 409 needs_confirm → the app asks "a link for ₦X is already out — create
+  another anyway?" (force retry on confirm). No more silent link-spam.
+- RECOMPUTE after ANY payment: the webhook now settles through
+  OpenItems.settle_open_items (reduces the specific unpaid rows + reconciles the
+  lump once) instead of a bare lump settle, and cancels sibling pending links. So
+  a part-payment leaves the correct remaining balance, and the NEXT link (prefilled
+  from the live owed total) is automatically for just the remaining balance.
+- Manual payment already recomputed + cancelled links (earlier work); the webhook
+  now has parity.
+Future: a per-item picker UI (choose which items a link covers) + a chat
+mint-a-link command. Not needed for the core fix.
+
+## (was) NEXT FEATURE: smart pay-link (Build B / Stage 4)
 Owner's #1 complaint, confirmed again this round:
 - Today a pay-link is a flat amount, NOT tied to a debt/open item. You can mint a
   link for ANY amount for a customer who already has one out, and the link

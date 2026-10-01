@@ -261,6 +261,18 @@ def _handle_collection(metadata, data, reference):
         # repayment from …" / category "Debt Repayment"), EXACTLY like the chat
         # debt._apply_directed_payment does — otherwise it's double-counted as
         # revenue on top of the original credit sale (the Muyideen bug).
+        # Build B: settle through the OPEN-ITEMS engine so the specific unpaid
+        # rows this link covers are reduced (not just the contact lump). The link
+        # may carry debt_link.open_item_ids (the exact rows it was minted for);
+        # otherwise OpenItems settles oldest-first against the contact.
+        # settle_open_items reduces each row's balance_owed AND reconciles the
+        # lump via settle_debt once, so reports stay correct and the remaining
+        # balance is recomputed per-item (powers "offer a link for the balance").
+        picked_ids = None
+        link = (preq or {}).get("debt_link") if preq else None
+        if isinstance(link, dict):
+            picked_ids = link.get("open_item_ids") or None
+
         settled = 0
         if customer_name:
             try:
@@ -268,10 +280,20 @@ def _handle_collection(metadata, data, reference):
                 owed = money_round((contact or {}).get("debt_owed_to_me", 0) or 0)
                 if owed > 0:
                     pay = amount_naira if amount_naira <= owed else owed
-                    db.settle_debt(owner_id, customer_name, pay, "owed_to_me")
+                    try:
+                        from features.open_items import OpenItems
+                        OpenItems(db).settle_open_items(
+                            owner_id, customer_name, pay,
+                            direction="owed_to_me", picked_ids=picked_ids)
+                    except Exception as oe:
+                        # Fall back to the lump settle so a payment is never lost
+                        # if the open-items path errors.
+                        logger.warning(f"collection open-items settle failed, "
+                                       f"falling back to lump: {oe}")
+                        db.settle_debt(owner_id, customer_name, pay, "owed_to_me")
                     settled = pay
             except Exception as e:
-                logger.warning(f"collection settle_debt failed: {e}")
+                logger.warning(f"collection settle failed: {e}")
 
         # The part of the payment that is NOT settling a debt = a real new sale.
         sale_portion = money_round(amount_naira - settled)
@@ -309,6 +331,17 @@ def _handle_collection(metadata, data, reference):
 
         if payreq_id:
             db.mark_payment_request_paid(owner_id, payreq_id, paid_tx_id)
+
+        # Build B: this payment landed, so any OTHER pending links for the same
+        # customer are now stale (they'd double-collect). Cancel them (parity with
+        # a manual payment, which already does this in _settle_open_write). The
+        # just-paid link was flipped to 'paid' above, so cancel_pending_requests_for
+        # only touches the remaining pending ones.
+        if customer_name and settled > 0:
+            try:
+                db.cancel_pending_requests_for(owner_id, customer_name)
+            except Exception as ce:
+                logger.warning(f"collection cancel sibling links failed: {ce}")
     except Exception:
         # Post-claim failure on an authentic webhook → release the claim so the
         # 500-triggered Paystack retry can re-process, then re-raise to 500.
