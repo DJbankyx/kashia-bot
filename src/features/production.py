@@ -1693,10 +1693,20 @@ class ProductionHandler:
                 continue
             it = p.get("item_type", "")
             if it in ("raw_material", "supply", "overhead"):
+                # Expose the material's full unit set (base + taught/custom units)
+                # so the recipe editor can offer them in a dropdown — the owner
+                # couldn't record a recipe in a taught unit (only the primary).
+                try:
+                    from utils import units as _units
+                    base_unit, unit_defs = _units.product_units(p)
+                except Exception:
+                    base_unit, unit_defs = (p.get("primary_unit") or ""), {}
                 avail.append({
                     "key": k,
                     "name": p.get("name") or k,
-                    "unit": p.get("primary_unit") or "",
+                    "unit": p.get("primary_unit") or base_unit or "",
+                    "base_unit": base_unit or "",
+                    "unit_defs": unit_defs or {},
                     "cost": float(p.get("landing_cost", 0) or 0),
                     "item_type": it,
                 })

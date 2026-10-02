@@ -450,10 +450,26 @@ def _summary(event, user_id: str):
     except Exception:
         site_label = "Location"
 
+    # Known site/location names (Bug 6): distinct `site` values the owner has
+    # used, so the record form's location field can autocomplete like the
+    # customer-name field does. Best-effort; empty on any error.
+    known_sites = []
+    try:
+        seen = set()
+        for t in (db.get_transactions(user_id, limit=400) or []):
+            s = str(t.get("site") or "").strip()
+            if s and s.lower() not in seen:
+                seen.add(s.lower())
+                known_sites.append(s)
+        known_sites.sort(key=lambda x: x.lower())
+    except Exception:
+        known_sites = []
+
     return _json(200, {
         "business": business,
         "industry": industry,
         "site_label": site_label,
+        "sites": known_sites,
         "period": period,
         "period_label": label,
         "pnl": {
@@ -1349,15 +1365,26 @@ def _contact_detail(event, user_id: str):
     rows = []
     for t in mine[:20]:
         item = (t.get("item_name") or t.get("description") or "").strip()
+        pm = str(t.get("payment_method", "") or "").lower()
+        # Remaining unpaid on this specific row (Bug 5). Credit/part sales stamp
+        # balance_owed per row (Build A/Stage 1); show how much of THIS sale is
+        # still outstanding, not just its total.
+        try:
+            bal = money_round(t.get("balance_owed", 0) or 0)
+        except Exception:
+            bal = 0
         rows.append({
             "type": t.get("type", ""),
-            "amount": int(t.get("amount", 0) or 0),
+            "amount": money_round(t.get("amount", 0) or 0),
             "item": item[:40],
             "date": str(t.get("date", "") or ""),
             # Full timestamp (#7): the app can show time alongside date.
             "at": str(t.get("created_at", "") or t.get("at", "") or ""),
             "qty": str(t.get("quantity", "") or ""),
-            "payment": str(t.get("payment_method", "") or ""),
+            "payment": pm,
+            # Remaining unpaid on this row (0 if fully paid / cash).
+            "balance_owed": bal,
+            "is_credit": pm in ("credit", "deposit") or bal > 0,
             # A debt repayment/collection is money received to clear a debt, NOT a
             # fresh sale — the app renders it with a distinct label/icon so it's
             # not confused with a new sale (the Muyideen display bug).
@@ -1976,6 +2003,24 @@ def _payment_request_write(event, user_id: str):
 
     db = Database()
 
+    # OVERCHARGE CAP (Build B): a link tied to a debt must never charge MORE than
+    # the customer actually owes — otherwise paying it would over-settle and
+    # corrupt the balance (the owner was able to overcharge Ade). Clamp the
+    # amount down to what's owed (server is the backstop; the UI also caps). We
+    # clamp rather than reject so a legitimate "collect the whole balance" always
+    # succeeds; only the excess is trimmed.
+    if debt_contact:
+        try:
+            contact = db.get_contact_by_name(user_id, debt_contact)
+            owed = money_round((contact or {}).get("debt_owed_to_me", 0) or 0)
+            if owed > 0 and amount > owed:
+                logger.info(f"pay-link amount {amount} > owed {owed} for "
+                            f"{debt_contact}; clamping to owed")
+                amount = owed
+                description = description or "Payment of outstanding balance"
+        except Exception as e:
+            logger.warning(f"pay-link overcharge check failed: {e}")
+
     # DUPLICATE-LINK BLOCK (Build B): the owner could previously mint link after
     # link for the same customer's debt. If a live pending link already exists for
     # this contact, refuse (409) with the existing link's details so the UI can
@@ -2475,11 +2520,12 @@ _PAGE_HTML = """<!doctype html>
         </div>
         <div class="field" style="flex:1">
           <label id="rc-unit-label">Unit</label>
-          <input id="rc-unit" placeholder="e.g. kg, litre, kW, sec">
+          <input id="rc-unit" list="rc-unit-list" placeholder="e.g. kg, litre, kW, sec">
+          <datalist id="rc-unit-list"></datalist>
         </div>
       </div>
       <div class="sub2" id="rc-unit-hint" style="margin-top:-6px;margin-bottom:12px">
-        💡 Use the SAME unit you track this material's stock in (e.g. if you buy nylon in kg, write kg here). Mixing units — kg here but grams in stock — makes the cost and stock deduction wrong.
+        💡 Pick any unit this material is taught (base + conversions) — the recipe converts it to stock automatically. For a new material, use the unit you track its stock in.
       </div>
       <div class="field">
         <label id="rc-cost-label">Cost of ONE unit of this material (optional)</label>
@@ -2628,7 +2674,7 @@ _PAGE_HTML = """<!doctype html>
       <!-- Optional product picker: choosing a product prefills the amount (its
            selling price) and the description. "Something else" keeps free text.
            Populated from the catalog (invData). -->
-      <div class="field" style="margin-top:12px">
+      <div class="field" style="margin-top:12px" id="pl-product-row">
         <label>Product (optional)</label>
         <select id="pl-product" onchange="plPickProduct()">
           <option value="">Something else (type below)</option>
@@ -3382,9 +3428,25 @@ window.onerror = function (msg, src, line, col, err) {
       .then(function (d) {
         // Stage 0: capture the industry from the summary payload so catalog +
         // other tabs can shape their UI. Falls back to "trading" (control).
-        if (d.industry) APP.industry = d.industry;
+        // Bug 7: if the owner changed industry (e.g. in chat Settings) while the
+        // app was open, the cached labels/gating are stale. Detect the change and
+        // allow applyIndustryLabels to re-run so the UI reshapes without a full
+        // reopen.
+        if (d.industry && d.industry !== APP.industry) {
+          APP.industry = d.industry;
+          _labelsApplied = false;
+        } else if (d.industry) {
+          APP.industry = d.industry;
+        }
         if (d.site_label) APP.siteLabel = d.site_label;   // Stage 2 layer name
-        // Stage 3: apply industry wording to static labels (once).
+        // Bug 6: seed the known-sites list so the record form's location field
+        // can autocomplete from day one (merge, keep any seen this session).
+        if (d.sites && d.sites.length) {
+          d.sites.forEach(function (s) {
+            if (s && APP.knownSites.indexOf(s) < 0) APP.knownSites.push(s);
+          });
+        }
+        // Stage 3: apply industry wording to static labels.
         applyIndustryLabels();
         // Stage 4: catalog-first setup nudge (gentle, dismissable).
         renderCatNudge(d.catalog_health);
@@ -3835,11 +3897,13 @@ window.onerror = function (msg, src, line, col, err) {
       var canBill = isCollectable || (c.owes_me > 0);
       payLinkBtn.classList.toggle("hidden", !canBill);
     }
-    // "Write a quote" — a pre-work estimate, most useful for services/hybrid, and
-    // only for a customer/client (someone you'd bill), not a supplier.
+    // "Write a quote" — a pre-work estimate. Useful for any work-to-order
+    // business: services, hybrid, AND manufacturing (produce-a-product-to-order,
+    // e.g. "quote me for 100 cartons"). Only for a customer/client (someone you'd
+    // bill), not a supplier. Trading sells off-the-shelf so it's hidden there.
     var quoteBtn = document.getElementById("cd-quote");
     if (quoteBtn) {
-      var showQuote = (isServices() || isHybrid()) && (isCollectable || c.owes_me > 0);
+      var showQuote = (isServices() || isHybrid() || isMfg()) && (isCollectable || c.owes_me > 0);
       quoteBtn.classList.toggle("hidden", !showQuote);
     }
     // "Bill / receipt items" — combine several of this customer's UNPAID items
@@ -3902,9 +3966,19 @@ window.onerror = function (msg, src, line, col, err) {
       if (t.payment) meta.push(t.payment);
       var div = document.createElement("div");
       div.className = "item";
+      // Bug 5: on a credit sale, show how much of THIS sale is still unpaid
+      // (not just its total). Fully-paid credit rows show "paid".
+      var right = naira(t.amount || 0);
+      var sub = "";
+      if (!isPay && t.is_credit) {
+        var left = Number(t.balance_owed || 0);
+        sub = (left > 0)
+          ? '<div class="meta neg">' + naira(left) + " left</div>"
+          : '<div class="meta">paid</div>';
+      }
       div.innerHTML = '<div><div class="name">' + ic + " " + escapeHtml(title) +
         '</div><div class="meta">' + escapeHtml(meta.filter(Boolean).join(" · ")) + '</div></div>' +
-        '<div class="right"><div class="stock">' + naira(t.amount || 0) + '</div></div>';
+        '<div class="right"><div class="stock">' + right + '</div>' + sub + '</div>';
       card.appendChild(div);
     });
     box.appendChild(card);
@@ -4143,6 +4217,15 @@ window.onerror = function (msg, src, line, col, err) {
     if (invData) { build(); }
     else { loadInventory().then(build).catch(function () {}); }
   }
+  // DEBT MODE: when the link is settling an owed balance, the amount is the
+  // balance, not a product price. Hide the product picker (choosing one let the
+  // owner overcharge) and remember the owed cap so plCreate can't exceed it.
+  var plOwedCap = 0;   // 0 = no cap (plain link); >0 = max this link may charge
+  function plSetDebtMode(owed) {
+    plOwedCap = (owed > 0) ? owed : 0;
+    var row = document.getElementById("pl-product-row");
+    if (row) row.classList.toggle("hidden", plOwedCap > 0);
+  }
   // When a product is chosen, prefill the amount (its selling price) + the
   // description. Choosing "Something else" leaves whatever's typed.
   window.plPickProduct = function () {
@@ -4178,8 +4261,12 @@ window.onerror = function (msg, src, line, col, err) {
                              : "Create a link the customer can pay online.");
     // Prefill the amount with what they owe (common case: collect a debt).
     document.getElementById("pl-amount").value = (owes > 0) ? owes : "";
-    document.getElementById("pl-desc").value = "";
+    document.getElementById("pl-desc").value = (owes > 0) ? "Payment of outstanding balance" : "";
     var psel = document.getElementById("pl-product"); if (psel) psel.value = "";
+    // In DEBT mode the link settles the owed BALANCE — a product's selling price
+    // is irrelevant and picking one let the owner overcharge. Hide the product
+    // picker + cap the amount at what's owed. In plain mode (no debt), keep it.
+    plSetDebtMode(owes);
     plFillProducts();
     document.getElementById("pl-err").textContent = "";
     document.getElementById("pl-result").classList.add("hidden");
@@ -4196,6 +4283,15 @@ window.onerror = function (msg, src, line, col, err) {
     err.textContent = "";
     var amt = parseFloat(document.getElementById("pl-amount").value);
     if (!(amt > 0)) { err.textContent = "Enter an amount greater than 0."; return; }
+    // Debt mode: the link settles what's owed — don't let it charge MORE than the
+    // balance (the owner was able to overcharge). Clamp with a clear message.
+    if (plOwedCap > 0 && amt > plOwedCap) {
+      err.textContent = "That's more than they owe (" + naira(plOwedCap) +
+        "). The amount has been set to the balance.";
+      amt = plOwedCap;
+      document.getElementById("pl-amount").value = plOwedCap;
+      return;   // let the owner see the corrected amount, then tap again
+    }
     var desc = (document.getElementById("pl-desc").value || "").trim();
     var btn = document.getElementById("pl-create");
 
@@ -5179,6 +5275,20 @@ window.onerror = function (msg, src, line, col, err) {
         }
         return j;
       });
+    }).catch(function (e) {
+      // A TRANSPORT-level failure (network drop, Lambda cold-start timeout)
+      // rejects the fetch() itself with the browser's opaque "Load failed" /
+      // "Failed to fetch" — never reaching the .then above. Translate it to an
+      // actionable message. App errors thrown above carry .body/.status, so pass
+      // those through unchanged.
+      if (e && (e.body || e.status)) throw e;
+      var m = (e && e.message) || "";
+      if (/load failed|failed to fetch|networkerror/i.test(m)) {
+        var e3 = new Error("Network hiccup — the request didn't go through. Check your connection and try again.");
+        e3.network = true;
+        throw e3;
+      }
+      throw e;
     });
   }
   // ── Product quick-view (read-first) ──
@@ -5820,6 +5930,11 @@ window.onerror = function (msg, src, line, col, err) {
       o.value = m.key;
       o.setAttribute("data-unit", m.unit || "");
       o.setAttribute("data-type", m.item_type || "material");
+      // Bug 3: carry the material's FULL unit set (base + taught/custom units) so
+      // the recipe editor can offer them, not just the primary unit.
+      o.setAttribute("data-base-unit", m.base_unit || m.unit || "");
+      try { o.setAttribute("data-unit-defs", JSON.stringify(m.unit_defs || {})); }
+      catch (e) { o.setAttribute("data-unit-defs", "{}"); }
       var isOverhead = (m.item_type === "overhead");
       var per = m.unit ? ("/" + m.unit) : "";
       var money = m.cost ? (naira(m.cost) + per) : "";
@@ -5947,10 +6062,28 @@ window.onerror = function (msg, src, line, col, err) {
       costInput.placeholder = "enter buy-cost";
       recFillMaterialNames();   // suggest existing catalog names to avoid dupes
     } else {
-      // Existing material: unit + type are fixed by the catalog row.
-      var u = opt ? (opt.getAttribute("data-unit") || "") : "";
-      unitInput.value = u;
-      unitInput.readOnly = true;   // can't change a catalog material's unit here
+      // Existing material: type is fixed by the catalog row, but the owner may
+      // record the recipe in ANY unit the material is taught (base + custom),
+      // not only the primary (Bug 3). Build a datalist of taught units and keep
+      // the input editable (defaulting to the base/primary unit).
+      var baseU = opt ? (opt.getAttribute("data-base-unit") || opt.getAttribute("data-unit") || "") : "";
+      var defs = {};
+      try { defs = JSON.parse(opt ? (opt.getAttribute("data-unit-defs") || "{}") : "{}"); }
+      catch (e) { defs = {}; }
+      var units = [];
+      if (baseU) units.push(baseU);
+      Object.keys(defs || {}).forEach(function (u) {
+        if (u && units.indexOf(u) < 0) units.push(u);
+      });
+      var dl = document.getElementById("rc-unit-list");
+      if (dl) {
+        dl.innerHTML = "";
+        units.forEach(function (u) {
+          var o = document.createElement("option"); o.value = u; dl.appendChild(o);
+        });
+      }
+      unitInput.value = baseU;      // default to base; owner can pick a taught unit
+      unitInput.readOnly = false;   // taught units are selectable now
       var isOh = opt && opt.getAttribute("data-type") === "overhead";
       document.getElementById("rc-cost-label").textContent =
         isOh ? "Rate per unit of usage (optional)"
@@ -6817,6 +6950,20 @@ window.onerror = function (msg, src, line, col, err) {
   }
   renderChips();
   loadSummary();
+
+  // Bug 7: when the app regains focus (owner switched industry in chat, then
+  // came back), re-fetch the summary so industry labels/gating refresh without
+  // forcing a full close+reopen. Throttled so rapid focus flaps don't spam.
+  var _lastFocusRefresh = 0;
+  function _refreshOnFocus() {
+    if (document.hidden) return;
+    var now = Date.now();
+    if (now - _lastFocusRefresh < 3000) return;   // throttle
+    _lastFocusRefresh = now;
+    loadSummary();
+  }
+  document.addEventListener("visibilitychange", _refreshOnFocus);
+  window.addEventListener("focus", _refreshOnFocus);
 })();
 </script>
   <div style="text-align:center;margin:14px 0 8px;font-size:11px;color:var(--hint);opacity:.6">Kashia \u00b7 build __BUILD_STAMP__</div>

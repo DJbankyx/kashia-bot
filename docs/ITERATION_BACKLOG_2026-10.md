@@ -122,6 +122,41 @@ Owner's #1 complaint, confirmed again this round:
   (cash or online) and offer a link for the REMAINING balance; block/duplicate-warn
   if a live link already covers that balance.
 
+## DONE — device-test batch (2026-10-02 screenshots)
+- **Pay-link overcharge (money bug).** In debt mode the Product dropdown
+  overwrote the amount with a selling price → could charge MORE than owed (Ade).
+  Fixed: product picker hidden when the link settles a balance; client caps at
+  owed; server clamps amount<=owed when debt_contact set.
+- **Contact card: remaining unpaid per credit row** ("₦X left" / "paid"), not just
+  the sale total. balance_owed + is_credit now returned per row.
+- **Recipe units**: material unit was locked to the primary; now the editor offers
+  the material's taught units (base + unit_defs) via a datalist. Engine already
+  converts any recipe unit → base, so costs/deduction stay correct.
+- **Quote in manufacturing** (produce-to-order), not just services/hybrid.
+- **Mall/Location autocomplete**: /api/summary returns known site names; the
+  record-form location datalist populates from them.
+- **Industry-switch staleness**: switching industry while the app is open now
+  re-applies labels (loadSummary detects the change) + the app re-fetches summary
+  on focus. Still cleanest to reopen, but no longer stuck stale.
+- **"Load failed" hardening**: apiPost maps a transport-level fetch reject to a
+  clear "network hiccup — try again" message.
+
+## OPEN DECISIONS (raised with owner — not blind-fixed)
+- **Billing only shows OPEN credit items.** The Bill/receipt picker lists only
+  unpaid credit/deposit sales (by design — those are what's billable). The owner
+  saw "only one item" because only one of the customer's sales is an open credit
+  item; cash sales aren't "open". If the owner wants to bill/receipt ANY past sale
+  (incl. already-paid cash), that's a separate "pick any sale" mode — needs a
+  decision + a new read. NOT changed yet.
+- **Selling price on a product isn't reused when recording a sale.** The owner
+  asked what the point of a selling price is if the record form doesn't use it.
+  Fair — the sale amount is typed manually. Option: prefill "Amount received" from
+  the picked product's selling price × qty (editable). Small, sensible; needs a
+  nod before building (keeps manual override).
+- **Friend's testing threw transient errors after an industry switch.** Partly
+  addressed by the staleness fix above; if specific errors recur post-deploy,
+  capture the exact message/screen so it can be traced.
+
 ## Answered
 - "If I tap Pay, does it cancel the active link?" → NOW YES (auto-cancel pending
   links on manual payment, commit 6169ffc).
