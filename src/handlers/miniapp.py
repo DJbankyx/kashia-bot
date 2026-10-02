@@ -1374,6 +1374,7 @@ def _contact_detail(event, user_id: str):
         except Exception:
             bal = 0
         rows.append({
+            "transaction_id": str(t.get("transaction_id", "") or ""),
             "type": t.get("type", ""),
             "amount": money_round(t.get("amount", 0) or 0),
             "item": item[:40],
@@ -2588,6 +2589,12 @@ _PAGE_HTML = """<!doctype html>
     <div class="sheet">
       <h2>🧾 Bill / receipt</h2>
       <div class="sub2" id="bi-sub">Pick items to combine into one document.</div>
+      <!-- Scope: unpaid-only (what's billable) OR every sale (so a receipt can be
+           reprinted for already-paid items). -->
+      <div class="chips" id="bi-scope" style="margin:8px 0">
+        <div class="chip active" data-scope="unpaid" onclick="biSetScope('unpaid')">Unpaid only</div>
+        <div class="chip" data-scope="all" onclick="biSetScope('all')">All items</div>
+      </div>
       <div style="margin:8px 0">
         <button class="linkbtn" onclick="biSelectAll(true)" style="font-size:13px;color:var(--accent)">Select all</button>
         <button class="linkbtn" onclick="biSelectAll(false)" style="font-size:13px;color:var(--hint);margin-left:10px">Clear</button>
@@ -2950,7 +2957,7 @@ _PAGE_HTML = """<!doctype html>
       </div>
       <div class="field">
         <label id="rec-amount-label">Amount received (\u20a6)</label>
-        <input id="rec-amount" type="number" inputmode="decimal" min="0" step="any" oninput="recBalanceHint()">
+        <input id="rec-amount" type="number" inputmode="decimal" min="0" step="any" oninput="recAmtTyped()">
       </div>
       <!-- Prepaid / periodic spread (EXPENSE only): pay the full amount now but
            spread the expense across N periods so one month's profit isn't
@@ -2972,8 +2979,8 @@ _PAGE_HTML = """<!doctype html>
       <div class="field" id="rec-qty-wrap">
         <label id="rec-qty-label">Quantity</label>
         <div class="row" style="gap:8px">
-          <input id="rec-qty" type="number" inputmode="decimal" min="0" step="any" value="1" style="flex:2">
-          <select id="rec-unit-sel" class="hidden" style="flex:1;padding:11px 8px"></select>
+          <input id="rec-qty" type="number" inputmode="decimal" min="0" step="any" value="1" style="flex:2" oninput="recQtyChanged()">
+          <select id="rec-unit-sel" class="hidden" style="flex:1;padding:11px 8px" onchange="recQtyChanged()"></select>
           <input id="rec-unit-free" class="hidden" placeholder="unit e.g. litres" style="flex:1">
         </div>
         <div class="sub2" id="rec-qty-hint">💡 Counted in this item's unit (set the unit on the product in Catalog). Can be fractional, e.g. 0.5 kg. Stock drops by this amount.</div>
@@ -4103,31 +4110,74 @@ window.onerror = function (msg, src, line, col, err) {
   var biCtx = null;   // {name}
   var biItems = [];   // the customer's open items
   var biPicked = {};  // {transaction_id: true}
+  var biScope = "unpaid";   // "unpaid" (open credit items) | "all" (every sale)
   window.cdBillItems = function () {
     if (!cdCtx) return;
     biCtx = { name: cdCtx.name || "" };
-    biItems = []; biPicked = {};
+    biItems = []; biPicked = {}; biScope = "unpaid";
     closeContact();
     document.getElementById("bi-sub").textContent =
       "Pick " + (biCtx.name || "the customer") + "'s items to combine into one document.";
     document.getElementById("bi-err").textContent = "";
     document.getElementById("bi-total").textContent = "";
-    document.getElementById("bi-list").innerHTML = '<div class="muted">Loading\u2026</div>';
+    biSyncScopeChips();
     document.getElementById("billItemsOverlay").classList.remove("hidden");
-    api("api/open-items?name=" + encodeURIComponent(biCtx.name) + "&direction=owed_to_me")
-      .then(function (d) {
-        biItems = (d && d.items) || [];
-        biRenderList();
-      })
-      .catch(function (e) {
-        document.getElementById("bi-list").innerHTML =
-          '<div class="err">' + escapeHtml((e && e.message) || "Could not load items") + '</div>';
-      });
+    biLoad();
   };
+  function biSyncScopeChips() {
+    var chips = document.querySelectorAll("#bi-scope .chip");
+    for (var i = 0; i < chips.length; i++) {
+      chips[i].classList.toggle("active", chips[i].getAttribute("data-scope") === biScope);
+    }
+  }
+  window.biSetScope = function (s) {
+    if (biScope === s) return;
+    biScope = s; biPicked = {}; biSyncScopeChips(); biLoad();
+  };
+  // Load the customer's items for billing. "unpaid" = open credit items (what's
+  // still owed); "all" = EVERY sale (so a receipt can be reprinted for a sale
+  // that was already paid). Both normalise to {transaction_id, description,
+  // date, site, bill_amount}.
+  function biLoad() {
+    var box = document.getElementById("bi-list");
+    box.innerHTML = '<div class="muted">Loading\u2026</div>';
+    var nm = encodeURIComponent(biCtx.name || "");
+    if (biScope === "all") {
+      api("api/contact-detail?name=" + nm)
+        .then(function (d) {
+          biItems = ((d && d.transactions) || [])
+            .filter(function (t) { return t.type === "sale" && !t.is_payment && t.transaction_id; })
+            .map(function (t) {
+              return { transaction_id: t.transaction_id, description: t.item || "Sale",
+                       date: t.date || "", site: "", bill_amount: Number(t.amount || 0) };
+            });
+          biRenderList();
+        })
+        .catch(function (e) { biLoadErr(e); });
+    } else {
+      api("api/open-items?name=" + nm + "&direction=owed_to_me")
+        .then(function (d) {
+          biItems = ((d && d.items) || []).map(function (it) {
+            return { transaction_id: it.transaction_id, description: it.description || "Item",
+                     date: it.date || "", site: it.site || "",
+                     bill_amount: Number(it.balance_owed || 0) };
+          });
+          biRenderList();
+        })
+        .catch(function (e) { biLoadErr(e); });
+    }
+  }
+  function biLoadErr(e) {
+    document.getElementById("bi-list").innerHTML =
+      '<div class="err">' + escapeHtml((e && e.message) || "Could not load items") + '</div>';
+  }
   function biRenderList() {
     var box = document.getElementById("bi-list");
     if (!biItems.length) {
-      box.innerHTML = '<div class="muted">No unpaid items for this customer.</div>';
+      box.innerHTML = '<div class="muted">' +
+        (biScope === "all" ? "No sales for this customer." : "No unpaid items for this customer.") +
+        '</div>';
+      document.getElementById("bi-total").textContent = "";
       return;
     }
     box.innerHTML = "";
@@ -4141,7 +4191,7 @@ window.onerror = function (msg, src, line, col, err) {
       row.innerHTML = '<div style="flex:1"><div class="name">' + checked + " " +
         escapeHtml(it.description || "Item") + '</div><div class="meta">' +
         escapeHtml(meta.filter(Boolean).join(" \u00b7 ")) + '</div></div>' +
-        '<div class="right"><div class="stock">' + naira(it.balance_owed || 0) + '</div></div>';
+        '<div class="right"><div class="stock">' + naira(it.bill_amount || 0) + '</div></div>';
       row.onclick = (function (tid) {
         return function () {
           biPicked[tid] = !biPicked[tid];
@@ -4153,7 +4203,7 @@ window.onerror = function (msg, src, line, col, err) {
     // Running total of the picked items.
     var tot = 0, n = 0;
     biItems.forEach(function (it) {
-      if (biPicked[it.transaction_id]) { tot += Number(it.balance_owed || 0); n += 1; }
+      if (biPicked[it.transaction_id]) { tot += Number(it.bill_amount || 0); n += 1; }
     });
     document.getElementById("bi-total").textContent =
       n ? (n + " item(s) selected \u00b7 " + naira(tot)) : "Nothing selected yet.";
@@ -6311,6 +6361,10 @@ window.onerror = function (msg, src, line, col, err) {
                    (u ? " " + u : "") + " in stock");
         if (recTypeVal === "sale" && pick.sale_price > 0)
           parts.push("🏷️ price " + naira(pick.sale_price));
+        // Suggest the amount from the saved selling price × quantity (the owner
+        // kept a price for a reason). Only fill when the amount is still empty —
+        // never clobber a figure they typed. They can still edit it.
+        if (recTypeVal === "sale" && pick.sale_price > 0) recSuggestAmount();
         if (recTypeVal === "purchase" && pick.cost > 0)
           parts.push("cost " + naira(pick.cost));
       } else if (recTypeVal === "produce") {
@@ -6332,6 +6386,39 @@ window.onerror = function (msg, src, line, col, err) {
       else { info.textContent = ""; info.classList.add("hidden"); }
     }
   }
+
+  // Selling-price suggestion (owner request): when a product with a saved price
+  // is picked for a sale, prefill "Amount received" with price × quantity so the
+  // owner doesn't retype it — but ONLY while they haven't typed their own figure.
+  // recAmtAuto tracks whether the current amount is our suggestion (so we may
+  // update it on qty change) vs the owner's own value (which we never touch).
+  var recAmtAuto = false;
+  function recSuggestAmount() {
+    if (recTypeVal !== "sale" || !pick || !(pick.sale_price > 0)) return;
+    var amtEl = document.getElementById("rec-amount");
+    if (!amtEl) return;
+    // Only suggest into an empty field or one we previously auto-filled.
+    if (amtEl.value !== "" && !recAmtAuto) return;
+    var qty = parseFloat(document.getElementById("rec-qty").value) || 0;
+    if (qty <= 0) return;
+    var suggested = money2(pick.sale_price * qty);
+    amtEl.value = suggested;
+    recAmtAuto = true;
+    recBalanceHint();
+  }
+  // Round to 2dp for display without trailing-zero noise (price × qty).
+  function money2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+  // Qty changed → refresh the unit-dependent hints AND re-suggest the amount if
+  // it's still our suggestion.
+  window.recQtyChanged = function () {
+    recSuggestAmount();
+  };
+  // The owner typed in the amount field directly → it's THEIR figure now; stop
+  // auto-suggesting over it.
+  window.recAmtTyped = function () {
+    recAmtAuto = false;
+    recBalanceHint();
+  };
 
   // Populate the qty UNIT selector from the picked product's base_unit +
   // unit_defs. Base unit is the stored/stock unit (factor 1); each custom unit's
@@ -6589,6 +6676,7 @@ window.onerror = function (msg, src, line, col, err) {
     var _sph = document.getElementById("rec-spread-hint");
     if (_sph) _sph.textContent = "";
     recType("sale"); recPay("cash");
+    recAmtAuto = false;   // fresh form: a new product pick may suggest the amount
     document.getElementById("rec-desc").value = "";
     document.getElementById("rec-amount").value = "";
     var _rs = document.getElementById("rec-site"); if (_rs) _rs.value = "";
@@ -6887,6 +6975,35 @@ window.onerror = function (msg, src, line, col, err) {
     // sendSale posts the sale; on a soft guardrail (409 needs_confirm) it relabels
     // the Save button so a second tap re-posts with confirm:true (the two-tap
     // "proceed anyway" pattern — no confirm() dialog, unsupported in Telegram).
+    // After a sale, offer an Invoice or Receipt for it (one tap). Uses Telegram's
+    // native popup (3 buttons); falls back to confirm() where unavailable. The
+    // chosen doc is built from this single sale via the existing multi-doc path.
+    function offerSaleDoc(txId, customer) {
+      function build(kind) {
+        apiPost("api/multi-doc", { name: customer, tx_ids: [txId], kind: kind })
+          .then(function (r) {
+            if (tg && tg.showAlert) tg.showAlert((r && r.message) || (kind + " sent to your chat."));
+          })
+          .catch(function (e) {
+            if (tg && tg.showAlert) tg.showAlert((e && e.message) || ("Could not send the " + kind + "."));
+          });
+      }
+      if (tg && tg.showPopup) {
+        tg.showPopup({
+          title: "Document?",
+          message: "Send " + customer + " an invoice or receipt for this sale?",
+          buttons: [
+            { id: "invoice", type: "default", text: "📄 Invoice" },
+            { id: "receipt", type: "default", text: "🧾 Receipt" },
+            { id: "no", type: "cancel", text: "Not now" }
+          ]
+        }, function (id) {
+          if (id === "invoice" || id === "receipt") build(id);
+        });
+      } else if (window.confirm("Send " + customer + " a receipt for this sale?")) {
+        build("receipt");
+      }
+    }
     function afterSale() {
       if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
       loadSummary();
@@ -6899,7 +7016,8 @@ window.onerror = function (msg, src, line, col, err) {
     }
     function sendSale() {
       apiPost("api/transaction", body)
-        .then(function () {
+        .then(function (saved) {
+          var savedTxId = (saved && saved.transaction_id) || "";
           // Pay-link (#10): the credit sale is recorded; now mint the link for
           // this customer + amount and show it in the pay-link sheet to forward.
           if (isPayLink) {
@@ -6927,6 +7045,12 @@ window.onerror = function (msg, src, line, col, err) {
           }
           closeRecord();
           afterSale();
+          // After a normal (non-pay-link) sale, offer to send an invoice or
+          // receipt for it right away (owner asked to see this immediately after
+          // a sale). Needs a saved id + a named customer (not a walk-in).
+          if (recTypeVal === "sale" && savedTxId && who) {
+            offerSaleDoc(savedTxId, who);
+          }
         })
         .catch(function (e) {
           btn.disabled = false;

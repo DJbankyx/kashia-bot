@@ -141,18 +141,19 @@ Owner's #1 complaint, confirmed again this round:
 - **"Load failed" hardening**: apiPost maps a transport-level fetch reject to a
   clear "network hiccup — try again" message.
 
-## OPEN DECISIONS (raised with owner — not blind-fixed)
-- **Billing only shows OPEN credit items.** The Bill/receipt picker lists only
-  unpaid credit/deposit sales (by design — those are what's billable). The owner
-  saw "only one item" because only one of the customer's sales is an open credit
-  item; cash sales aren't "open". If the owner wants to bill/receipt ANY past sale
-  (incl. already-paid cash), that's a separate "pick any sale" mode — needs a
-  decision + a new read. NOT changed yet.
-- **Selling price on a product isn't reused when recording a sale.** The owner
-  asked what the point of a selling price is if the record form doesn't use it.
-  Fair — the sale amount is typed manually. Option: prefill "Amount received" from
-  the picked product's selling price × qty (editable). Small, sensible; needs a
-  nod before building (keeps manual override).
+## DONE — owner follow-ups (2026-10-02)
+- **Bill ANY sale.** Contact-card Bill/receipt picker now has an "Unpaid only /
+  All items" toggle. "All" lists every sale (reprint a receipt for already-paid
+  sales), "Unpaid only" keeps the open-credit view. _contact_detail returns
+  transaction_id per row; multi-doc builds from any id.
+- **Post-sale document prompt.** After recording a sale for a named customer, the
+  app immediately offers Invoice / Receipt (Telegram popup) → builds the doc for
+  that sale. Uses api/transaction's returned transaction_id.
+- **Selling price suggested on a sale.** Picking a product with a saved price
+  prefills "Amount received" = price × qty (recomputes on qty change), only while
+  the field is empty / still the suggestion — a typed figure is never overwritten.
+
+## OPEN / WATCH
 - **Friend's testing threw transient errors after an industry switch.** Partly
   addressed by the staleness fix above; if specific errors recur post-deploy,
   capture the exact message/screen so it can be traced.
