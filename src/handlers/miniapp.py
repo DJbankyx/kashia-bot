@@ -6401,7 +6401,12 @@ window.onerror = function (msg, src, line, col, err) {
     if (amtEl.value !== "" && !recAmtAuto) return;
     var qty = parseFloat(document.getElementById("rec-qty").value) || 0;
     if (qty <= 0) return;
-    var suggested = money2(pick.sale_price * qty);
+    // sale_price is stored PER BASE UNIT. If the owner is recording in a custom
+    // unit (e.g. 2 cartons where 1 carton = 12 pieces), convert the quantity to
+    // base units via the SAME factor the stock/COGS math uses (recUnitFactor =
+    // base units per 1 chosen unit) so the suggested amount matches what's sold.
+    var baseQty = qty * recUnitFactor();
+    var suggested = money2(pick.sale_price * baseQty);
     amtEl.value = suggested;
     recAmtAuto = true;
     recBalanceHint();
