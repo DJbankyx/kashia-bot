@@ -116,6 +116,14 @@ def _handle_message(message: dict):
     if chat_id is None:
         return
 
+    # IGNORE group / supergroup / channel chats. The bot is a 1-on-1 bookkeeper;
+    # it's also a MEMBER of the private support group (where feedback is
+    # forwarded). Without this guard, typing in that group ran onboarding against
+    # the GROUP as if it were a user (the group got a tg:<group_id> "account").
+    # Only ever engage in private chats.
+    if str(chat.get("type") or "private") != "private":
+        return
+
     user_id = f"{TG_USER_PREFIX}{chat_id}"
 
     # Best-effort: remember this user's Telegram @username + display name so
@@ -197,6 +205,10 @@ def _handle_callback_query(callback: dict):
             logger.warning(f"answerCallbackQuery failed: {e}")
 
     if chat_id is None or not data:
+        return
+
+    # Ignore taps from group/supergroup/channel chats (see _handle_message).
+    if str(chat.get("type") or "private") != "private":
         return
 
     user_id = f"{TG_USER_PREFIX}{chat_id}"

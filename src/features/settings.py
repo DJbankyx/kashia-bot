@@ -668,7 +668,7 @@ class SettingsHandler:
             "🐛 *Report a Problem / Send Feedback*\n\n"
             "Type your message here and I'll log it for the team.\n\n"
             "Or reach us directly:\n"
-            "📧 support@kashia.app\n\n"
+            "📧 kashiabookssupport@gmail.com\n\n"
             "_Common fixes:_\n"
             "• If the bot is stuck, type *cancel*\n"
             "• If a transaction was wrong, type *undo*\n"
@@ -689,7 +689,7 @@ class SettingsHandler:
             logger.warning(f"save_bug_report failed: {e}")
         return [text_response(
             "✅ Thanks — we got your message and the team will look into it.\n\n"
-            "_For anything urgent, email support@kashia.app._\n\n"
+            "_For anything urgent, email kashiabookssupport@gmail.com._\n\n"
             "Type */menu* to continue."
         )]
 

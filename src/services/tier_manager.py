@@ -460,7 +460,7 @@ class TierManager:
                 return [{"type": "text", "content": (
                     f"💳 *Upgrade to {plan_name} — {price_display}*\n\n"
                     f"Payment link generation failed. Please try again later.\n\n"
-                    f"Or contact support: support@kashia.app"
+                    f"Or contact support: kashiabookssupport@gmail.com"
                 )}]
 
         except Exception as e:
@@ -468,7 +468,7 @@ class TierManager:
             return [{"type": "text", "content": (
                 f"💳 *Upgrade to {plan_name} — {price_display}*\n\n"
                 f"Something went wrong. Please try again later.\n\n"
-                f"Or contact support: support@kashia.app"
+                f"Or contact support: kashiabookssupport@gmail.com"
             )}]
 
     def upgrade_user(self, phone_number, new_tier, period="monthly"):

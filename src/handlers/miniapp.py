@@ -2723,7 +2723,7 @@ _PAGE_HTML = """<!doctype html>
   <div id="feedbackOverlay" class="overlay hidden">
     <div class="sheet">
       <h2>💬 Feedback / Contact us</h2>
-      <div class="sub2">Found a bug, or have an idea? Tell us — it goes straight to the team. For anything urgent, email support@kashia.app.</div>
+      <div class="sub2">Found a bug, or have an idea? Tell us — it goes straight to the team. For anything urgent, email kashiabookssupport@gmail.com.</div>
       <div class="field" style="margin-top:12px">
         <label>Your message</label>
         <textarea id="fb-message" rows="4" placeholder="What happened, or what would help you?" style="width:100%;padding:10px;resize:vertical"></textarea>
