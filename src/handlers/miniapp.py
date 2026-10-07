@@ -2310,7 +2310,7 @@ _PAGE_HTML = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Kashia</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
@@ -2381,6 +2381,12 @@ _PAGE_HTML = """<!doctype html>
   .field label { display:block; color: var(--hint); font-size: 12px; margin-bottom: 5px; }
   .field input { width: 100%; padding: 11px 12px; border-radius: 10px;
     border: 1px solid var(--line); background: var(--card); color: var(--text); font-size: 16px; }
+  /* iOS auto-zooms into any focused input/textarea/select whose font-size is
+     under 16px (then often fails to zoom back out — the "mini-app zooms in" bug).
+     Force every form control to >=16px so iOS has no reason to zoom. Covers the
+     textareas (feedback / reply / broadcast) + the 15px search/date inputs that
+     weren't caught by the .field input rule above. */
+  input, textarea, select { font-size: 16px; }
   .steppers { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
   .step { flex: 1; min-width: 52px; text-align:center; padding: 9px 0; border-radius: 10px;
     background: var(--card); border: 1px solid var(--line); color: var(--text); font-weight:600; cursor:pointer; }
