@@ -270,6 +270,13 @@ def lambda_handler(event, context):
             return _multi_doc_send(event, user_id)
         if method == "POST" and path.endswith("/app/api/feedback"):
             return _feedback_write(event, user_id)
+        # ── Admin (Phase 2): gated inside each handler by is_admin ──
+        if method == "GET" and path.endswith("/app/api/admin/feedback"):
+            return _admin_feedback(event, user_id)
+        if method == "POST" and path.endswith("/app/api/admin/reply"):
+            return _admin_reply(event, user_id)
+        if method == "POST" and path.endswith("/app/api/admin/broadcast"):
+            return _admin_broadcast(event, user_id)
         # ── Writes (Stage 2: recipe/BOM add/remove material) ──
         if method == "POST" and path.endswith("/app/api/recipe"):
             return _recipe_write(event, user_id)
@@ -467,11 +474,19 @@ def _summary(event, user_id: str):
     except Exception:
         known_sites = []
 
+    # Admin flag (Phase 2): reveal the admin inbox tab only for configured admins.
+    try:
+        from features.admin import is_admin as _is_admin
+        _admin = _is_admin(user_id)
+    except Exception:
+        _admin = False
+
     return _json(200, {
         "business": business,
         "industry": industry,
         "site_label": site_label,
         "sites": known_sites,
+        "is_admin": _admin,
         "period": period,
         "period_label": label,
         "pnl": {
@@ -1929,6 +1944,63 @@ def _feedback_write(event, user_id: str):
                        "message": "Thanks — we got your message. The team will look into it."})
 
 
+def _admin_feedback(event, user_id: str):
+    """Admin inbox (Phase 2): list recent SUPPORT feedback across all users.
+    Admin-only (403 otherwise)."""
+    from services.database import Database
+    from features.admin import is_admin, recent_support
+    if not is_admin(user_id):
+        return _json(403, {"error": "forbidden"})
+    items = recent_support(Database(), limit=60)
+    return _json(200, {"ok": True, "items": items})
+
+
+def _admin_reply(event, user_id: str):
+    """Admin → one user reply (Phase 2). Body: {target, message, feedback_id?}.
+    Admin-only."""
+    from services.database import Database
+    from features.admin import is_admin, reply_to_user
+    if not is_admin(user_id):
+        return _json(403, {"error": "forbidden"})
+    data = _parse_body(event)
+    target = str(data.get("target") or "").strip()
+    msg = str(data.get("message") or "").strip()
+    if not target or not msg:
+        return _json(400, {"error": "target and message are required"})
+    res = reply_to_user(target, msg)
+    if not res.get("ok"):
+        return _json(502, {"error": res.get("error") or "could not deliver"})
+    # Mark the originating feedback row replied, if one was referenced.
+    fid = str(data.get("feedback_id") or "").strip()
+    if fid:
+        try:
+            Database().mark_feedback_replied(target, fid, msg)
+        except Exception:
+            pass
+    return _json(200, {"ok": True, "message": "Reply sent."})
+
+
+def _admin_broadcast(event, user_id: str):
+    """Admin → all users broadcast (Phase 2). Body: {message, confirm:true}.
+    Admin-only. Requires confirm:true so a mis-tap can't blast everyone."""
+    from services.database import Database
+    from features.admin import is_admin, broadcast
+    if not is_admin(user_id):
+        return _json(403, {"error": "forbidden"})
+    data = _parse_body(event)
+    msg = str(data.get("message") or "").strip()
+    if not msg:
+        return _json(400, {"error": "type a message first"})
+    if not bool(data.get("confirm")):
+        # Two-step: the client previews, then re-POSTs with confirm:true.
+        return _json(200, {"ok": True, "needs_confirm": True,
+                           "preview": msg[:500]})
+    res = broadcast(Database(), msg)
+    return _json(200, {"ok": True, "sent": res.get("sent", 0),
+                       "failed": res.get("failed", 0), "total": res.get("total", 0),
+                       "message": f"Sent to {res.get('sent', 0)} of {res.get('total', 0)} users."})
+
+
 def _debt_payment_write(event, user_id: str):
     """Record a debt payment from the app — a COLLECTION (a customer repays me)
     or a REPAYMENT (I pay a supplier). Mirrors the chat debt board EXACTLY:
@@ -2343,6 +2415,7 @@ _PAGE_HTML = """<!doctype html>
     <div class="tab" id="tab-cat" onclick="showTab('cat')">📦 Inventory</div>
     <div class="tab" id="tab-crm" onclick="showTab('crm')">👥 Customers</div>
     <div class="tab" id="tab-rec" onclick="showTab('rec')">📋 Records</div>
+    <div class="tab hidden" id="tab-admin" onclick="showTab('admin')">🛡️ Admin</div>
   </div>
   <button class="btn save" id="recordBtn" style="width:100%;margin-bottom:12px" onclick="openRecord()">➕ Record a transaction</button>
 
@@ -2782,6 +2855,38 @@ _PAGE_HTML = """<!doctype html>
     <div id="rec-msg" class="muted"></div>
   </div>
 
+  <!-- Admin view (Phase 2): revealed only when APP.is_admin. Support inbox +
+       broadcast composer. Server re-checks is_admin on every endpoint. -->
+  <div id="view-admin" class="hidden">
+    <div class="card">
+      <div class="k">📣 Broadcast to all users</div>
+      <div class="sub2" style="margin:4px 0 8px">Send one message to every onboarded user. You'll preview it first.</div>
+      <textarea id="ad-bc-msg" rows="3" placeholder="e.g. New feature: you can now reprint receipts!" style="width:100%;padding:10px;resize:vertical"></textarea>
+      <div class="sheeterr" id="ad-bc-err"></div>
+      <button class="btn save" id="ad-bc-send" style="width:100%;margin-top:8px" onclick="adBroadcast()">Preview &amp; send</button>
+    </div>
+    <div class="k" style="margin:16px 2px 6px">💬 Support inbox</div>
+    <div id="ad-inbox"><div class="muted">Loading…</div></div>
+    <div id="ad-msg" class="muted"></div>
+  </div>
+
+  <!-- Admin reply sheet (tap a feedback item → reply to that user). -->
+  <div id="adReplyOverlay" class="overlay hidden">
+    <div class="sheet">
+      <h2>💬 Reply</h2>
+      <div class="sub2" id="ad-reply-sub">Your reply goes straight to the user's chat.</div>
+      <div class="field" style="margin-top:12px">
+        <label>Message</label>
+        <textarea id="ad-reply-msg" rows="4" placeholder="Type your reply…" style="width:100%;padding:10px;resize:vertical"></textarea>
+      </div>
+      <div class="sheeterr" id="ad-reply-err"></div>
+      <div class="actions">
+        <button class="btn cancel" onclick="closeAdReply()">Cancel</button>
+        <button class="btn save" id="ad-reply-send" onclick="adReplySend()">Send reply</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Recently-deleted overlay: shows soft-deleted transactions from the last
        30 days; owner taps Restore to un-delete each one. -->
   <div id="recentlyDeletedOverlay" class="overlay hidden">
@@ -3170,7 +3275,7 @@ window.onerror = function (msg, src, line, col, err) {
   // show). NO cost/accounting math lives in JS — the engine owns that.
   // Default "trading" keeps the control industry byte-for-byte unchanged even
   // before summary loads. Manufacturing + Hybrid share the mfg model (recipes).
-  var APP = { industry: "trading", siteLabel: "Location", knownSites: [] };
+  var APP = { industry: "trading", siteLabel: "Location", knownSites: [], is_admin: false };
   function isTrading()  { return APP.industry === "trading"; }
   function isMfg()      { return APP.industry === "manufacturing"; }
   function isServices() { return APP.industry === "services"; }
@@ -3397,10 +3502,14 @@ window.onerror = function (msg, src, line, col, err) {
     document.getElementById("tab-cat").classList.toggle("active", which === "cat");
     document.getElementById("tab-crm").classList.toggle("active", which === "crm");
     document.getElementById("tab-rec").classList.toggle("active", which === "rec");
+    var tabAdmin = document.getElementById("tab-admin");
+    if (tabAdmin) tabAdmin.classList.toggle("active", which === "admin");
     document.getElementById("view-dash").classList.toggle("hidden", which !== "dash");
     document.getElementById("view-cat").classList.toggle("hidden", which !== "cat");
     document.getElementById("view-crm").classList.toggle("hidden", which !== "crm");
     document.getElementById("view-rec").classList.toggle("hidden", which !== "rec");
+    var vAdmin = document.getElementById("view-admin");
+    if (vAdmin) vAdmin.classList.toggle("hidden", which !== "admin");
     // "Record a transaction" belongs on the Dashboard only — it's noise on the
     // Catalog / Customers / Records views.
     var rb = document.getElementById("recordBtn");
@@ -3413,6 +3522,8 @@ window.onerror = function (msg, src, line, col, err) {
       if (!crmLoaded) { loadCrm(); } else { renderCrm(); }
     } else if (which === "rec") {
       recRenderChips(); loadRecords();
+    } else if (which === "admin") {
+      loadAdminInbox();
     }
   };
 
@@ -3486,6 +3597,10 @@ window.onerror = function (msg, src, line, col, err) {
           APP.industry = d.industry;
         }
         if (d.site_label) APP.siteLabel = d.site_label;   // Stage 2 layer name
+        // Phase 2: reveal the Admin tab only for configured admins.
+        APP.is_admin = !!d.is_admin;
+        var _ta = document.getElementById("tab-admin");
+        if (_ta) _ta.classList.toggle("hidden", !APP.is_admin);
         // Bug 6: seed the known-sites list so the record form's location field
         // can autocomplete from day one (merge, keep any seen this session).
         if (d.sites && d.sites.length) {
@@ -4468,6 +4583,100 @@ window.onerror = function (msg, src, line, col, err) {
         b.disabled = false; b.textContent = "Send";
         err.textContent = (e && e.message) || "Could not send — try again.";
       });
+  };
+
+  // ── Admin (Phase 2): support inbox + broadcast ──────────────────────────
+  var adReplyCtx = null;   // {target, feedback_id}
+  function loadAdminInbox() {
+    var box = document.getElementById("ad-inbox");
+    if (!box) return;
+    box.innerHTML = '<div class="muted">Loading\u2026</div>';
+    api("api/admin/feedback")
+      .then(function (d) { renderAdminInbox((d && d.items) || []); })
+      .catch(function (e) {
+        box.innerHTML = '<div class="err">' + escapeHtml((e && e.message) || "Could not load") + '</div>';
+      });
+  }
+  function renderAdminInbox(items) {
+    var box = document.getElementById("ad-inbox");
+    if (!items.length) { box.innerHTML = '<div class="muted">No feedback yet.</div>'; return; }
+    box.innerHTML = "";
+    items.forEach(function (it) {
+      var row = document.createElement("div");
+      row.className = "item tappable";
+      var tag = it.replied ? '<span class="badge">replied</span>'
+                           : '<span class="badge var">new</span>';
+      var meta = [it.source || "", (it.timestamp || "").slice(0, 16).replace("T", " ")];
+      row.innerHTML = '<div style="flex:1"><div class="name">' + escapeHtml(it.who || "User") +
+        " " + tag + '</div><div class="meta">' + escapeHtml(it.message || "") + '</div>' +
+        '<div class="meta">' + escapeHtml(meta.filter(Boolean).join(" \u00b7 ")) + '</div></div>';
+      row.onclick = (function (item) {
+        return function () { openAdReply(item); };
+      })(it);
+      box.appendChild(row);
+    });
+  }
+  function openAdReply(item) {
+    adReplyCtx = { target: item.phone_number, feedback_id: item.feedback_id };
+    document.getElementById("ad-reply-sub").textContent =
+      "Reply to " + (item.who || "this user") + " \u2014 goes straight to their chat.";
+    document.getElementById("ad-reply-msg").value = "";
+    document.getElementById("ad-reply-err").textContent = "";
+    var b = document.getElementById("ad-reply-send");
+    b.disabled = false; b.textContent = "Send reply";
+    document.getElementById("adReplyOverlay").classList.remove("hidden");
+  }
+  window.closeAdReply = function () {
+    document.getElementById("adReplyOverlay").classList.add("hidden");
+    adReplyCtx = null;
+  };
+  window.adReplySend = function () {
+    if (!adReplyCtx) return;
+    var err = document.getElementById("ad-reply-err");
+    err.textContent = "";
+    var msg = (document.getElementById("ad-reply-msg").value || "").trim();
+    if (!msg) { err.textContent = "Type a reply first."; return; }
+    var b = document.getElementById("ad-reply-send");
+    b.disabled = true; b.textContent = "Sending\u2026";
+    apiPost("api/admin/reply", { target: adReplyCtx.target, message: msg,
+                                 feedback_id: adReplyCtx.feedback_id })
+      .then(function (r) {
+        closeAdReply();
+        if (tg && tg.showAlert) tg.showAlert((r && r.message) || "Reply sent.");
+        loadAdminInbox();
+      })
+      .catch(function (e) {
+        b.disabled = false; b.textContent = "Send reply";
+        err.textContent = (e && e.message) || "Could not send.";
+      });
+  };
+  // Broadcast: preview (needs_confirm) → confirm send.
+  window.adBroadcast = function () {
+    var err = document.getElementById("ad-bc-err");
+    err.textContent = "";
+    var msg = (document.getElementById("ad-bc-msg").value || "").trim();
+    if (!msg) { err.textContent = "Type a message first."; return; }
+    var b = document.getElementById("ad-bc-send");
+    function send(confirm) {
+      b.disabled = true; b.textContent = confirm ? "Sending\u2026" : "Checking\u2026";
+      apiPost("api/admin/broadcast", { message: msg, confirm: !!confirm })
+        .then(function (r) {
+          if (r && r.needs_confirm) {
+            b.disabled = false; b.textContent = "Preview & send";
+            var ok = window.confirm("Send this to ALL users?\\n\\n" + (r.preview || msg));
+            if (ok) send(true);
+            return;
+          }
+          b.disabled = false; b.textContent = "Preview & send";
+          document.getElementById("ad-bc-msg").value = "";
+          if (tg && tg.showAlert) tg.showAlert((r && r.message) || "Broadcast sent.");
+        })
+        .catch(function (e) {
+          b.disabled = false; b.textContent = "Preview & send";
+          err.textContent = (e && e.message) || "Could not send.";
+        });
+    }
+    send(false);
   };
 
   // ── Payment-links list (Phase 5b): see created links + status, cancel pending ──

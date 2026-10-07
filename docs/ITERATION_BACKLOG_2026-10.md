@@ -153,6 +153,21 @@ Owner's #1 complaint, confirmed again this round:
   prefills "Amount received" = price × qty (recomputes on qty change), only while
   the field is empty / still the suggestion — a typed figure is never overwritten.
 
+## DONE — admin comms: broadcast + reply (2026-10)
+Owner (+ co-admin) can now talk TO users. features/admin.py: is_admin (multi-admin
+via SSM /kashia/admin-chat-ids), broadcast (all onboarded, mixed platform, ~20/sec),
+reply_to_user, recent_support.
+- Phase 1 chat: /broadcast <msg> → preview → /broadcast confirm; /reply <id> <msg>.
+  Admin-gated in telegram_webhook; non-admins fall through.
+- Phase 2 mini-app: hidden 🛡️ Admin tab (shown when is_admin from /api/summary) →
+  support inbox (tap to reply) + broadcast composer (preview→confirm). Endpoints
+  /app/api/admin/{feedback,reply,broadcast} re-check is_admin (403 otherwise).
+- db: iter_user_ids, scan_recent_feedback, mark_feedback_replied. MiniApp IAM
+  gained MLFeedbackTable CRUD (feedback save + inbox were AccessDenied).
+ACTION FOR OWNER: set SSM /kashia/admin-chat-ids (comma-sep tg ids: you + co-admin).
+Deploy required (routes + IAM). Esprima caught a raw-newline in a served-JS string
+(fixed) — the guard earned its keep.
+
 ## DONE — feedback/support loop (2026-10)
 - features/feedback.submit_feedback persists + forwards each message to an admin
   Telegram chat in real time (SSM /kashia/admin-chat-id; falls back to the

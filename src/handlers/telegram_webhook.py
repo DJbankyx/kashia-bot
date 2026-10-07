@@ -136,6 +136,12 @@ def _handle_message(message: dict):
         # as "interactive"); others become plain text the engine word-matches.
         msg_type = "text"
         if text.startswith("/"):
+            # ADMIN commands (/broadcast, /reply) are intercepted BEFORE the
+            # normal flow so they keep their full argument string and never touch
+            # the engine. Gated to configured admins; a non-admin typing them just
+            # falls through as an unknown command. See _handle_admin_command.
+            if _handle_admin_command(user_id, text):
+                return
             # A slash command is an explicit "start this now" intent. Abandon any
             # half-finished flow first so e.g. /sale never lands mid-expense (or
             # any stale state). Onboarding is left alone — /start & /reset have
@@ -922,6 +928,98 @@ def _send_text(user_id: str, text: str):
         _get_telegram_client().send_text(user_id.replace(TG_USER_PREFIX, ""), text)
     except Exception as e:
         logger.error(f"Send text error in Telegram image handler: {e}")
+
+
+def _handle_admin_command(user_id: str, text: str) -> bool:
+    """Phase 1 admin chat commands. Returns True if the command was handled here
+    (so the webhook should NOT pass it to the normal engine). Admin-gated: a
+    non-admin's /broadcast or /reply returns False and falls through as unknown.
+
+      /broadcast <message>   → preview + ask to confirm
+      /broadcast confirm      → send the stashed message to ALL users
+      /reply <user_id> <msg>  → send one message to one user
+    """
+    try:
+        from features.admin import is_admin, broadcast, reply_to_user
+    except Exception as e:
+        logger.error(f"admin import failed: {e}")
+        return False
+
+    stripped = (text or "").strip()
+    lower = stripped.lower()
+    is_bcast = lower.startswith("/broadcast")
+    is_reply = lower.startswith("/reply")
+    if not (is_bcast or is_reply):
+        return False
+    # Only admins may use these. A non-admin falls through (unknown command).
+    if not is_admin(user_id):
+        return False
+
+    from main import get_bot
+    bot = get_bot()
+
+    # ── /reply <user_id> <message> ──
+    if is_reply:
+        rest = stripped[len("/reply"):].strip()
+        parts = rest.split(None, 1)
+        if len(parts) < 2:
+            _send_text(user_id,
+                       "Usage: `/reply <user_id> <message>`\n"
+                       "The user_id is shown on each feedback message.")
+            return True
+        target, msg = parts[0], parts[1]
+        res = reply_to_user(target, msg)
+        if res.get("ok"):
+            _send_text(user_id, f"✅ Sent to `{target}`.")
+        else:
+            _send_text(user_id, f"⚠️ {res.get('error') or 'could not send'}.")
+        return True
+
+    # ── /broadcast [message | confirm] ──
+    rest = stripped[len("/broadcast"):].strip()
+    try:
+        from core import states
+        STATE = getattr(states, "IDLE", "IDLE")
+    except Exception:
+        STATE = "IDLE"
+
+    if rest.lower() == "confirm":
+        # Send the previously-previewed message to everyone.
+        ctx = (bot.session.get_context(user_id) or {})
+        pending = (ctx.get("pending_broadcast") or "").strip()
+        if not pending:
+            _send_text(user_id, "Nothing to confirm. Start with `/broadcast your message`.")
+            return True
+        try:
+            bot.session.reset(user_id)   # clear the stash (idempotent)
+        except Exception:
+            pass
+        _send_text(user_id, "📣 Sending… I'll report back when it's done.")
+        res = broadcast(bot.db, pending)
+        _send_text(user_id,
+                   f"✅ Broadcast done.\nSent: {res.get('sent', 0)}  ·  "
+                   f"Failed: {res.get('failed', 0)}  ·  Total: {res.get('total', 0)}")
+        return True
+
+    if not rest:
+        _send_text(user_id,
+                   "Usage: `/broadcast <message>` → I'll preview it, then you send "
+                   "`/broadcast confirm` to deliver it to ALL users.")
+        return True
+
+    # Preview + stash, require explicit confirm (so nothing goes out by accident).
+    try:
+        bot.session.save(user_id, STATE, {"pending_broadcast": rest})
+    except Exception as e:
+        logger.warning(f"could not stash broadcast: {e}")
+        _send_text(user_id, "⚠️ Could not prepare the broadcast. Try again.")
+        return True
+    preview = rest if len(rest) <= 500 else (rest[:500] + "…")
+    _send_text(user_id,
+               "📢 *Broadcast preview* — this will go to ALL users:\n\n"
+               f"{preview}\n\n"
+               "Send `/broadcast confirm` to deliver, or anything else to cancel.")
+    return True
 
 
 def _get_telegram_client():

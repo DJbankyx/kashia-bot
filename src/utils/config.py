@@ -57,3 +57,25 @@ def get_admin_chat_id():
         return get_parameter('/kashia/admin-chat-id')
     except Exception:
         return None
+
+
+def get_admin_chat_ids():
+    """Set of admin ids (SSM: /kashia/admin-chat-ids, comma-separated) for admin
+    tools (broadcast / reply / mini-app admin inbox). Folds in the single
+    /kashia/admin-chat-id so the existing feedback setup keeps working. Ids are
+    stored bare (no "tg:" prefix) by convention but callers normalise both forms.
+    Returns a set (possibly empty). Never raises."""
+    ids = set()
+    try:
+        raw = get_parameter('/kashia/admin-chat-ids')
+    except Exception:
+        raw = None
+    if raw:
+        ids.update(x.strip() for x in str(raw).split(',') if x.strip())
+    try:
+        single = get_admin_chat_id()
+        if single:
+            ids.add(str(single).strip())
+    except Exception:
+        pass
+    return ids

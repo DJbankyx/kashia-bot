@@ -1303,6 +1303,7 @@ class Database:
         }
         self.feedback.put_item(Item=self._sanitize_for_dynamo(item))
         logger.info(f"Feedback saved: '{description}' | {wrong_category} → {correct_category}")
+        return feedback_id
 
     def get_recent_feedback(self, phone_number, limit=5):
         """Get recent corrections for a user (used in AI prompts)"""
@@ -1316,6 +1317,73 @@ class Database:
         except Exception as e:
             logger.error(f"Error getting feedback: {e}")
             return []
+
+    # ==========================================
+    # ADMIN OPERATIONS (broadcast / support inbox)
+    # ==========================================
+
+    def iter_user_ids(self, onboarded_only=True):
+        """Yield every user id (phone_number PK) for a broadcast. Paginated scan
+        of the users table — the established pattern (monthly_reset / scheduled
+        reports). onboarded_only skips half-set-up accounts. Never raises; on
+        error it simply stops yielding."""
+        try:
+            kwargs = {"ProjectionExpression": "phone_number, onboarding_complete"}
+            resp = self.users.scan(**kwargs)
+            while True:
+                for it in resp.get("Items", []):
+                    if onboarded_only and not it.get("onboarding_complete"):
+                        continue
+                    pid = it.get("phone_number")
+                    if pid:
+                        yield pid
+                lek = resp.get("LastEvaluatedKey")
+                if not lek:
+                    break
+                resp = self.users.scan(ExclusiveStartKey=lek, **kwargs)
+        except Exception as e:
+            logger.error(f"iter_user_ids failed: {e}")
+
+    def scan_recent_feedback(self, limit=50):
+        """List SUPPORT feedback across ALL users (admin inbox), newest first.
+        The feedback table has no global index, so this is a paginated scan
+        filtered to rows written by the support loop (description starts with
+        '[SUPPORT:'). Admin-only + low volume, so a scan is acceptable. Never
+        raises; returns a list (possibly empty)."""
+        items = []
+        try:
+            resp = self.feedback.scan()
+            while True:
+                for it in resp.get("Items", []):
+                    desc = str(it.get("description") or "")
+                    if desc.startswith("[SUPPORT:"):
+                        items.append(it)
+                lek = resp.get("LastEvaluatedKey")
+                if not lek:
+                    break
+                resp = self.feedback.scan(ExclusiveStartKey=lek)
+        except Exception as e:
+            logger.error(f"scan_recent_feedback failed: {e}")
+        items.sort(key=lambda x: str(x.get("timestamp", "")), reverse=True)
+        return items[:int(limit)]
+
+    def mark_feedback_replied(self, phone_number, feedback_id, reply_text):
+        """Stamp a feedback row as replied (so the admin inbox shows it's handled).
+        Full key is {phone_number, feedback_id}. Never raises."""
+        try:
+            self.feedback.update_item(
+                Key={"phone_number": phone_number, "feedback_id": feedback_id},
+                UpdateExpression="SET replied = :t, replied_at = :now, reply_text = :r",
+                ExpressionAttributeValues={
+                    ":t": True,
+                    ":now": datetime.now().isoformat(),
+                    ":r": str(reply_text or "")[:1000],
+                },
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"mark_feedback_replied failed: {e}")
+            return False
 
     # ==========================================
     # MERCHANT MEMORY OPERATIONS
