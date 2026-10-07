@@ -268,6 +268,8 @@ def lambda_handler(event, context):
             return _quote_send(event, user_id)
         if method == "POST" and path.endswith("/app/api/multi-doc"):
             return _multi_doc_send(event, user_id)
+        if method == "POST" and path.endswith("/app/api/feedback"):
+            return _feedback_write(event, user_id)
         # ── Writes (Stage 2: recipe/BOM add/remove material) ──
         if method == "POST" and path.endswith("/app/api/recipe"):
             return _recipe_write(event, user_id)
@@ -1906,6 +1908,27 @@ def _multi_doc_send(event, user_id: str):
         return _json(500, {"error": f"could not generate the {kind}"})
 
 
+def _feedback_write(event, user_id: str):
+    """Feedback / contact-us from the mini-app. Body: {message}. Persists the
+    message and forwards it to the admin Telegram chat in real time (shared
+    loop with the chat 'Report a Problem'). Always returns JSON."""
+    from services.database import Database
+    data = _parse_body(event)
+    msg = str(data.get("message") or "").strip()
+    if not msg:
+        return _json(400, {"error": "type a message first"})
+    if len(msg) > 2000:
+        msg = msg[:2000]
+    try:
+        from features.feedback import submit_feedback
+        submit_feedback(Database(), user_id, msg, source="miniapp")
+    except Exception as e:
+        logger.warning(f"miniapp feedback failed: {e}")
+        # Still acknowledge — the message is best-effort; don't fail the user.
+    return _json(200, {"ok": True,
+                       "message": "Thanks — we got your message. The team will look into it."})
+
+
 def _debt_payment_write(event, user_id: str):
     """Record a debt payment from the app — a COLLECTION (a customer repays me)
     or a REPAYMENT (I pay a supplier). Mirrors the chat debt board EXACTLY:
@@ -2619,6 +2642,23 @@ _PAGE_HTML = """<!doctype html>
       <div id="pll-list" style="margin-top:12px"><div class="muted">Loading…</div></div>
       <div class="actions" style="margin-top:16px">
         <button class="btn cancel" onclick="closePaymentLinks()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Feedback / Contact us: typed message → logged + forwarded to the team. -->
+  <div id="feedbackOverlay" class="overlay hidden">
+    <div class="sheet">
+      <h2>💬 Feedback / Contact us</h2>
+      <div class="sub2">Found a bug, or have an idea? Tell us — it goes straight to the team. For anything urgent, email support@kashia.app.</div>
+      <div class="field" style="margin-top:12px">
+        <label>Your message</label>
+        <textarea id="fb-message" rows="4" placeholder="What happened, or what would help you?" style="width:100%;padding:10px;resize:vertical"></textarea>
+      </div>
+      <div class="sheeterr" id="fb-err"></div>
+      <div class="actions" style="margin-top:12px">
+        <button class="btn cancel" onclick="closeFeedback()">Close</button>
+        <button class="btn save" id="fb-send" onclick="fbSend()">Send</button>
       </div>
     </div>
   </div>
@@ -4398,6 +4438,36 @@ window.onerror = function (msg, src, line, col, err) {
     var b = document.getElementById("pl-copy");
     b.textContent = ok ? "Copied!" : "Select + copy";
     setTimeout(function () { b.textContent = "Copy"; }, 2000);
+  };
+
+  // ── Feedback / Contact us: typed message → logged + forwarded to the team ──
+  window.openFeedback = function () {
+    document.getElementById("fb-message").value = "";
+    document.getElementById("fb-err").textContent = "";
+    var b = document.getElementById("fb-send");
+    b.disabled = false; b.textContent = "Send";
+    document.getElementById("feedbackOverlay").classList.remove("hidden");
+  };
+  window.closeFeedback = function () {
+    document.getElementById("feedbackOverlay").classList.add("hidden");
+  };
+  window.fbSend = function () {
+    var err = document.getElementById("fb-err");
+    err.textContent = "";
+    var msg = (document.getElementById("fb-message").value || "").trim();
+    if (!msg) { err.textContent = "Type a message first."; return; }
+    var b = document.getElementById("fb-send");
+    b.disabled = true; b.textContent = "Sending\u2026";
+    apiPost("api/feedback", { message: msg })
+      .then(function (r) {
+        closeFeedback();
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+        if (tg && tg.showAlert) tg.showAlert((r && r.message) || "Thanks — we got your message.");
+      })
+      .catch(function (e) {
+        b.disabled = false; b.textContent = "Send";
+        err.textContent = (e && e.message) || "Could not send — try again.";
+      });
   };
 
   // ── Payment-links list (Phase 5b): see created links + status, cancel pending ──
@@ -7095,6 +7165,9 @@ window.onerror = function (msg, src, line, col, err) {
   window.addEventListener("focus", _refreshOnFocus);
 })();
 </script>
-  <div style="text-align:center;margin:14px 0 8px;font-size:11px;color:var(--hint);opacity:.6">Kashia \u00b7 build __BUILD_STAMP__</div>
+  <div style="text-align:center;margin:16px 0 6px">
+    <button class="linkbtn" onclick="openFeedback()" style="font-size:13px;color:var(--hint)">💬 Feedback / Contact us</button>
+  </div>
+  <div style="text-align:center;margin:4px 0 8px;font-size:11px;color:var(--hint);opacity:.6">Kashia \u00b7 build __BUILD_STAMP__</div>
 </body>
 </html>"""

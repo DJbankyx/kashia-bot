@@ -59,7 +59,7 @@ class SettingsHandler:
             return self._show_notifications(phone_number)
 
         if button_id == "set_bug":
-            return self._show_bug_report()
+            return self._show_bug_report(phone_number)
 
         if button_id == "set_logo":
             return self._show_logo(phone_number)
@@ -661,7 +661,7 @@ class SettingsHandler:
     # REPORT A BUG
     # ─────────────────────────────────────────────────────────
 
-    def _show_bug_report(self) -> list:
+    def _show_bug_report(self, phone_number: str) -> list:
         """Give user a way to report bugs / send feedback — and CAPTURE it."""
         self.session.save(phone_number, SETTINGS_STATE, {"set_step": "bug_report"})
         return [text_response(
@@ -682,13 +682,13 @@ class SettingsHandler:
         if not msg:
             return [text_response("No message received. Type */menu* to go back.")]
         try:
-            # Reuse the feedback table as a lightweight support log.
-            self.db.save_feedback(phone_number, f"[SUPPORT] {msg}", "", "")
+            # Persist + forward to the admin chat in real time (shared loop).
+            from features.feedback import submit_feedback
+            submit_feedback(self.db, phone_number, msg, source="chat")
         except Exception as e:
             logger.warning(f"save_bug_report failed: {e}")
         return [text_response(
-            "✅ Thanks — your message has been logged and the team will look "
-            "into it.\n\n"
+            "✅ Thanks — we got your message and the team will look into it.\n\n"
             "_For anything urgent, email support@kashia.app._\n\n"
             "Type */menu* to continue."
         )]

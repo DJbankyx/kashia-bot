@@ -47,3 +47,13 @@ def get_app_secret():
 def get_paystack_secret():
     """Paystack secret key for payment processing"""
     return get_parameter('/kashia/paystack-secret-key')
+
+
+def get_admin_chat_id():
+    """Admin Telegram chat id for feedback/support forwarding
+    (SSM: /kashia/admin-chat-id). OPTIONAL — returns None when unset so callers
+    fall back to forwarding to the submitting owner's own chat. Never raises."""
+    try:
+        return get_parameter('/kashia/admin-chat-id')
+    except Exception:
+        return None

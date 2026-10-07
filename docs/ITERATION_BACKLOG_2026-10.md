@@ -153,6 +153,42 @@ Owner's #1 complaint, confirmed again this round:
   prefills "Amount received" = price × qty (recomputes on qty change), only while
   the field is empty / still the suggestion — a typed figure is never overwritten.
 
+## DONE — feedback/support loop (2026-10)
+- features/feedback.submit_feedback persists + forwards each message to an admin
+  Telegram chat in real time (SSM /kashia/admin-chat-id; falls back to the
+  submitter until set). Chat "Report a Problem" routes through it (and the latent
+  _show_bug_report(phone_number) bug is fixed). Mini-app: POST /app/api/feedback +
+  a "💬 Feedback / Contact us" footer button + sheet. New route → deploy required.
+  ACTION FOR OWNER: set SSM /kashia/admin-chat-id to your Telegram chat id.
+  FUTURE: owner→user reply path (not built; audit tool is read-only + TelegramClient
+  .send_text is the primitive to build on).
+
+## LAUNCH-IMPORTANT — not yet built (owner flagged 2026-10)
+- **Signature on documents.** pdf_generator currently draws only a static
+  signature LINE (no image). Let the owner upload a signature image — INDEPENDENT
+  of the business logo (separate upload; a business wants both: logo top,
+  signature bottom) — and render it on invoices/receipts/quotes/statements.
+  Matters more now docs are prominent (post-sale prompt, bill-any-sale).
+  → important before launch.
+- **Richer, UNIVERSAL quote.** The current quote is thin (effectively one item +
+  amount). A real quote carries MANY line items (desc / qty / rate / line total),
+  a subtotal, often tax, a validity date, and notes/terms — and the exact fields
+  vary by business, so it must be flexible/universal (owner has a sample quote
+  image to design against). Build a multi-line quote builder in the mini-app
+  (reuse the multi-line invoice renderer) rather than the single-amount sheet.
+  → design against the owner's sample image.
+- **Feedback / support loop (upgrade the existing "Report a Problem").** Today
+  feedback is only logged via save_feedback + shows support@kashia.app — passive,
+  one-way, easy to miss. Upgrade to a real intermediary:
+  1. Forward every submission to an ADMIN Telegram chat in real time (reuse the
+     Telegram client → fixed admin chat id) so the owner is pinged immediately.
+  2. Acknowledge back to the user ("Thanks — we got it") and allow a one-way
+     owner→user reply (two-way threading is a later nicety).
+  3. Make it discoverable: a "💬 Feedback / Contact us" entry in Settings + the
+     mini-app, not buried.
+  → important before launch (early users WILL hit issues; this is how we catch
+  them before silent churn).
+
 ## OPEN / WATCH
 - **Friend's testing threw transient errors after an industry switch.** Partly
   addressed by the staleness fix above; if specific errors recur post-deploy,
