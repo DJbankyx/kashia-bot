@@ -71,14 +71,20 @@ From live use of the deployed build. Sorted; status tracked.
   owners know what it does.
 
 ## \u26a0 DEPLOY OUTSTANDING — a large stack is pushed but undeployed
-New API routes across recent batches: /app/api/delete-payment-request, /open-items,
-/settle-open, /site-label, /quote, /multi-doc. Plus engine/JS: pay-link double-fix,
-sub-accounts (open items + site) engine + UI, rename Catalog→Inventory, nav trim,
-link marker, richer inventory dashboard v1 + v2 (tappable filtered list), services
-quote, Stage-3 multi-item docs, Ade name-picker fix. Owner:
-`cd ~/projects/kashia-bot && ./deploy.sh dev` then reopen the app from the ☰ menu.
-(The Ade name-picker fix + this inventory redesign only take effect after deploy +
-reopening the app from the ☰ menu button.)
+CURRENT HEAD = a5accb2. New API routes to declare since last deploy:
+/app/api/{delete-payment-request, open-items, settle-open, site-label, quote,
+multi-doc, feedback, admin/feedback, admin/reply, admin/broadcast}. MiniApp IAM
+also gained MLFeedbackTable CRUD. Plus engine/JS from the whole 2026-10 batch:
+pay-link double-fix + smart pay-link (Build B) + overcharge cap, sub-accounts
+(open items + site) engine + UI, Catalog→Inventory + dashboard redesign v2, link
+marker, services + manufacturing quote, Stage-3 multi-item docs + bill-any-sale,
+post-sale invoice/receipt prompt, selling-price suggestion (unit-aware), all-time
+period, recipe taught-units, mall autocomplete, industry-switch refresh, feedback/
+support loop, admin broadcast+reply (both phases), support email → Gmail, bot
+ignores group chats. Owner: `cd ~/projects/kashia-bot && ./deploy.sh dev` then
+reopen the app from the ☰ menu. Set SSM /kashia/admin-chat-id (group) +
+/kashia/admin-chat-ids (admin personal ids) so feedback + admin tools work.
+COMMAND_MENU unchanged → no set_telegram_commands.
 
 ## DONE — testing round (commit cc2357f)
 - **"All time" period** added to the Dashboard AND Records period chips.
