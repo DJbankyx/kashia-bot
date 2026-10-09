@@ -384,13 +384,48 @@ class SettingsHandler:
     # CHANGE INDUSTRY
     # ─────────────────────────────────────────────────────────
 
+    def _has_business_data(self, user: dict) -> bool:
+        """True if the account has started real use — any recorded transaction OR
+        any catalog product. Changing industry after this point can leave catalog
+        data (recipes/materials) stranded behind the wrong UI, so we gate the
+        switch (option 1). Empty accounts can switch freely."""
+        try:
+            if int(user.get("transaction_count", 0) or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+        catalog = user.get("product_catalog", {}) or {}
+        products = catalog.get("products", {}) or {}
+        return bool(products)
+
     def _start_change_industry(self, phone_number: str) -> list:
-        """Show industry options."""
+        """Show industry options — but only for a FRESH account.
+
+        Once the owner has recorded transactions or built a catalog, switching
+        industry is BLOCKED: it only re-skins the UI (it does NOT re-home your
+        data), so a Mfg→Trading switch would hide your recipes/materials and make
+        costs look unexplained. Safer to lock it and let support switch + clean up
+        deliberately. (Option 3 = a real migration — see backlog.)"""
         user = self.db.get_user(phone_number) or {}
         current = user.get(
             "industry_class",
             user.get("business_type", "trading")
         )
+
+        if self._has_business_data(user):
+            cur_label = next(
+                (v[1] for v in INDUSTRY_OPTIONS.values() if v[0] == current),
+                current.title()
+            )
+            return [text_response(
+                f"🔒 *Your business type is set to {cur_label}.*\n\n"
+                "You've already recorded transactions / set up your catalog, so "
+                "changing it now could hide your existing recipes, materials or "
+                "costs and make your numbers look wrong.\n\n"
+                "Your data is safe — nothing is deleted. If you genuinely need to "
+                "switch business type, email *kashiabookssupport@gmail.com* and "
+                "we'll move you across safely."
+            )]
 
         rows = []
         for num, (key, label, desc) in INDUSTRY_OPTIONS.items():
@@ -426,6 +461,19 @@ class SettingsHandler:
         if not new_industry or new_industry not in [v[0] for v in INDUSTRY_OPTIONS.values()]:
             return [text_response(
                 "❌ Didn't recognise that. Please pick from the list."
+            )]
+
+        # Backstop (option 1): block the actual switch too if the account already
+        # has data — e.g. a stale Change-Industry button tapped after the user
+        # started recording. _start_change_industry already blocks the entry, but
+        # never trust the entry gate alone for a data-affecting write.
+        user0 = self.db.get_user(phone_number) or {}
+        if self._has_business_data(user0):
+            self.session.reset(phone_number)
+            return [text_response(
+                "🔒 Your business type is locked now that you have data. "
+                "Email *kashiabookssupport@gmail.com* to switch safely — your "
+                "data stays intact."
             )]
 
         # Save to both fields for backward compatibility

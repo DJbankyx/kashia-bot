@@ -220,15 +220,28 @@ Deploy required (routes + IAM). Esprima caught a raw-newline in a served-JS stri
   downgrade a sellable item to raw_material; get_recipe defensively excludes
   items with a recipe or a selling price.
 
-## OPEN DECISION — "re-allocate data on industry switch"
-Owner expects changing industry (e.g. Manufacturing → Trading) to reclassify /
-re-home existing catalog data (recipes, materials). Today it is LABELS-ONLY — it
-only changes wording + which features show, never touches products. Re-allocation
-is a SEPARATE feature needing a plan: what should a Mfg→Trading switch DO to
-recipes, raw materials, finished goods? (Probably: keep data, just stop surfacing
-recipe/material UI; and a Trading→Mfg switch can't invent recipes.) Decide the
-intended behaviour before building. For now the fix makes the label-change honest
-+ visible.
+## DONE — change-industry gated to fresh accounts (option 1)
+Changing industry is now BLOCKED once an account has data (transaction_count>0 OR
+any catalog products). Empty/fresh accounts switch freely; a data account sees a
+"locked — email kashiabookssupport@gmail.com to switch safely, your data is
+intact" message. Gated in BOTH _start_change_industry (entry) and
+_finish_change_industry (backstop, never trust the entry alone for a data write).
+settings._has_business_data(user) is the shared check. This removes the "time
+bomb" (switching after setup would hide recipes/materials + make costs look
+unexplained) without any data migration.
+BACKEND SWITCH (support path): a human with repo/AWS access flips industry_class +
+business_type via scripts/audit_user.py (--edit set-field) or DynamoDB directly.
+NOT self-service. FUTURE nicety: an admin-only "change this user's industry"
+action in the mini-app Admin tab so the owner can do it from their phone.
+
+## TODO — OPTION 3: real industry migration (post-launch feature)
+The proper "change industry actually re-homes data" feature. Needs a plan + its
+own build + testing. Questions to answer: on Mfg→Trading, what happens to recipes
+(freeze the last computed cost as a manual cost? archive?), to raw materials
+(archive/hide? keep for a later switch back?), to finished_product tags? On
+Trading→Mfg you can't invent recipes — products start recipe-less. Must be
+reversible-safe (switch back shows the data again) and never silently drop a
+record. Until built, option 1 keeps the switch safe by locking it after setup.
 
 ## OPEN / WATCH
 - **Friend's testing threw transient errors after an industry switch.** Partly
