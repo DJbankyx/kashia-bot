@@ -210,6 +210,26 @@ Deploy required (routes + IAM). Esprima caught a raw-newline in a served-JS stri
   → important before launch (early users WILL hit issues; this is how we catch
   them before silent churn).
 
+## DONE — industry + catalog classification bugs (2026-10)
+- Removed orphan 'Food & Drinks' industry (no handler → fell back to trading).
+- Change Industry re-renders the screen after a switch (was stale → looked like
+  nothing happened); states it's labels-only.
+- Add Product no longer offers Raw material/Supply types (dedicated Add-raw-
+  material button owns those).
+- Recipe picker no longer leaks finished products: ensure_item_types won't
+  downgrade a sellable item to raw_material; get_recipe defensively excludes
+  items with a recipe or a selling price.
+
+## OPEN DECISION — "re-allocate data on industry switch"
+Owner expects changing industry (e.g. Manufacturing → Trading) to reclassify /
+re-home existing catalog data (recipes, materials). Today it is LABELS-ONLY — it
+only changes wording + which features show, never touches products. Re-allocation
+is a SEPARATE feature needing a plan: what should a Mfg→Trading switch DO to
+recipes, raw materials, finished goods? (Probably: keep data, just stop surfacing
+recipe/material UI; and a Trading→Mfg switch can't invent recipes.) Decide the
+intended behaviour before building. For now the fix makes the label-change honest
++ visible.
+
 ## OPEN / WATCH
 - **Friend's testing threw transient errors after an industry switch.** Partly
   addressed by the staleness fix above; if specific errors recur post-deploy,

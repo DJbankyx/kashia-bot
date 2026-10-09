@@ -1692,6 +1692,12 @@ class ProductionHandler:
             if k == product_key or not isinstance(p, dict):
                 continue
             it = p.get("item_type", "")
+            # Defensive: a SELLABLE item (has its own recipe, or a selling price)
+            # is a finished good, never a material — exclude it even if its stored
+            # item_type was mis-tagged raw_material (belt-and-braces so a bad tag
+            # can't leak a product into the material picker).
+            if p.get("recipe") or float(p.get("sale_price", 0) or 0) > 0:
+                continue
             if it in ("raw_material", "supply", "overhead"):
                 # Expose the material's full unit set (base + taught/custom units)
                 # so the recipe editor can offer them in a dropdown — the owner

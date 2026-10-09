@@ -5426,6 +5426,13 @@ class CatalogHandler:
             has_recipe = bool(data.get("recipe", []))
             is_raw_material = key in raw_material_keys
             current_type = data.get("item_type", "")
+            # A SELLABLE item (already typed product/finished_product, or priced
+            # to sell) must NEVER be auto-downgraded to raw_material even if it
+            # happens to be referenced in some recipe. This was mis-tagging
+            # finished goods (e.g. "35Cl Water") as materials, so they leaked
+            # into the recipe material picker.
+            is_sellable = (current_type in ("product", "finished_product")
+                           or float(data.get("sale_price", 0) or 0) > 0)
 
             # Don't override manually-set types (overhead, consumable, service)
             if current_type in ("overhead", "consumable", "service"):
@@ -5434,7 +5441,10 @@ class CatalogHandler:
             if has_recipe and current_type != "finished_product":
                 data["item_type"] = "finished_product"
                 changed = True
-            elif is_raw_material and not has_recipe and current_type != "raw_material":
+            elif is_raw_material and not has_recipe and not is_sellable \
+                    and current_type != "raw_material":
+                # Only auto-tag as raw_material when it's NOT already a sellable
+                # product (and has no recipe of its own).
                 data["item_type"] = "raw_material"
                 changed = True
             elif not current_type:

@@ -6058,10 +6058,15 @@ window.onerror = function (msg, src, line, col, err) {
     var unit = document.getElementById("add-unit"); if (unit) unit.value = "";
     var stk = document.getElementById("add-stock"); if (stk) stk.value = "";
     var extra = document.getElementById("add-raw-extra"); if (extra) extra.classList.add("hidden");
-    // Item-type chooser only for mfg/hybrid; default to finished product.
-    var typeWrap = document.getElementById("add-type-wrap");
-    if (usesRecipes()) { typeWrap.classList.remove("hidden"); addSetType("finished_product"); }
-    else { typeWrap.classList.add("hidden"); addItemType = ""; document.getElementById("add-raw-extra").classList.add("hidden"); }
+    // Add Product ALWAYS creates a sellable product now — the item-type chooser
+    // (Raw material / Supply) is gone from here because there's a dedicated
+    // "🧱 Add raw material" button that owns materials/supplies/overheads. This
+    // removes the confusion of Add Product also listing material types. For
+    // mfg/hybrid the product is a finished_product (cost from its recipe); for
+    // trading it's a plain product (manual cost).
+    document.getElementById("add-type-wrap").classList.add("hidden");
+    addItemType = usesRecipes() ? "finished_product" : "";
+    document.getElementById("add-raw-extra").classList.add("hidden");
     document.getElementById("addOverlay").classList.remove("hidden");
   };
   // Direct "Add raw material" entry — a raw material not yet tied to any product.

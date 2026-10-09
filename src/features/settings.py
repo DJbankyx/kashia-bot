@@ -12,13 +12,15 @@ logger = logging.getLogger(__name__)
 
 SETTINGS_STATE = "SETTINGS_FLOW"
 
-# All industry options
+# The four SUPPORTED industries. Each MUST have a matching handler registered in
+# main.py (router.industries). "food" was previously listed here with NO handler,
+# so picking it silently fell back to trading — removed until a real FoodIndustry
+# exists. Keep this list and main.py in lockstep.
 INDUSTRY_OPTIONS = {
     "1": ("trading",       "🛍️ Trading & Retail",     "Buy and sell goods"),
     "2": ("services",      "🔧 Services",              "Consulting, repairs, skills"),
-    "3": ("food",          "🍽️ Food & Drinks",         "Restaurant, catering, sales"),
-    "4": ("manufacturing", "🏭 Manufacturing",         "Production, fabrication"),
-    "5": ("hybrid",        "🔀 Hybrid",                "Products + services combined"),
+    "3": ("manufacturing", "🏭 Manufacturing",         "Production, fabrication"),
+    "4": ("hybrid",        "🔀 Hybrid",                "Products + services combined"),
 }
 
 
@@ -437,11 +439,28 @@ class SettingsHandler:
             (v[1] for v in INDUSTRY_OPTIONS.values() if v[0] == new_industry),
             new_industry.title()
         )
-        return [text_response(
-            f"✅ *Industry updated to {label}!*\n\n"
-            f"_Your menu and reports will now reflect your business type._\n\n"
-            f"_Tap the menu button to see your updated home screen._"
-        )]
+        # Re-render the Change-Industry screen so the ✅ + "Current:" line reflect
+        # the NEW industry immediately (the previous screen was a stale message
+        # that still showed the old value — the owner thought nothing changed).
+        rows = []
+        for num, (key, lbl, desc) in INDUSTRY_OPTIONS.items():
+            title = f"{'✅ ' if key == new_industry else ''}{lbl}"
+            rows.append({"id": f"set_ind_{key}", "title": title[:24], "description": desc})
+        return [
+            text_response(
+                f"✅ *Industry updated to {label}!*\n\n"
+                f"_Your menu and reports now reflect this business type. "
+                f"Tap ☰ Menu to see your updated home screen._\n\n"
+                f"_Note: this changes the wording and which features show — it "
+                f"does NOT reclassify your existing products._"
+            ),
+            list_response(
+                header="🔄 Change Industry",
+                body=f"Current: *{label}*\n\nYou can switch again any time:",
+                button_text="Select",
+                sections=[{"title": "Industry Types", "rows": rows}],
+            ),
+        ]
 
     # ─────────────────────────────────────────────────────────
     # NOTIFICATIONS
