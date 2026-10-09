@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Kashia WhatsApp Bot - Build 20261007154002
+Description: Kashia WhatsApp Bot - Build 20261007182616
 
 Globals:
   Function:
@@ -30,7 +30,7 @@ Resources:
     Type: AWS::Serverless::Api
     Properties:
       StageName: !Ref Stage
-      Description: Kashia WhatsApp Bot - Build 20261007154002
+      Description: Kashia WhatsApp Bot - Build 20261007182616
 
   # ============================================
   # LAMBDA FUNCTIONS
@@ -43,7 +43,7 @@ Resources:
       CodeUri: src/
       Layers:
         - !Ref DependenciesLayer
-      Description: Kashia WhatsApp Bot - Build 20261007154002
+      Description: Kashia WhatsApp Bot - Build 20261007182616
       Events:
         WebhookPost:
           Type: Api
@@ -83,7 +83,7 @@ Resources:
       CodeUri: src/
       Layers:
         - !Ref DependenciesLayer
-      Description: Kashia WhatsApp Bot - Build 20261007154002
+      Description: Kashia WhatsApp Bot - Build 20261007182616
       Timeout: 300
       # Async (EventBridge Schedule) invocation failures land here after Lambda's
       # built-in retries, so a failed daily/weekly report is not silently lost.
@@ -95,13 +95,13 @@ Resources:
           Type: Schedule
           Properties:
             Schedule: cron(0 19 * * ? *)
-            Description: Kashia WhatsApp Bot - Build 20261007154002
+            Description: Kashia WhatsApp Bot - Build 20261007182616
             Enabled: true
         WeeklyReport:
           Type: Schedule
           Properties:
             Schedule: cron(0 17 ? * SUN *)
-            Description: Kashia WhatsApp Bot - Build 20261007154002
+            Description: Kashia WhatsApp Bot - Build 20261007182616
             Enabled: true
       Policies:
         - DynamoDBCrudPolicy:
@@ -335,7 +335,7 @@ Resources:
           STAGE: !Ref Stage
           # Stamped by deploy.sh each deploy so the app footer can show which
           # build is actually live (settles "did my change deploy?" questions).
-          BUILD_STAMP: "20261007154002"
+          BUILD_STAMP: "20261007182616"
       Events:
         AppPageGet:
           Type: Api
@@ -588,6 +588,11 @@ Resources:
     Properties:
       TableName: !Sub kashia-users-${Stage}
       BillingMode: PAY_PER_REQUEST
+      # Point-in-time recovery: continuous backups, restore to any second in the
+      # last 35 days. The safety net against accidental corruption / bad deploy /
+      # fat-fingered delete. On-demand priced per GB of table size (tiny here).
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
       AttributeDefinitions:
         - AttributeName: phone_number
           AttributeType: S
@@ -602,6 +607,9 @@ Resources:
     Properties:
       TableName: !Sub kashia-transactions-${Stage}
       BillingMode: PAY_PER_REQUEST
+      # The financial ledger — the most important table to be able to restore.
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
       AttributeDefinitions:
         - AttributeName: phone_number
           AttributeType: S
@@ -631,6 +639,10 @@ Resources:
     Properties:
       TableName: !Sub kashia-conversation-state-${Stage}
       BillingMode: PAY_PER_REQUEST
+      # Transient 24h session state — PITR is low value here but enabled for
+      # consistency (the table is tiny, so the cost is negligible).
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
       AttributeDefinitions:
         - AttributeName: phone_number
           AttributeType: S
@@ -648,6 +660,9 @@ Resources:
     Properties:
       TableName: !Sub kashia-ml-feedback-${Stage}
       BillingMode: PAY_PER_REQUEST
+      # Holds AI corrections AND the support/feedback log — worth restoring.
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
       AttributeDefinitions:
         - AttributeName: phone_number
           AttributeType: S
@@ -666,6 +681,8 @@ Resources:
     Properties:
       TableName: !Sub kashia-merchant-memory-${Stage}
       BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
       AttributeDefinitions:
         - AttributeName: phone_number
           AttributeType: S
@@ -684,6 +701,9 @@ Resources:
     Properties:
       TableName: !Sub kashia-contacts-${Stage}
       BillingMode: PAY_PER_REQUEST
+      # CRM: customers/suppliers + their debt balances — restorable.
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
       AttributeDefinitions:
         - AttributeName: phone_number
           AttributeType: S
@@ -817,7 +837,7 @@ Resources:
     Type: AWS::Serverless::LayerVersion
     Properties:
       LayerName: !Sub kashia-dependencies-${Stage}
-      Description: Kashia WhatsApp Bot - Build 20261007154002
+      Description: Kashia WhatsApp Bot - Build 20261007182616
       ContentUri: layers/dependencies/layer.zip
       CompatibleRuntimes:
         - python3.12
@@ -827,7 +847,7 @@ Resources:
 # ============================================
 Outputs:
   WebhookUrl:
-    Description: Kashia WhatsApp Bot - Build 20261007154002
+    Description: Kashia WhatsApp Bot - Build 20261007182616
     Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/webhook"
   MiniAppUrl:
     Description: Telegram Mini App page URL (set as the bot Menu Button web_app url)
@@ -839,9 +859,9 @@ Outputs:
     Description: Point Telegram setWebhook at this URL
     Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/telegram"
   WebhookFunctionArn:
-    Description: Kashia WhatsApp Bot - Build 20261007154002
+    Description: Kashia WhatsApp Bot - Build 20261007182616
     Value: !GetAtt WebhookFunction.Arn
   ScheduledReportsFunctionArn:
-    Description: Kashia WhatsApp Bot - Build 20261007154002
+    Description: Kashia WhatsApp Bot - Build 20261007182616
     Value: !GetAtt ScheduledReportsFunction.Arn
 # force deploy Sat Jul  4 18:39:10 WAT 2026
