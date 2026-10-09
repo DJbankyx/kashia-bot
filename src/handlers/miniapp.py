@@ -13,7 +13,8 @@ Routes (all GET, read-only in v1):
   /app/api/inventory                                    → normalized product grid
 
 Auth: the web page sends the initData string in the `X-Telegram-Init-Data`
-header (or ?_auth= query fallback). Missing/invalid/expired → 401.
+header ONLY (no query-string fallback — a signed credential in a URL can leak
+into logs/Referer). Missing/invalid/expired/future → 401.
 
 M3 will add GET /app (the HTML shell) to this same function.
 """
@@ -164,15 +165,18 @@ def _json(status_code, body):
 
 
 def _get_init_data(event) -> str:
-    """Pull the Telegram initData from the request (header preferred)."""
+    """Pull the Telegram initData from the X-Telegram-Init-Data HEADER.
+
+    Header-ONLY by design: initData is a signed credential, and putting it in a
+    query string (?_auth=) risks it leaking into access logs / Referer headers.
+    The frontend already sends it only via the header, so there's no query-string
+    fallback (removed as a security hardening — see security review)."""
     headers = event.get("headers") or {}
     # Header names can arrive in any case via API Gateway.
     for k, v in headers.items():
         if k.lower() == "x-telegram-init-data":
             return v or ""
-    # Fallback: query string (?_auth=...), useful for the initial page fetch.
-    qs = event.get("queryStringParameters") or {}
-    return qs.get("_auth", "") or ""
+    return ""
 
 
 def _authenticate(event):

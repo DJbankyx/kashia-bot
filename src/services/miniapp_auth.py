@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 # 24h is the common, practical window for a day-to-day Mini App.
 DEFAULT_MAX_AGE_SECONDS = 86400
 
+# Tolerance for a future-dated auth_date (device/server clock skew). Anything
+# beyond this in the future is rejected so a far-future timestamp can't bypass
+# the expiry window.
+_MAX_FUTURE_SKEW_SECONDS = 300
+
 
 def validate_init_data(init_data: str, bot_token: str,
                        max_age_seconds: int = DEFAULT_MAX_AGE_SECONDS,
@@ -89,19 +94,27 @@ def validate_init_data(init_data: str, bot_token: str,
         if not hmac.compare_digest(computed, provided_hash):
             return {"ok": False, "error": "bad signature"}
 
-        # Signature is valid. Now enforce freshness.
+        # Signature is valid. Now enforce freshness (the replay guard).
         auth_date = 0
         try:
             auth_date = int(data.get("auth_date", "0"))
         except (ValueError, TypeError):
             return {"ok": False, "error": "bad auth_date"}
 
-        if max_age_seconds and auth_date > 0:
+        if max_age_seconds:
+            # A missing/zero auth_date used to SKIP the age check entirely, which
+            # defeated the replay guard — require a real, positive timestamp.
+            if auth_date <= 0:
+                return {"ok": False, "error": "missing auth_date"}
             current = int(now if now is not None else time.time())
             age = current - auth_date
-            # Reject stale sessions. A small negative age (clock skew) is fine.
+            # Reject stale sessions (too old).
             if age > max_age_seconds:
                 return {"ok": False, "error": "expired"}
+            # Reject an implausibly FUTURE timestamp (a far-future auth_date would
+            # otherwise never "expire"). Allow a small window for clock skew.
+            if age < -_MAX_FUTURE_SKEW_SECONDS:
+                return {"ok": False, "error": "future auth_date"}
 
         # Extract the user id → namespaced tg:<chat_id>.
         user = {}

@@ -610,6 +610,14 @@ Resources:
       # The financial ledger — the most important table to be able to restore.
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
+      # TTL on the `ttl` attribute. ONLY the idempotency/dedup MARKER rows
+      # (transaction_id="idem#..."/"paystack#..."/"refund#...") carry a `ttl`
+      # (now + 24h) via claim_web_submit — real transaction rows have no `ttl`,
+      # so TTL expires only the markers and never a genuine ledger row. Without
+      # this the markers accumulate forever (security-review finding).
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
       AttributeDefinitions:
         - AttributeName: phone_number
           AttributeType: S
