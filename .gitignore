@@ -8,6 +8,10 @@ __pycache__/
 node_modules/
 .pytest_cache/
 *.zip
-
-
 aws/
+
+# Local debug/output dumps and agent temp helper scripts (never committed).
+o[0-9]*.txt
+out.txt
+_*.sh
+_*.py
