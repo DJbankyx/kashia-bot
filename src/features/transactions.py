@@ -1394,7 +1394,17 @@ class TransactionHandler:
                 extra["sale_kind"] = "service" if tx_data.get("is_service_job") else "product"
             extra["source"] = "miniapp"  # provenance
 
-            payment_method = "credit" if has_credit else (tx_data.get("payment_method") or "cash")
+            # A PART payment (credit + a real deposit) must be stored as
+            # payment_method="deposit" with the deposit persisted on the row, so
+            # accounting._cash_paid/_cash_received count the cash ACTUALLY paid
+            # (the deposit) — not 0 (as "credit" does) and not the full amount.
+            # A full-credit sale/purchase stays "credit" (0 cash); otherwise the
+            # supplied method (cash/transfer/...) stands.
+            is_part = has_credit and deposit_amount > 0
+            payment_method = (
+                "deposit" if is_part
+                else ("credit" if has_credit else (tx_data.get("payment_method") or "cash"))
+            )
 
             result = self.db.save_transaction(
                 phone_number,
@@ -1412,6 +1422,17 @@ class TransactionHandler:
                 extra_details=extra if extra else None,
             )
             tx_id = result.get("transaction_id", "") if isinstance(result, dict) else ""
+
+            # Persist the deposit on a part payment so accounting reads the cash
+            # actually paid (payment_method=="deposit" → deposit_amount). Stored
+            # top-level + kobo-precise. _reverse_tx_effects / restore read it too.
+            if is_part and tx_id:
+                try:
+                    self.db.update_transaction(
+                        phone_number, tx_id,
+                        {"deposit_amount": money_round(deposit_amount)})
+                except Exception as e:
+                    logger.warning(f"web save: deposit persist failed: {e}")
 
             # ── Stock (sale deducts, purchase adds + weighted-avg cost) ──
             if tx_type in ("sale", "purchase"):
