@@ -2016,8 +2016,27 @@ class ProductionHandler:
             unit = mat_product.get("primary_unit") or "units"
 
         # Cost: explicit value, else the material's catalog landing_cost.
+        # IMPORTANT: a DERIVED landing_cost is per the material's BASE unit
+        # (e.g. ₦10 per litre), but the recipe line is stored against `unit`
+        # (e.g. "cl"). It must be converted base→recipe-unit before storing, or
+        # the roll-up `qty × cost_per_unit` double-counts (50 cl × ₦10/L = ₦500
+        # instead of 50 cl → 0.5 L × ₦10 = ₦5). This mirrors the exact formula
+        # already in `_recalculate_all_costs`. A cost the user typed explicitly
+        # in the web box is already per-recipe-unit (matches the field label) and
+        # is NOT converted. Overhead `rate` is per-usage-unit — never converted.
+        from utils import units as _units
+        from utils.money import money_round
         if cost_per_unit in (None, ""):
             cost_value = float(mat_product.get("landing_cost", 0) or 0)
+            if mat_type == "material" and cost_value > 0:
+                base_unit, unit_defs = _units.product_units(mat_product)
+                recipe_unit = str(unit or "").lower().strip()
+                if base_unit and recipe_unit and \
+                        recipe_unit.rstrip("s") != base_unit.rstrip("s"):
+                    factor = _units.factor_to_base(recipe_unit, base_unit, unit_defs)
+                    if factor and factor > 0:
+                        cost_value = cost_value * factor
+                cost_value = money_round(cost_value)
         else:
             try:
                 cost_value = float(cost_per_unit)
