@@ -767,30 +767,60 @@ class Database:
             logger.error(f"Error getting transactions: {e}")
             return []
 
-    def get_transactions_by_period(self, phone_number, start_date, end_date):
+    def get_transactions_by_period(self, phone_number, start_date, end_date,
+                                   consistent=False):
         """
         Get transactions within a date range.
         Args:
             start_date: "2026-06-01"
             end_date: "2026-06-30"
+            consistent: when True, read the BASE table with a strongly-consistent
+                read (ConsistentRead=True) and filter by date in Python, instead
+                of the eventually-consistent `date-index` GSI. A GSI can NEVER do
+                a strongly-consistent read, so a row written/soft-deleted by the
+                SAME Lambda is not reliably reflected in an immediate GSI follow-up
+                read (read-after-write lag → stale cash that self-corrects on the
+                next read). The consistent path fixes that for the all-time cash
+                recompute. Leave it False for every other (report) caller — those
+                tolerate GSI lag and benefit from the GSI's date-range key.
         """
         try:
-            response = self.transactions.query(
-                IndexName='date-index',
-                KeyConditionExpression=Key('phone_number').eq(phone_number) &
-                                       Key('date').between(start_date, end_date)
-            )
-            items = response.get('Items', [])
-
-            # Paginate to get ALL results (DynamoDB returns max 1MB per query)
-            while 'LastEvaluatedKey' in response:
+            if consistent:
+                # Strongly-consistent read off the BASE table (partition key only),
+                # then filter the date window in Python.
+                response = self.transactions.query(
+                    KeyConditionExpression=Key('phone_number').eq(phone_number),
+                    ConsistentRead=True,
+                )
+                items = response.get('Items', [])
+                while 'LastEvaluatedKey' in response:
+                    response = self.transactions.query(
+                        KeyConditionExpression=Key('phone_number').eq(phone_number),
+                        ConsistentRead=True,
+                        ExclusiveStartKey=response['LastEvaluatedKey'],
+                    )
+                    items.extend(response.get('Items', []))
+                items = [
+                    it for it in items
+                    if start_date <= str(it.get('date', '')) <= end_date
+                ]
+            else:
                 response = self.transactions.query(
                     IndexName='date-index',
                     KeyConditionExpression=Key('phone_number').eq(phone_number) &
-                                           Key('date').between(start_date, end_date),
-                    ExclusiveStartKey=response['LastEvaluatedKey']
+                                           Key('date').between(start_date, end_date)
                 )
-                items.extend(response.get('Items', []))
+                items = response.get('Items', [])
+
+                # Paginate to get ALL results (DynamoDB returns max 1MB per query)
+                while 'LastEvaluatedKey' in response:
+                    response = self.transactions.query(
+                        IndexName='date-index',
+                        KeyConditionExpression=Key('phone_number').eq(phone_number) &
+                                               Key('date').between(start_date, end_date),
+                        ExclusiveStartKey=response['LastEvaluatedKey']
+                    )
+                    items.extend(response.get('Items', []))
 
             # Drop soft-deleted (archived) rows so reports never count them.
             items = _live(items)

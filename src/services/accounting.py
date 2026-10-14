@@ -565,8 +565,17 @@ class Accounting:
         try:
             from datetime import date
             today = date.today().isoformat()
-            txns = self.db.get_transactions_by_period(
-                phone_number, "1970-01-01", today) or []
+            # Strongly-consistent read for the all-time cash balance so a row
+            # just written/soft-deleted by the SAME Lambda is reflected on the
+            # immediate recompute (the GSI is eventually consistent → stale cash
+            # that self-corrects on the next action). Fall back to the old 3-arg
+            # call if an older db signature lacks the `consistent` kwarg.
+            try:
+                txns = self.db.get_transactions_by_period(
+                    phone_number, "1970-01-01", today, consistent=True) or []
+            except TypeError:
+                txns = self.db.get_transactions_by_period(
+                    phone_number, "1970-01-01", today) or []
             cash_in = 0
             cash_out = 0
             for t in txns:
