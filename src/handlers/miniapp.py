@@ -6508,8 +6508,12 @@ window.onerror = function (msg, src, line, col, err) {
     document.getElementById("pick-search").style.display = "";
     document.getElementById("pickOverlay").classList.remove("hidden");
     // Render only AFTER inventory has actually arrived (no fixed-delay race
-    // that left the dropdown empty on the first tap).
-    if (!invData) {
+    // that left the dropdown empty on the first tap). Reload when the cache is
+    // STALE as well as when it's null: a record/void sets invLoaded=false but
+    // leaves the old invData in place, so a just-bought material would show 0
+    // (or a just-deleted tx still show stock) until the Catalog tab reloads.
+    // Honouring invLoaded forces a fresh load before the picker renders.
+    if (!invData || !invLoaded) {
       document.getElementById("pick-list").innerHTML =
         '<div class="muted">Loading products\u2026</div>';
       loadInventory().then(renderPickerProducts);
