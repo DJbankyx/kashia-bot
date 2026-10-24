@@ -113,7 +113,7 @@ def _cash_received(tx):
       * debt repayment (in) -> full amount (collection)
     """
     if _is_debt_settlement(tx):
-        return int(float(tx.get("amount", 0)))
+        return _to_int(tx.get("amount", 0))
     pm = _payment_method(tx)
     if pm == "credit":
         return 0
@@ -123,22 +123,25 @@ def _cash_received(tx):
     if pm == "prepaid":
         return 0
     if pm == "deposit":
-        return int(float(tx.get("deposit_amount", 0)))
-    return int(float(tx.get("amount", 0)))
+        # Kobo-precise: a ₦10.75 deposit must contribute ₦10.75, not ₦10.
+        # int(float()) truncated the kobo the deposit path now stores.
+        return _to_int(tx.get("deposit_amount", 0))
+    return _to_int(tx.get("amount", 0))
 
 
 def _cash_paid(tx):
     """Cash actually paid on a PURCHASE/EXPENSE tx (mirror of _cash_received)."""
     if _is_debt_settlement(tx):
-        return int(float(tx.get("amount", 0)))
+        return _to_int(tx.get("amount", 0))
     pm = _payment_method(tx)
     if pm == "credit":
         return 0
     if pm == "prepaid":
         return 0   # recognition-only row; cash already left on the pay date
     if pm == "deposit":
-        return int(float(tx.get("deposit_amount", 0)))
-    return int(float(tx.get("amount", 0)))
+        # Kobo-precise (see _cash_received) — don't truncate a fractional deposit.
+        return _to_int(tx.get("deposit_amount", 0))
+    return _to_int(tx.get("amount", 0))
 
 
 def product_avg_cost(product):
@@ -531,7 +534,7 @@ class Accounting:
                 ed = t.get("extra_details") or {}
                 direction = str(ed.get("direction")
                                 or t.get("cash_direction") or "in").lower()
-                amt = int(float(t.get("amount", 0) or 0))
+                amt = _to_int(t.get("amount", 0) or 0)   # kobo-precise
                 if direction == "out":
                     cash_out += amt
                 else:
@@ -568,12 +571,26 @@ class Accounting:
             # Strongly-consistent read for the all-time cash balance so a row
             # just written/soft-deleted by the SAME Lambda is reflected on the
             # immediate recompute (the GSI is eventually consistent → stale cash
-            # that self-corrects on the next action). Fall back to the old 3-arg
-            # call if an older db signature lacks the `consistent` kwarg.
+            # that self-corrects on the next action).
+            #
+            # A FAILED consistent read must NOT be mistaken for an empty ledger
+            # (that would render cash at hand as exactly the opening balance with
+            # no error). The DB layer now RAISES on a genuine consistent-read
+            # failure, so we fall back to the eventually-consistent GSI path
+            # (slightly stale, but real) and flag `stale=True` for the UI. A
+            # TypeError is still caught separately for an older db signature that
+            # lacks the `consistent` kwarg.
+            stale = False
             try:
                 txns = self.db.get_transactions_by_period(
                     phone_number, "1970-01-01", today, consistent=True) or []
             except TypeError:
+                txns = self.db.get_transactions_by_period(
+                    phone_number, "1970-01-01", today) or []
+            except Exception as e:
+                logger.warning(
+                    f"cash_position consistent read failed, falling back to GSI: {e}")
+                stale = True
                 txns = self.db.get_transactions_by_period(
                     phone_number, "1970-01-01", today) or []
             cash_in = 0
@@ -596,22 +613,27 @@ class Accounting:
                     ed = t.get("extra_details") or {}
                     direction = str(ed.get("direction")
                                     or t.get("cash_direction") or "in").lower()
-                    amt = int(float(t.get("amount", 0) or 0))
+                    amt = _to_int(t.get("amount", 0) or 0)   # kobo-precise
                     if direction == "out":
                         cash_out += amt
                     else:
                         cash_in += amt
                 # production moves no cash (internal) — excluded.
-            opening = int(float(opening or 0))
+            opening = _to_int(opening or 0)
             return {
                 "cash_at_hand": opening + cash_in - cash_out,
                 "cash_in": cash_in,
                 "cash_out": cash_out,
                 "opening": opening,
+                "stale": stale,
             }
         except Exception as e:
             logger.warning(f"cash_position failed: {e}")
-            return {"cash_at_hand": 0, "cash_in": 0, "cash_out": 0, "opening": 0}
+            # Signal failure to the UI: `stale`/`error` flag a figure that could
+            # not be computed, so the caller can show "couldn't refresh" rather
+            # than rendering ₦0 (or the opening balance) as the current balance.
+            return {"cash_at_hand": 0, "cash_in": 0, "cash_out": 0,
+                    "opening": 0, "stale": True, "error": True}
 
     def profit_trend(self, phone_number, months=6):
         """Net-profit series over the last `months` calendar months (oldest→
