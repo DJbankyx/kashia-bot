@@ -672,7 +672,7 @@ class Accounting:
 
     # ── Position / Inventory (balance-sheet snapshot) ───────────────────
 
-    def position(self, phone_number, as_of=None):
+    def position(self, phone_number, as_of=None, cash_at_hand=None):
         """A point-in-time position snapshot:
           * inventory_value  — stock on hand valued at weighted-average cost
           * inventory_units  — total units on hand
@@ -717,13 +717,21 @@ class Accounting:
         # Cash at hand completes the balance sheet: assets = cash + inventory +
         # receivables; liabilities = payables. With cash tracked (incl. manual
         # cash_adjustments), net_worth is a TRUE net worth, not just a proxy.
-        try:
-            user = self.db.get_user(phone_number) or {}
-            cash_at_hand = self.cash_position(
-                phone_number, opening=user.get("opening_cash", 0))["cash_at_hand"]
-        except Exception as e:
-            logger.debug(f"position cash read failed: {e}")
-            cash_at_hand = 0
+        #
+        # cash_position is an O(all-transactions), strongly-consistent (≈2× RCU)
+        # full-history scan. A caller that has ALREADY computed it this request
+        # (e.g. /api/summary, which needs cash_at_hand for its own cash tile)
+        # passes it in via `cash_at_hand=` so we don't scan the whole ledger a
+        # SECOND time. When not supplied, recompute as before (back-compat for
+        # every other caller).
+        if cash_at_hand is None:
+            try:
+                user = self.db.get_user(phone_number) or {}
+                cash_at_hand = self.cash_position(
+                    phone_number, opening=user.get("opening_cash", 0))["cash_at_hand"]
+            except Exception as e:
+                logger.debug(f"position cash read failed: {e}")
+                cash_at_hand = 0
 
         return {
             "inventory_value": inv_value,

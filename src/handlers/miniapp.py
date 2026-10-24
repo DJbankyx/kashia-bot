@@ -423,13 +423,16 @@ def _summary(event, user_id: str):
 
     pnl = acct.period_pnl(user_id, start, end, label)
     cf = acct.period_cashflow(user_id, start, end, label)
-    pos = acct.position(user_id)
 
     user = db.get_user(user_id) or {}
     business = user.get("business_name") or "Your business"
     # All-time cash at hand (snapshot, ignores the period filter). Opening cash
-    # is an optional stored figure (0 by default for now).
+    # is an optional stored figure (0 by default for now). cash_position is an
+    # O(all-transactions) strongly-consistent scan, so compute it ONCE here and
+    # thread the result into position() below — position() would otherwise run
+    # the exact same full-history scan a second time for this one request.
     cashpos = acct.cash_position(user_id, opening=user.get("opening_cash", 0))
+    pos = acct.position(user_id, cash_at_hand=cashpos["cash_at_hand"])
 
     # Split payables (what you owe) into real suppliers (goods) vs expense
     # payees (rent, utilities…). Expense_payee is an explicit contact type;
