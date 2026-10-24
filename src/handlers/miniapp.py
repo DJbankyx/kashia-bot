@@ -3694,12 +3694,23 @@ window.onerror = function (msg, src, line, col, err) {
   // Returns the fetch promise so callers (e.g. the produce/sale picker) can
   // render off the .then instead of racing a fixed setTimeout.
   function loadInventory() {
-    invLoaded = true;
+    // Mark the cache FRESH only AFTER invData is actually replaced — never on
+    // entry. Setting invLoaded=true up front told every caller the stale/empty
+    // cache was fresh even when the fetch failed or was still in flight, so the
+    // picker rendered pre-transaction (or empty "add one in Catalog") stock.
+    // On failure leave invLoaded=false and RE-THROW so callers (the picker) can
+    // show a retry state instead of rendering stale data as if fresh.
     return api("api/inventory")
-      .then(function (d) { invData = d.products || []; renderCatalog(); })
+      .then(function (d) {
+        invData = d.products || [];
+        invLoaded = true;
+        renderCatalog();
+      })
       .catch(function (e) {
+        invLoaded = false;
         document.getElementById("catmsg").innerHTML =
           '<span class="err">' + (e.message || "Could not load") + '</span>';
+        throw e;
       });
   }
 
@@ -6516,7 +6527,16 @@ window.onerror = function (msg, src, line, col, err) {
     if (!invData || !invLoaded) {
       document.getElementById("pick-list").innerHTML =
         '<div class="muted">Loading products\u2026</div>';
-      loadInventory().then(renderPickerProducts);
+      loadInventory().then(renderPickerProducts).catch(function () {
+        // loadInventory now re-throws on failure and leaves invLoaded=false, so
+        // the picker shows its OWN failure/retry state (inside the overlay)
+        // instead of rendering stale/empty stock as if it were fresh. Tapping
+        // Retry re-runs openPicker, which re-enters this same load path.
+        document.getElementById("pick-list").innerHTML =
+          '<div class="err">Couldn\u2019t load products. '
+          + '<button type="button" class="linkbtn" onclick="openPicker()">Retry</button>'
+          + '</div>';
+      });
     } else renderPickerProducts();
   };
   window.closePicker = function () {
