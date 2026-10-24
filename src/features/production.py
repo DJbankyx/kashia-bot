@@ -2035,8 +2035,32 @@ class ProductionHandler:
                         recipe_unit.rstrip("s") != base_unit.rstrip("s"):
                     factor = _units.factor_to_base(recipe_unit, base_unit, unit_defs)
                     if factor and factor > 0:
+                        # Keep the per-unit rate at FULL precision — rounding it
+                        # here (money_round) sent a sub-kobo rate to ₦0 before the
+                        # roll-up could multiply it by the quantity (₦1/litre →
+                        # ₦0.001/ml → ₦0 → 1,000 ml costs ₦0). The roll-up
+                        # (recipe_unit_cost) rounds the LINE TOTAL once at the
+                        # storage boundary (_save_recipe), so the rate stays raw.
                         cost_value = cost_value * factor
-                cost_value = money_round(cost_value)
+                    else:
+                        # factor_to_base returned None/0 → the recipe unit can't
+                        # be converted into the material's base unit. Do NOT
+                        # silently store the UNCONVERTED base-unit cost — that is
+                        # the up-to-100× inflation this fix exists to prevent.
+                        # Reject the line and tell the owner which pair failed so
+                        # they can teach the conversion or pick a known unit.
+                        from utils.money import fmt_money
+                        return {
+                            "ok": False,
+                            "error": (
+                                f"couldn't convert {fmt_money(cost_value)}/{base_unit} "
+                                f"into {recipe_unit} — teach that conversion or "
+                                f"choose a unit the material already knows"
+                            ),
+                            "needs_unit": True,
+                            "from_unit": base_unit,
+                            "to_unit": recipe_unit,
+                        }
         else:
             try:
                 cost_value = float(cost_per_unit)
