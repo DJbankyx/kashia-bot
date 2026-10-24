@@ -1406,6 +1406,14 @@ class TransactionHandler:
                 else ("credit" if has_credit else (tx_data.get("payment_method") or "cash"))
             )
 
+            # Persist the deposit on the SAME save_transaction write so a part
+            # payment is correct in ONE atomic operation — not a second,
+            # non-atomic update_transaction whose failure was swallowed (then
+            # accounting read deposit_amount as 0 behind a "deposit" label).
+            # Gate on the FINAL derived payment_method=="deposit" (not is_part),
+            # so the stored method and the stored amount can never diverge.
+            dep_to_store = (money_round(deposit_amount)
+                            if payment_method == "deposit" else None)
             result = self.db.save_transaction(
                 phone_number,
                 amount,
@@ -1420,19 +1428,9 @@ class TransactionHandler:
                 unit_cost=tx_data.get("unit_cost"),
                 payment_method=payment_method,
                 extra_details=extra if extra else None,
+                deposit_amount=dep_to_store,
             )
             tx_id = result.get("transaction_id", "") if isinstance(result, dict) else ""
-
-            # Persist the deposit on a part payment so accounting reads the cash
-            # actually paid (payment_method=="deposit" → deposit_amount). Stored
-            # top-level + kobo-precise. _reverse_tx_effects / restore read it too.
-            if is_part and tx_id:
-                try:
-                    self.db.update_transaction(
-                        phone_number, tx_id,
-                        {"deposit_amount": money_round(deposit_amount)})
-                except Exception as e:
-                    logger.warning(f"web save: deposit persist failed: {e}")
 
             # ── Stock (sale deducts, purchase adds + weighted-avg cost) ──
             if tx_type in ("sale", "purchase"):
@@ -2419,6 +2417,20 @@ class TransactionHandler:
             description = tx_data["description"]
             raw_text = tx_data.get("raw_text", "").lower()
 
+            # Derive the payment method the SAME way the web path does: a credit
+            # row carrying a real deposit is a PART payment, stored as
+            # payment_method="deposit" with the deposit on the row, so
+            # accounting._cash_paid/_cash_received count the cash ACTUALLY paid
+            # (the deposit) instead of 0. Hardcoding "credit" here is the live
+            # NGN0-cash defect on chat + Telegram fast-entry (which routes
+            # _build_tx_data → _save_transaction → here); this makes every
+            # surface agree. A full-credit sale/purchase stays "credit".
+            from utils.money import money_round
+            _has_credit = bool(tx_data.get("has_credit"))
+            _deposit_amount = money_round(tx_data.get("deposit_amount") or 0)
+            _is_part = _has_credit and _deposit_amount > 0
+            _pm = "deposit" if _is_part else "credit"
+
             # Mark service vs product sales so the hybrid dashboard can split
             # revenue reliably (mirrors the non-credit save path).
             credit_extra = {}
@@ -2434,6 +2446,11 @@ class TransactionHandler:
                 credit_extra["catalog_product_name"] = tx_data["catalog_product_name"]
             if tx_data.get("scan_extra"):
                 credit_extra.update(tx_data["scan_extra"])
+            # Part-payment deposit also goes into credit_extra so void/restore
+            # (_reverse_tx_effects, restore_transaction_web) can read it there
+            # too — they already fall back to extra_details.deposit_amount.
+            if _is_part:
+                credit_extra["deposit_amount"] = _deposit_amount
 
             # Save the transaction. Pass quantity/brand/unit_cost too (the normal
             # save path does) — without them a credit/part-payment MULTI-UNIT sale
@@ -2450,8 +2467,9 @@ class TransactionHandler:
                 quantity=tx_data.get("quantity"),
                 brand=tx_data.get("brand"),
                 unit_cost=tx_data.get("unit_cost"),
-                payment_method="credit",
+                payment_method=_pm,
                 extra_details=credit_extra if credit_extra else None,
+                deposit_amount=(_deposit_amount if _is_part else None),
             )
             tx_id = result.get("transaction_id", "") if isinstance(result, dict) else ""
 
