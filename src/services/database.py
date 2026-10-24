@@ -286,7 +286,7 @@ class Database:
                          extra_details=None, tags=None,
                          subtotal=None, discount_amount=None, discount_percent=None,
                          discount_type=None, tax_amount=None, tax_percent=None,
-                         tax_type=None):
+                         tax_type=None, deposit_amount=None):
         """Save a new transaction with rich parsed data"""
         from utils.money import money_round
         from utils.quantity import to_qty, qty_is_whole
@@ -336,6 +336,12 @@ class Database:
             item['payment_method'] = payment_method
         if payment_status:
             item['payment_status'] = payment_status
+        # A part-payment deposit is MONEY (kobo-precise) and MUST be stored
+        # top-level on the SAME put_item — accounting._cash_received/_cash_paid
+        # read tx["deposit_amount"] directly (not from extra_details), so a
+        # second, non-atomic update_transaction was the wrong place for it.
+        if deposit_amount is not None:
+            item['deposit_amount'] = money_round(deposit_amount)
         if extra_details:
             item['extra_details'] = extra_details
         if tags:
@@ -829,6 +835,16 @@ class Database:
             return items
         except Exception as e:
             logger.error(f"Error querying by period: {e}")
+            # A FAILED strongly-consistent read must be DISTINGUISHABLE from an
+            # empty ledger: the all-time cash recompute relies on it, and an
+            # empty [] on failure would render cash at hand as exactly the
+            # opening balance with no error shown. Re-raise on the consistent
+            # path so Accounting.cash_position can fall back to the GSI path
+            # (and surface a "couldn't refresh" state) instead of silently
+            # reporting zero. Report callers (consistent=False) tolerate GSI lag
+            # and keep the lenient [] contract they were written against.
+            if consistent:
+                raise
             return []
 
     # ==========================================
@@ -1124,6 +1140,13 @@ class Database:
     def update_transaction(self, phone_number, transaction_id, updates):
         """Update specific fields of a transaction"""
         try:
+            # MONEY fields (deposit_amount, balance_owed, …) arrive as the int/
+            # float money_round() returns, and the boto3 serializer rejects a
+            # Python float ("Float types are not supported. Use Decimal types
+            # instead"). Run the whole updates dict through the same sanitiser
+            # put_item uses so floats become Decimal and empties are dropped —
+            # this also protects the site/open-item stamps that share this path.
+            updates = self._sanitize_for_dynamo(dict(updates))
             update_expr = "SET " + ", ".join([f"#{k} = :{k}" for k in updates.keys()])
             expr_names = {f"#{k}": k for k in updates.keys()}
             expr_values = {f":{k}": v for k, v in updates.items()}
