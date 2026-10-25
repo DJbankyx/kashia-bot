@@ -92,12 +92,17 @@ def analyze_product(prod, products):
         if str(line.get("type", "material")) == "overhead":
             continue
 
-        mat_key = line.get("material")
+        # Recipe lines store the material by DISPLAY NAME (e.g. "Nylon",
+        # "Machine Hour"); the catalog is keyed by SLUG. Derive the key exactly
+        # as the engine does in ProductionHandler._recalculate_all_costs:
+        #   mat_key = mat_name.lower().replace(" ", "_")
+        mat_name = line.get("material") or ""
+        mat_key = mat_name.lower().replace(" ", "_") if mat_name else None
         mat_product = products.get(mat_key) if mat_key else None
         if not isinstance(mat_product, dict):
             # Can't resolve the material → can't verify; flag, don't touch.
             flagged.append({
-                "material": mat_key, "recipe_unit": line.get("unit"),
+                "material": mat_name, "recipe_unit": line.get("unit"),
                 "base_unit": None, "reason": "material not found in catalog",
             })
             continue
@@ -120,7 +125,7 @@ def analyze_product(prod, products):
         factor = units.factor_to_base(recipe_unit, base_unit, unit_defs)
         if factor is None or factor <= 0:
             flagged.append({
-                "material": mat_key, "recipe_unit": recipe_unit,
+                "material": mat_name, "recipe_unit": recipe_unit,
                 "base_unit": base_unit,
                 "reason": "unconvertible unit (no factor) — not rewritten",
             })
@@ -133,8 +138,10 @@ def analyze_product(prod, products):
         # not already the correctly-converted value. A hand-typed per-recipe-unit
         # cost won't match the base-unit landing_cost, so it is left alone.
         if _close(stored, landing_cost) and not _close(stored, expected):
+            # Store the display name (not the slug) so the write-back key
+            # (line["material"], unit) matches the recipe line exactly.
             affected.append({
-                "material": mat_key, "recipe_unit": recipe_unit,
+                "material": mat_name, "recipe_unit": recipe_unit,
                 "base_unit": base_unit, "stored": stored,
                 "expected": expected, "factor": factor,
             })
