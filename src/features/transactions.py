@@ -1455,8 +1455,12 @@ class TransactionHandler:
             if tx_type in ("sale", "purchase", "expense") and tx_id and not has_credit:
                 site = str(tx_data.get("site") or "").strip()
                 if site:
+                    stamp = {"site": site}
+                    site_type = str(tx_data.get("site_type") or "").strip()
+                    if site_type:
+                        stamp["site_type"] = site_type
                     try:
-                        self.db.update_transaction(phone_number, tx_id, {"site": site})
+                        self.db.update_transaction(phone_number, tx_id, stamp)
                     except Exception as e:
                         logger.warning(f"web save: tag failed: {e}")
 
@@ -1509,6 +1513,9 @@ class TransactionHandler:
                     site = str(tx_data.get("site") or "").strip()
                     if site:
                         stamp["site"] = site
+                        site_type = str(tx_data.get("site_type") or "").strip()
+                        if site_type:
+                            stamp["site_type"] = site_type
                     try:
                         self.db.update_transaction(phone_number, tx_id, stamp)
                     except Exception as e:

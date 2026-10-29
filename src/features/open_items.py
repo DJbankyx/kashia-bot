@@ -270,3 +270,64 @@ def set_site_label(db, phone_number: str, label: str) -> str:
     except Exception as e:
         logger.warning(f"set_site_label failed: {e}")
     return clean or DEFAULT_SITE_LABEL
+
+
+# ── Tag TYPES (editable per-user list) ──────────────────────────────────────
+# A transaction carries ONE tag = {type, value}. The VALUE is stored on the row
+# as `site` (the balance-split key, unchanged). The TYPE is a descriptive word
+# the owner picks from this editable list (Location / Branch / Channel / Staff /
+# Custom to start) and can add to. Stored on the user as `tag_types`.
+DEFAULT_TAG_TYPES = ["Location", "Branch", "Channel", "Staff", "Custom"]
+_MAX_TAG_TYPES = 20
+_MAX_TAG_TYPE_LEN = 24
+
+
+def _clean_type(t: str) -> str:
+    return str(t or "").strip()[:_MAX_TAG_TYPE_LEN]
+
+
+def get_tag_types(db, phone_number: str) -> list:
+    """The owner's editable tag-type list. Falls back to the starter set, and —
+    so an owner who already named their location layer isn't surprised — ensures
+    their custom site_label is present in the list. Never raises."""
+    try:
+        user = db.get_user(phone_number) or {}
+        raw = user.get("tag_types")
+        types = [_clean_type(t) for t in raw if _clean_type(t)] if isinstance(raw, list) else []
+        if not types:
+            types = list(DEFAULT_TAG_TYPES)
+        # Keep the owner's custom layer label discoverable as a type.
+        lbl = str(user.get("site_label") or "").strip()
+        if lbl and lbl not in types:
+            types = [lbl] + types
+        # De-dupe (case-insensitive) preserving order.
+        seen, out = set(), []
+        for t in types:
+            k = t.lower()
+            if k not in seen:
+                seen.add(k)
+                out.append(t)
+        return out[:_MAX_TAG_TYPES]
+    except Exception:
+        return list(DEFAULT_TAG_TYPES)
+
+
+def set_tag_types(db, phone_number: str, types) -> list:
+    """Replace the owner's tag-type list (de-duped, trimmed, capped). Returns the
+    stored list; an empty/invalid input resets to the starter set. Never raises."""
+    if not isinstance(types, list):
+        types = []
+    seen, clean = set(), []
+    for t in types:
+        c = _clean_type(t)
+        if c and c.lower() not in seen:
+            seen.add(c.lower())
+            clean.append(c)
+    if not clean:
+        clean = list(DEFAULT_TAG_TYPES)
+    clean = clean[:_MAX_TAG_TYPES]
+    try:
+        db.update_user_field(phone_number, "tag_types", clean)
+    except Exception as e:
+        logger.warning(f"set_tag_types failed: {e}")
+    return clean

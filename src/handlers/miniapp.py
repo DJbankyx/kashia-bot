@@ -265,6 +265,8 @@ def lambda_handler(event, context):
             return _settle_open_write(event, user_id)
         if method == "POST" and path.endswith("/app/api/site-label"):
             return _site_label_write(event, user_id)
+        if method == "POST" and path.endswith("/app/api/tag-types"):
+            return _tag_types_write(event, user_id)
         # ── Writes (generate + deliver a payment receipt PDF, on-demand) ──
         if method == "POST" and path.endswith("/app/api/receipt"):
             return _receipt_send(event, user_id)
@@ -466,6 +468,15 @@ def _summary(event, user_id: str):
     except Exception:
         site_label = "Location"
 
+    # Editable tag-type list (tag redesign slice 2) so the record form's Type
+    # selector can offer Location / Branch / Channel / Staff / Custom (+ any the
+    # owner added). Best-effort; falls back to the starter set.
+    try:
+        from features.open_items import get_tag_types as _gtt
+        tag_types = _gtt(db, user_id)
+    except Exception:
+        tag_types = ["Location", "Branch", "Channel", "Staff", "Custom"]
+
     # Known site/location names (Bug 6): distinct `site` values the owner has
     # used, so the record form's location field can autocomplete like the
     # customer-name field does. Best-effort; empty on any error.
@@ -493,6 +504,7 @@ def _summary(event, user_id: str):
         "industry": industry,
         "site_label": site_label,
         "sites": known_sites,
+        "tag_types": tag_types,
         "is_admin": _admin,
         "period": period,
         "period_label": label,
@@ -1541,6 +1553,18 @@ def _site_label_write(event, user_id: str):
     return _json(200, {"ok": True, "site_label": stored})
 
 
+def _tag_types_write(event, user_id: str):
+    """Replace the owner's editable tag-type list (tag redesign slice 2).
+    Body: {types: ["Location","Branch",...]}. Returns the stored list."""
+    from services.database import Database
+    from features.open_items import set_tag_types
+    data = _parse_body(event)
+    types = data.get("types")
+    db = Database()
+    stored = set_tag_types(db, user_id, types if isinstance(types, list) else [])
+    return _json(200, {"ok": True, "tag_types": stored})
+
+
 def _num_or_str(v):
     """Return a number as int (when whole) or float, else the original string.
     Keeps production quantities clean for JSON ('400' not '400.0', '0.5' kept)."""
@@ -1652,6 +1676,9 @@ def _records(event, user_id: str):
             "payment": str(t.get("payment_method", "") or ""),
             "deposit": int(float(t.get("deposit_amount",
                              (t.get("extra_details") or {}).get("deposit_amount") or 0) or 0)),
+            # Tag (slice 2): value (= the `site` split key) + optional type word.
+            "tag": str(t.get("site") or (t.get("extra_details") or {}).get("site") or ""),
+            "tag_type": str(t.get("site_type") or ""),
         }
         # Production rows carry a rich batch summary in extra_details — surface
         # it so the web Records view mirrors the chat production summary (batch #,
@@ -2783,6 +2810,24 @@ _PAGE_HTML = """<!doctype html>
     </div>
   </div>
 
+  <!-- Tag-types editor (tag redesign slice 2): one tag per transaction; the
+       owner maintains the TYPE list (Location / Branch / Channel / Staff / …). -->
+  <div id="tagTypesOverlay" class="overlay hidden">
+    <div class="sheet">
+      <h2>Edit tag types</h2>
+      <div class="sub2">The types you can tag a transaction with (e.g. Location, Branch, Channel, Staff). One per line.</div>
+      <div class="field" style="margin-top:12px">
+        <label>Types</label>
+        <textarea id="tagtypes-input" rows="6" style="width:100%" placeholder="Location&#10;Branch&#10;Channel&#10;Staff&#10;Custom"></textarea>
+      </div>
+      <div class="sheeterr" id="tagtypes-err"></div>
+      <div class="actions">
+        <button class="btn cancel" onclick="closeTagTypes()">Cancel</button>
+        <button class="btn save" id="tagtypes-save" onclick="saveTagTypes()">Save</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Site-label setting (Stage 2): the owner names the sub-account layer. -->
   <div id="siteLabelOverlay" class="overlay hidden">
     <div class="sheet">
@@ -3220,9 +3265,12 @@ _PAGE_HTML = """<!doctype html>
            a sale that creates a debt (credit / part / pay-link). Optional. -->
       <div class="field hidden" id="rec-site-wrap">
         <label id="rec-site-label">Tag (optional)</label>
-        <input id="rec-site" list="rec-site-list" placeholder="e.g. Ikeja shop, Online, Ade">
+        <div style="display:flex;gap:8px">
+          <select id="rec-site-type" style="flex:0 0 42%"></select>
+          <input id="rec-site" list="rec-site-list" placeholder="e.g. Ikeja, Online, Ade" style="flex:1">
+        </div>
         <datalist id="rec-site-list"></datalist>
-        <div class="sub2" id="rec-site-hint">Tag this transaction (location, branch, channel…). On a credit sale it also keeps that customer's balance under this tag separate.</div>
+        <div class="sub2" id="rec-site-hint">Pick a tag type and value (location, branch, channel…). On a credit sale it also keeps that customer's balance under this tag separate. <button type="button" class="linkbtn" onclick="openTagTypes()" style="color:var(--hint)">⚙ Edit types</button></div>
       </div>
       <div class="sheeterr" id="rec-err"></div>
       <div class="actions">
@@ -3322,7 +3370,7 @@ window.onerror = function (msg, src, line, col, err) {
   // show). NO cost/accounting math lives in JS — the engine owns that.
   // Default "trading" keeps the control industry byte-for-byte unchanged even
   // before summary loads. Manufacturing + Hybrid share the mfg model (recipes).
-  var APP = { industry: "trading", siteLabel: "Location", knownSites: [], is_admin: false };
+  var APP = { industry: "trading", siteLabel: "Location", knownSites: [], tagTypes: ["Location","Branch","Channel","Staff","Custom"], is_admin: false };
   function isTrading()  { return APP.industry === "trading"; }
   function isMfg()      { return APP.industry === "manufacturing"; }
   function isServices() { return APP.industry === "services"; }
@@ -3644,6 +3692,7 @@ window.onerror = function (msg, src, line, col, err) {
           APP.industry = d.industry;
         }
         if (d.site_label) APP.siteLabel = d.site_label;   // Stage 2 layer name
+        if (d.tag_types && d.tag_types.length) APP.tagTypes = d.tag_types;  // tag types (slice 2)
         // Phase 2: reveal the Admin tab only for configured admins.
         APP.is_admin = !!d.is_admin;
         var _ta = document.getElementById("tab-admin");
@@ -4751,6 +4800,38 @@ window.onerror = function (msg, src, line, col, err) {
   window.closePaymentLinks = function () {
     document.getElementById("paymentLinksOverlay").classList.add("hidden");
   };
+  // Tag-types editor (tag redesign slice 2): edit the per-user TYPE list.
+  window.openTagTypes = function () {
+    var ta = document.getElementById("tagtypes-input");
+    if (ta) ta.value = (APP.tagTypes || []).join("\\n");
+    document.getElementById("tagtypes-err").textContent = "";
+    document.getElementById("tagtypes-save").disabled = false;
+    document.getElementById("tagTypesOverlay").classList.remove("hidden");
+  };
+  window.closeTagTypes = function () {
+    document.getElementById("tagTypesOverlay").classList.add("hidden");
+  };
+  window.saveTagTypes = function () {
+    var ta = document.getElementById("tagtypes-input");
+    var err = document.getElementById("tagtypes-err");
+    var btn = document.getElementById("tagtypes-save");
+    var types = (ta.value || "").split("\\n")
+      .map(function (s) { return s.trim(); })
+      .filter(function (s) { return !!s; });
+    if (!types.length) { err.textContent = "Add at least one type."; return; }
+    btn.disabled = true;
+    apiPost("api/tag-types", { types: types })
+      .then(function (r) {
+        APP.tagTypes = (r && r.tag_types) || types;
+        recFillSites();   // refresh the Type selector with the new list
+        closeTagTypes();
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        err.textContent = (e && e.message) || "Could not save.";
+      });
+  };
   // Site-label setting (Stage 2): name the sub-account layer.
   window.openSiteLabel = function () {
     var inp = document.getElementById("sitelabel-input");
@@ -5258,6 +5339,9 @@ window.onerror = function (msg, src, line, col, err) {
       var meta = [fmtWhen(t.at, t.date)];   // date + time (#7) when available
       if (t.qty) meta.push(String(t.qty));
       if (t.vendor) meta.push(t.vendor);
+      // Tag (slice 2): show "#Type: value" (or just the value if no type).
+      // Plain ASCII marker (no emoji) to keep the served JS robust.
+      if (t.tag) meta.push("#" + (t.tag_type ? (t.tag_type + ": ") : "") + t.tag);
       var div = document.createElement("div");
       div.className = "item";
       // ✏️ edit + 🗑 delete affordances per row. Edit opens a prefilled sheet
@@ -7007,12 +7091,18 @@ window.onerror = function (msg, src, line, col, err) {
   // field with the owner's chosen layer name.
   function recFillSites() {
     var lblEl = document.getElementById("rec-site-label");
-    // Use the owner's custom layer name if they set one; otherwise the neutral
-    // "Tag" (the field is now a general per-transaction tag, not sale-only
-    // "Location"). The TYPE selector (Slice 2) will refine this further.
-    if (lblEl) {
-      var _lbl = (APP.siteLabel && APP.siteLabel !== "Location") ? APP.siteLabel : "Tag";
-      lblEl.textContent = _lbl + " (optional)";
+    if (lblEl) lblEl.textContent = "Tag (optional)";
+    // Populate the TYPE selector from the owner's editable list (slice 2),
+    // preserving the current selection across re-renders.
+    var sel = document.getElementById("rec-site-type");
+    if (sel) {
+      var cur = sel.value;
+      sel.innerHTML = "";
+      (APP.tagTypes || ["Location"]).forEach(function (ty) {
+        var o = document.createElement("option");
+        o.value = ty; o.textContent = ty; sel.appendChild(o);
+      });
+      if (cur && (APP.tagTypes || []).indexOf(cur) >= 0) sel.value = cur;
     }
     var dl = document.getElementById("rec-site-list");
     if (!dl) return;
@@ -7325,6 +7415,9 @@ window.onerror = function (msg, src, line, col, err) {
       var siteV = (document.getElementById("rec-site").value || "").trim();
       if (siteV) {
         body.site = siteV;
+        var styEl = document.getElementById("rec-site-type");
+        var styV = styEl ? (styEl.value || "").trim() : "";
+        if (styV) body.site_type = styV;
         if (APP.knownSites.indexOf(siteV) < 0) APP.knownSites.push(siteV);
       }
     }
