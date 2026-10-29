@@ -3219,10 +3219,10 @@ _PAGE_HTML = """<!doctype html>
            customer's balances stay separate (Delta vs Asaba). Only meaningful for
            a sale that creates a debt (credit / part / pay-link). Optional. -->
       <div class="field hidden" id="rec-site-wrap">
-        <label id="rec-site-label">Location (optional)</label>
-        <input id="rec-site" list="rec-site-list" placeholder="e.g. Ikeja shop, Delta">
+        <label id="rec-site-label">Tag (optional)</label>
+        <input id="rec-site" list="rec-site-list" placeholder="e.g. Ikeja shop, Online, Ade">
         <datalist id="rec-site-list"></datalist>
-        <div class="sub2" id="rec-site-hint">Tag this sale to a location/branch. On a credit sale it also keeps that customer's balance there separate.</div>
+        <div class="sub2" id="rec-site-hint">Tag this transaction (location, branch, channel…). On a credit sale it also keeps that customer's balance under this tag separate.</div>
       </div>
       <div class="sheeterr" id="rec-err"></div>
       <div class="actions">
@@ -6969,6 +6969,7 @@ window.onerror = function (msg, src, line, col, err) {
     chips.forEach(function (c) { c.classList.toggle("active", c.getAttribute("data-t") === t); });
     recSyncLabels();
     recFillContacts();   // re-scope name suggestions to the new type
+    recSyncTag();        // tag field now shows on sale/purchase/expense
   };
   window.recPay = function (p) {
     recPayVal = p;
@@ -6981,23 +6982,38 @@ window.onerror = function (msg, src, line, col, err) {
     // Pay-link explainer (#10) only when that method is chosen.
     var plh = document.getElementById("rec-paylink-hint");
     if (plh) plh.classList.toggle("hidden", p !== "paylink");
-    // SITE field (Stage 2): shown for ANY sale now (owner wanted to tag a
-    // location on cash/transfer sales too, not just debt sales). On a debt sale
-    // it also keeps that customer's per-site balance separate; on a paid sale
-    // it's just a location tag on the row.
-    var showSite = (recTypeVal === "sale");
+    // TAG field (Stage 2 → general tag): shown on sale, purchase AND expense now
+    // (owner: tag different transactions differently, not location-on-sales-only).
+    // On a credit/part sale it STILL keeps that customer's per-site balance
+    // separate (the value is the split key); on any other row it's a reporting
+    // tag. Visibility does NOT depend on the payment mode, so switching
+    // Cash/Transfer/Credit/Part never hides it or drops a value already typed.
+    recSyncTag();
+  };
+  // Show/relabel the tag field for the current record type. Produce has its own
+  // Location line in its layout, so the shared tag field is for sale/purchase/
+  // expense. Never clears the typed value (only toggles visibility).
+  function recSyncTag() {
+    var showTag = (recTypeVal === "sale" || recTypeVal === "purchase"
+                   || recTypeVal === "expense");
     var sw = document.getElementById("rec-site-wrap");
     if (sw) {
-      sw.classList.toggle("hidden", !showSite);
-      if (showSite) recFillSites();
+      sw.classList.toggle("hidden", !showTag);
+      if (showTag) recFillSites();
     }
-  };
+  }
   // Populate the site datalist from sites already used on open items across the
   // catalog of contacts (best-effort; falls back to empty). Also relabels the
   // field with the owner's chosen layer name.
   function recFillSites() {
     var lblEl = document.getElementById("rec-site-label");
-    if (lblEl) lblEl.textContent = (APP.siteLabel || "Location") + " (optional)";
+    // Use the owner's custom layer name if they set one; otherwise the neutral
+    // "Tag" (the field is now a general per-transaction tag, not sale-only
+    // "Location"). The TYPE selector (Slice 2) will refine this further.
+    if (lblEl) {
+      var _lbl = (APP.siteLabel && APP.siteLabel !== "Location") ? APP.siteLabel : "Tag";
+      lblEl.textContent = _lbl + " (optional)";
+    }
     var dl = document.getElementById("rec-site-list");
     if (!dl) return;
     // Reuse any sites we've already seen this session (collected when contact
@@ -7300,9 +7316,12 @@ window.onerror = function (msg, src, line, col, err) {
       body.deposit_amount = deposit;
       body.balance_owed = amount - deposit;
     }
-    // Site tag (Stage 2) — for ANY sale (location tag; on a debt sale it also
-    // keeps the per-site balance separate). The field is only shown for sales.
-    if (recTypeVal === "sale") {
+    // Tag (Stage 2 → general tag) — now carried on sale, purchase AND expense.
+    // `site` is the VALUE and remains the per-customer balance-split key on a
+    // credit/part sale (unchanged); on a purchase/expense or a paid sale it is a
+    // reporting tag. The field shows for all three types (recSyncTag).
+    if (recTypeVal === "sale" || recTypeVal === "purchase"
+        || recTypeVal === "expense") {
       var siteV = (document.getElementById("rec-site").value || "").trim();
       if (siteV) {
         body.site = siteV;

@@ -1447,13 +1447,18 @@ class TransactionHandler:
             # that does NOT create a debt so a plain cash/transfer sale still
             # carries its location tag. Guard on `not has_credit` to avoid a
             # redundant second write.
-            if tx_type == "sale" and tx_id and not has_credit:
+            # Tag now applies to sale/purchase/expense. On a credit/part row the
+            # tag is stamped in the debt branch below (alongside balance_owed) so
+            # the per-site balance split works; here we stamp any NON-credit
+            # sale/purchase/expense so a plain cash/transfer row still carries its
+            # tag. Guard on `not has_credit` to avoid a redundant second write.
+            if tx_type in ("sale", "purchase", "expense") and tx_id and not has_credit:
                 site = str(tx_data.get("site") or "").strip()
                 if site:
                     try:
                         self.db.update_transaction(phone_number, tx_id, {"site": site})
                     except Exception as e:
-                        logger.warning(f"web save: site tag failed: {e}")
+                        logger.warning(f"web save: tag failed: {e}")
 
             # ── Expense classification default (mfg/hybrid/services) ──
             if tx_type == "expense" and tx_id:
