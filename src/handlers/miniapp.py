@@ -1603,6 +1603,37 @@ def _records(event, user_id: str):
             return item[:40]
         return (t.get("description") or t.get("raw_text") or "Transaction")[:40]
 
+    # For production rows, we label the produced/good quantity with the finished
+    # product's stock (base) unit. New rows carry extra_details.produced_unit;
+    # legacy rows don't, so fall back to the product's base unit from the catalog.
+    _prod_catalog = None
+    def _produced_unit_for(t):
+        ed = t.get("extra_details") or {}
+        u = str(ed.get("produced_unit") or "").strip()
+        if u:
+            return u
+        nonlocal _prod_catalog
+        if _prod_catalog is None:
+            try:
+                _u = db.get_user(user_id) or {}
+                _prod_catalog = (_u.get("product_catalog", {}) or {}).get("products", {}) or {}
+            except Exception:
+                _prod_catalog = {}
+        pkey = str(ed.get("product_key") or "").strip()
+        p = _prod_catalog.get(pkey) if pkey else None
+        if not isinstance(p, dict):
+            # Resolve by name (item_name/description) → slug key.
+            name = (t.get("item_name") or t.get("description") or "").strip()
+            p = _prod_catalog.get(name.lower().replace(" ", "_")) if name else None
+        if isinstance(p, dict):
+            try:
+                from utils import units as _units
+                base_unit, _ = _units.product_units(p)
+                return str(base_unit or p.get("primary_unit") or "").strip()
+            except Exception:
+                return str(p.get("primary_unit") or "").strip()
+        return ""
+
     out = []
     for t in page:
         vendor = t.get("vendor", "") or ""
@@ -1641,6 +1672,9 @@ def _records(event, user_id: str):
                 "batch": str(ed.get("batch_number") or ""),
                 "produced": _num_or_str(ed.get("production_quantity", t.get("quantity", ""))),
                 "good": _num_or_str(ed.get("good_quantity", "")),
+                # Stock unit of the produced good (e.g. "pieces") so the card can
+                # read "4000 pieces good" instead of a bare "4000 good".
+                "unit": _produced_unit_for(t),
                 "waste": _num_or_str(ed.get("waste", 0)),
                 "waste_percent": int(float(ed.get("waste_percent") or 0)),
                 "cost_per_unit": int(float(ed.get("cost_per_unit") or t.get("unit_cost") or 0)),
@@ -5145,8 +5179,8 @@ window.onerror = function (msg, src, line, col, err) {
         var head = '<div class="item" style="border:none;padding:6px 0">' +
           '<div><div class="name">' + (p.batch ? escapeHtml(p.batch) + " \u00b7 " : "") +
           escapeHtml(t.desc || "?") + '</div><div class="meta">' + escapeHtml(t.date || "") +
-          (p.good !== "" && p.good != null ? " \u00b7 " + p.good + " good" : "") +
-          (Number(p.waste) > 0 ? " \u00b7 " + p.waste + " waste (" + p.waste_percent + "%)" : "") +
+          (p.good !== "" && p.good != null ? " \u00b7 " + p.good + (p.unit ? " " + escapeHtml(p.unit) : "") + " good" : "") +
+          (Number(p.waste) > 0 ? " \u00b7 " + p.waste + (p.unit ? " " + escapeHtml(p.unit) : "") + " waste (" + p.waste_percent + "%)" : "") +
           '</div></div><div class="right"><div class="stock">' + naira(t.amount || 0) +
           '</div><div class="meta">' + (p.cost_per_unit ? naira(p.cost_per_unit) + "/unit" : "") +
           '</div></div></div>';

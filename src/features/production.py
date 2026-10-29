@@ -1920,6 +1920,11 @@ class ProductionHandler:
                     "product_key": product_key,
                     "materials_used": materials_used,
                     "cost_per_unit": float(cost_per_unit),
+                    # Stock unit of the produced good (base unit), so the Records
+                    # view can label the good/produced quantity ("4000 pieces"
+                    # instead of a bare "4000 good"). Legacy rows lack this; the
+                    # records handler falls back to the catalog base unit.
+                    "produced_unit": base_unit or produced_unit or "",
                     "source": "miniapp",
                 },
             )
