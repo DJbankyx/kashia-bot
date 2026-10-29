@@ -436,6 +436,40 @@ def _summary(event, user_id: str):
     cashpos = acct.cash_position(user_id, opening=user.get("opening_cash", 0))
     pos = acct.position(user_id, cash_at_hand=cashpos["cash_at_hand"])
 
+    # Tag summary (tag slice 3): group the period's money by tag so the dashboard
+    # can show "sales/spend by tag" (e.g. by location/branch/channel). Sales count
+    # as money IN; purchases + expenses as money OUT. Debt-settlement rows excluded
+    # (handled like the P&L). Each bucket keyed by (type, value); type blank →
+    # "Untyped". Best-effort; empty on any error so the dashboard never breaks.
+    tag_summary = []
+    try:
+        from services.accounting import _is_debt_settlement as _isds
+        _txns = db.get_transactions_by_period(user_id, start, end) or []
+        _buckets = {}
+        for _t in _txns:
+            _ty = _t.get("type")
+            if _ty not in ("sale", "purchase", "expense") or _isds(_t):
+                continue
+            _ed = _t.get("extra_details") or {}
+            _val = str(_t.get("site") or _ed.get("site") or "").strip()
+            if not _val:
+                continue   # only tagged rows appear in the tag summary
+            _tyf = str(_t.get("site_type") or _ed.get("site_type") or "").strip() or "Untyped"
+            _amt = int(float(_t.get("amount", 0) or 0))
+            _key = (_tyf, _val)
+            _b = _buckets.setdefault(_key, {"type": _tyf, "value": _val,
+                                            "in": 0, "out": 0, "count": 0})
+            if _ty == "sale":
+                _b["in"] += _amt
+            else:
+                _b["out"] += _amt
+            _b["count"] += 1
+        tag_summary = sorted(_buckets.values(),
+                             key=lambda b: (b["in"] + b["out"]), reverse=True)
+    except Exception as e:
+        logger.debug(f"tag_summary failed: {e}")
+        tag_summary = []
+
     # Split payables (what you owe) into real suppliers (goods) vs expense
     # payees (rent, utilities…). Expense_payee is an explicit contact type;
     # legacy/unknown contacts fall back to the supplier side (no faked split).
@@ -505,6 +539,7 @@ def _summary(event, user_id: str):
         "site_label": site_label,
         "sites": known_sites,
         "tag_types": tag_types,
+        "tag_summary": tag_summary,
         "is_admin": _admin,
         "period": period,
         "period_label": label,
@@ -1611,6 +1646,38 @@ def _records(event, user_id: str):
     # (handle_filtered_export) so the list and the Excel/PDF now agree.
     rows = [t for t in all_txns
             if t.get("type") == tx_type and not _is_debt_settlement(t)]
+
+    # Tag helpers (slice 3): a row's tag value is `site` (the balance-split key);
+    # its type is `site_type` (may be blank on older rows). Read from top-level
+    # or the nested extra_details stamp.
+    def _row_tag_value(t):
+        ed = t.get("extra_details") or {}
+        return str(t.get("site") or ed.get("site") or "").strip()
+
+    def _row_tag_type(t):
+        ed = t.get("extra_details") or {}
+        return str(t.get("site_type") or ed.get("site_type") or "").strip()
+
+    # Distinct tags present in this type+period (BEFORE applying the tag filter)
+    # so the UI can offer a filter picker: {type: [values...]} plus a flat list.
+    tag_index = {}
+    for t in rows:
+        v = _row_tag_value(t)
+        if not v:
+            continue
+        ty = _row_tag_type(t) or "Untyped"
+        tag_index.setdefault(ty, set()).add(v)
+    tags_available = {ty: sorted(vs, key=lambda x: x.lower())
+                      for ty, vs in sorted(tag_index.items(), key=lambda kv: kv[0].lower())}
+
+    # Optional tag FILTER (both: filter by type, then value). Case-insensitive.
+    f_type = str(qs.get("tag_type") or "").strip()
+    f_value = str(qs.get("tag_value") or "").strip()
+    if f_type:
+        rows = [t for t in rows if _row_tag_type(t).lower() == f_type.lower()]
+    if f_value:
+        rows = [t for t in rows if _row_tag_value(t).lower() == f_value.lower()]
+
     # Newest first.
     rows.sort(key=lambda t: t.get("created_at", t.get("date", "")), reverse=True)
 
@@ -1677,8 +1744,8 @@ def _records(event, user_id: str):
             "deposit": int(float(t.get("deposit_amount",
                              (t.get("extra_details") or {}).get("deposit_amount") or 0) or 0)),
             # Tag (slice 2): value (= the `site` split key) + optional type word.
-            "tag": str(t.get("site") or (t.get("extra_details") or {}).get("site") or ""),
-            "tag_type": str(t.get("site_type") or ""),
+            "tag": _row_tag_value(t),
+            "tag_type": _row_tag_type(t),
         }
         # Production rows carry a rich batch summary in extra_details — surface
         # it so the web Records view mirrors the chat production summary (batch #,
@@ -1715,6 +1782,10 @@ def _records(event, user_id: str):
         "offset": offset, "limit": limit,
         "has_more": (offset + limit) < count,
         "records": out,
+        # Tag filter (slice 3): distinct {type: [values]} in this type+period
+        # (computed before the filter), plus the active filter echoed back.
+        "tags_available": tags_available,
+        "tag_filter": {"type": f_type, "value": f_value},
     })
 
 
@@ -2542,6 +2613,8 @@ _PAGE_HTML = """<!doctype html>
     <div class="card hidden" id="chartTrend">
       <div class="k">Net profit - last 6 months</div><img class="chart" id="imgTrend" alt="">
     </div>
+    <!-- "By tag" summary (slice 3): money in/out grouped by tag for the period. -->
+    <div id="dash-tags"></div>
     <div id="dashmsg" class="muted"></div>
   </div>
 
@@ -2932,6 +3005,9 @@ _PAGE_HTML = """<!doctype html>
       <div class="sheeterr" id="rec-date-err" style="flex-basis:100%"></div>
     </div>
     <div class="card"><div class="k" id="rec-total-k">Total</div><div class="v" id="rec-total">—</div></div>
+    <!-- Tag filter bar (slice 3): pick a tag type, then a value. -->
+    <div id="rec-tagfilter" style="margin:6px 0"></div>
+
     <div class="row" id="rec-export-row">
       <button class="btn save" style="flex:1" onclick="recExport('excel')">⬇️ Excel</button>
       <button class="btn cancel" style="flex:1" onclick="recExport('pdf')">🧾 PDF</button>
@@ -3747,6 +3823,7 @@ window.onerror = function (msg, src, line, col, err) {
         if (d.uncosted_sales > 0) {
           msg.textContent = d.uncosted_sales + " sale(s) have no cost set - profit may be overstated.";
         }
+        renderTagSummary(d);   // "By tag" card (slice 3)
       })
       .catch(function (e) {
         // Clear the "Loading…" state so the user isn't stuck staring at it.
@@ -3757,6 +3834,56 @@ window.onerror = function (msg, src, line, col, err) {
       });
     loadCharts();
   }
+  // "By tag" dashboard card (slice 3): money in/out grouped by tag for the
+  // period. Hidden when nothing is tagged. Tapping a row opens Records filtered
+  // to that tag (type+value) so the dashboard and Records stay consistent.
+  function renderTagSummary(d) {
+    var box = document.getElementById("dash-tags");
+    if (!box) return;
+    var rows = (d && d.tag_summary) || [];
+    if (!rows.length) { box.innerHTML = ""; return; }
+    var html = '<div class="card"><div class="k">By tag · ' +
+      escapeHtml(d.period_label || "this period") + '</div>';
+    rows.forEach(function (r) {
+      var label = (r.type && r.type !== "Untyped" ? (escapeHtml(r.type) + ": ") : "")
+        + escapeHtml(r.value);
+      var bits = [];
+      if (r["in"]) bits.push("in " + naira(r["in"]));
+      if (r.out) bits.push("out " + naira(r.out));
+      // Handler attached via data-* + delegation below (no inline onclick string
+      // with nested quotes — that is fragile inside the served-JS template).
+      html += '<div class="item tappable dash-tag-row" data-ty="' +
+        escapeHtml(encodeURIComponent(r.type)) + '" data-val="' +
+        escapeHtml(encodeURIComponent(r.value)) + '">' +
+        '<div><div class="name">#' + label + '</div>' +
+        '<div class="meta">' + bits.join(" \u00b7 ") + ' \u00b7 ' + r.count +
+        ' entr' + (r.count === 1 ? "y" : "ies") + '</div></div>' +
+        '<div class="right"><div class="stock">' + naira((r["in"] || 0) + (r.out || 0)) +
+        '</div></div></div>';
+    });
+    html += '</div>';
+    box.innerHTML = html;
+    // Delegate taps to the tag rows.
+    var rowsEls = box.querySelectorAll(".dash-tag-row");
+    for (var i = 0; i < rowsEls.length; i++) {
+      rowsEls[i].onclick = function () {
+        dashOpenTag(this.getAttribute("data-ty"), this.getAttribute("data-val"));
+      };
+    }
+  }
+  // Jump from a dashboard tag row into Records, pre-filtered to that tag.
+  window.dashOpenTag = function (tyEnc, valEnc) {
+    var ty = decodeURIComponent(tyEnc || "");
+    var val = decodeURIComponent(valEnc || "");
+    // Switch to Records on the Sales tab FIRST (recSetType clears the tag filter),
+    // THEN apply the tag filter so it isn't wiped. A tag can appear on sale/
+    // purchase/expense; the filter bar lets the owner switch type to find it.
+    showTab("rec");
+    if (typeof recSetType === "function") recSetType("sale");
+    recTagType = (ty === "Untyped") ? "" : ty;
+    recTagValue = val;
+    loadRecords();
+  };
 
   function loadCharts() {
     // Charts are best-effort: hide the cards, then show each only if the
@@ -5153,6 +5280,7 @@ window.onerror = function (msg, src, line, col, err) {
   window.recSetType = function (t) {
     recTabType = t;
     recExpFilter = "";     // clear any expense drill when switching type
+    recTagType = ""; recTagValue = "";   // a tag may not exist in the new type
     var tabs = document.getElementById("rec-type-tabs").children;
     for (var i = 0; i < tabs.length; i++) {
       tabs[i].classList.toggle("active", tabs[i].getAttribute("data-rt") === t);
@@ -5216,6 +5344,9 @@ window.onerror = function (msg, src, line, col, err) {
     recFrom = f; recTo = t || f; recSpecific = "";
     recRenderChips(); loadRecords();
   };
+  // Tag filter state (slice 3): filter Records by tag type, then value.
+  var recTagType = "";
+  var recTagValue = "";
   function recQuery() {
     var q = "type=" + recTabType;
     if (recFrom) {
@@ -5225,6 +5356,8 @@ window.onerror = function (msg, src, line, col, err) {
     } else {
       q += "&period=" + recPeriod;
     }
+    if (recTagType) q += "&tag_type=" + encodeURIComponent(recTagType);
+    if (recTagValue) q += "&tag_value=" + encodeURIComponent(recTagValue);
     return q;
   }
   function loadRecords() {
@@ -5238,13 +5371,63 @@ window.onerror = function (msg, src, line, col, err) {
           '<span class="err">' + (e.message || "Could not load") + '</span>';
       });
   }
+  // Tag filter bar (slice 3): a Type selector, then a Value selector scoped to
+  // the chosen type, plus Clear. Driven by d.tags_available = {type:[values]}.
+  // Hidden entirely when the current type+period has no tagged rows.
+  function recRenderTagFilter(d) {
+    var box = document.getElementById("rec-tagfilter");
+    if (!box) return;
+    var avail = d.tags_available || {};
+    var types = Object.keys(avail);
+    if (!types.length && !recTagType && !recTagValue) { box.innerHTML = ""; return; }
+    var parts = [];
+    parts.push('<select id="rf-type" style="flex:1" onchange="recTagPickType()">');
+    parts.push('<option value="">All tags</option>');
+    types.forEach(function (ty) {
+      parts.push('<option value="' + escapeHtml(ty) + '"' +
+        (ty === recTagType ? ' selected' : '') + '>' + escapeHtml(ty) + '</option>');
+    });
+    parts.push('</select>');
+    // Value selector only when a type is chosen and it has values.
+    var vals = (recTagType && avail[recTagType]) ? avail[recTagType] : [];
+    if (vals.length) {
+      parts.push('<select id="rf-value" style="flex:1" onchange="recTagPickValue()">');
+      parts.push('<option value="">All ' + escapeHtml(recTagType) + '</option>');
+      vals.forEach(function (v) {
+        parts.push('<option value="' + escapeHtml(v) + '"' +
+          (v === recTagValue ? ' selected' : '') + '>' + escapeHtml(v) + '</option>');
+      });
+      parts.push('</select>');
+    }
+    var clear = (recTagType || recTagValue)
+      ? '<button class="linkbtn" style="flex:0 0 auto;color:var(--accent)" onclick="recTagClear()">Clear</button>'
+      : '';
+    box.innerHTML = '<div style="display:flex;gap:8px;align-items:center">' +
+      parts.join("") + clear + '</div>';
+  }
+  window.recTagPickType = function () {
+    recTagType = document.getElementById("rf-type").value || "";
+    recTagValue = "";   // reset value when the type changes
+    loadRecords();
+  };
+  window.recTagPickValue = function () {
+    var el = document.getElementById("rf-value");
+    recTagValue = el ? (el.value || "") : "";
+    loadRecords();
+  };
+  window.recTagClear = function () {
+    recTagType = ""; recTagValue = "";
+    loadRecords();
+  };
   function renderRecords(d) {
     document.getElementById("rec-total").textContent = naira(d.total || 0);
     recRenderUndoBar();   // persistent Undo survives tab switches / reloads
+    recRenderTagFilter(d);   // tag filter bar (slice 3): type, then value
     var list = document.getElementById("rec-list");
     var rows = d.records || [];
     if (!rows.length) {
-      list.innerHTML = '<div class="muted">No records in ' + escapeHtml(d.period_label || "this period") + '.</div>';
+      list.innerHTML = '<div class="muted">No records in ' + escapeHtml(d.period_label || "this period")
+        + ((recTagType || recTagValue) ? ' with that tag.' : '.') + '</div>';
       document.getElementById("rec-msg").textContent = "";
       return;
     }
