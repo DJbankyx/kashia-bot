@@ -2692,6 +2692,7 @@ _PAGE_HTML = """<!doctype html>
         <div class="field" id="add-stock-wrap">
           <label>Opening stock on hand (optional)</label>
           <input id="add-stock" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 10">
+          <div class="sub2">Stock you already hold before you started using this app. Use this once at setup — after that, add stock by recording a purchase so your books stay accurate.</div>
         </div>
         <!-- Teach a custom conversion (#5), e.g. "1 bag = 20 pieces". Resolved by
              the units engine so any unit you use later maps back to the base. -->
@@ -3190,6 +3191,7 @@ _PAGE_HTML = """<!doctype html>
           <div class="step" onclick="bump(5)">+5</div>
           <div class="step" onclick="bump(10)">+10</div>
         </div>
+        <div class="sub2" style="color:var(--warn,#b45309)">⚠️ Changing stock here does not record a purchase or affect your cash and P&amp;L. For accurate books, record a purchase instead. Save will ask you to confirm.</div>
       </div>
       <div class="field" id="sh-price-wrap">
         <label>Selling price (\u20a6)</label>
@@ -6120,6 +6122,9 @@ window.onerror = function (msg, src, line, col, err) {
   window.closeSheet = function () {
     document.getElementById("overlay").classList.add("hidden");
     editing = null;
+    // Reset the stock-edit warning so the next sheet open starts fresh.
+    var sb = document.getElementById("sh-save");
+    if (sb) { sb.removeAttribute("data-stock-warned"); sb.textContent = "Save changes"; }
   };
   window.bump = function (n) {
     var el = document.getElementById("sh-stock");
@@ -6288,7 +6293,24 @@ window.onerror = function (msg, src, line, col, err) {
 
     if (!ops.length) { closeSheet(); return; }
 
+    // Stock-edit warning (F6): if ANY op is a direct stock overwrite, warn the
+    // owner on the FIRST tap. The Save button re-labels itself; a second tap
+    // proceeds. This mirrors the overdraw "proceed anyway" pattern so it's
+    // consistent. set_stock_delta (stepper bumps) goes through set_stock here.
+    var hasStockEdit = ops.some(function (op) { return op.action === "set_stock"; });
     var saveBtn = document.getElementById("sh-save");
+    if (hasStockEdit && saveBtn.getAttribute("data-stock-warned") !== "1") {
+      saveBtn.setAttribute("data-stock-warned", "1");
+      saveBtn.textContent = "Stock bypass — save anyway?";
+      document.getElementById("sh-err").textContent =
+        "This changes stock without recording a purchase. Tap Save again to confirm.";
+      saveBtn.disabled = false;
+      return;
+    }
+    // Reset the warning label for future opens.
+    saveBtn.removeAttribute("data-stock-warned");
+    saveBtn.textContent = "Save changes";
+
     saveBtn.disabled = true;                    // double-tap guard
     document.getElementById("sh-err").textContent = "";
 
