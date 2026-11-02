@@ -3262,13 +3262,22 @@ _PAGE_HTML = """<!doctype html>
         <!-- Live stock + price for the picked product (sale/purchase). -->
         <div class="sub2 hidden" id="rec-prod-info" style="margin-top:6px"></div>
       </div>
+      <div class="field" id="rec-qty-wrap">
+        <label id="rec-qty-label">Quantity</label>
+        <div class="row" style="gap:8px">
+          <input id="rec-qty" type="number" inputmode="decimal" min="0" step="any" value="1" style="flex:2" oninput="recQtyChanged()">
+          <select id="rec-unit-sel" class="hidden" style="flex:1;padding:11px 8px" onchange="recQtyChanged()"></select>
+          <input id="rec-unit-free" class="hidden" placeholder="unit e.g. litres" style="flex:1">
+        </div>
+        <div class="sub2" id="rec-qty-hint">💡 Counted in this item's unit (set the unit on the product in Catalog). Can be fractional, e.g. 0.5 kg. Stock drops by this amount.</div>
+      </div>
+      <!-- Amount comes AFTER quantity so the quantity (which auto-adjusts the
+           price suggestion) is filled first. -->
       <div class="field">
         <label id="rec-amount-label">Amount received (\u20a6)</label>
         <input id="rec-amount" type="number" inputmode="decimal" min="0" step="any" oninput="recAmtTyped()">
       </div>
-      <!-- Prepaid / periodic spread (EXPENSE only): pay the full amount now but
-           spread the expense across N periods so one month's profit isn't
-           crushed (e.g. a year's rent paid upfront). -->
+      <!-- Prepaid / periodic spread (EXPENSE only). -->
       <div class="field hidden" id="rec-spread-wrap">
         <label>Spread this expense over</label>
         <select id="rec-spread" onchange="recSpreadHint()" style="width:100%;padding:11px 8px">
@@ -3282,15 +3291,6 @@ _PAGE_HTML = """<!doctype html>
         <input id="rec-spread-n" type="number" inputmode="numeric" min="2" max="60" step="1"
                class="hidden" placeholder="how many months (e.g. 9)" style="margin-top:6px">
         <div class="sub2" id="rec-spread-hint"></div>
-      </div>
-      <div class="field" id="rec-qty-wrap">
-        <label id="rec-qty-label">Quantity</label>
-        <div class="row" style="gap:8px">
-          <input id="rec-qty" type="number" inputmode="decimal" min="0" step="any" value="1" style="flex:2" oninput="recQtyChanged()">
-          <select id="rec-unit-sel" class="hidden" style="flex:1;padding:11px 8px" onchange="recQtyChanged()"></select>
-          <input id="rec-unit-free" class="hidden" placeholder="unit e.g. litres" style="flex:1">
-        </div>
-        <div class="sub2" id="rec-qty-hint">💡 Counted in this item's unit (set the unit on the product in Catalog). Can be fractional, e.g. 0.5 kg. Stock drops by this amount.</div>
       </div>
       <div class="field" id="rec-cost-wrap">
         <label id="rec-cost-label">Cost of goods (total, \u20a6) — optional</label>
@@ -7019,20 +7019,24 @@ window.onerror = function (msg, src, line, col, err) {
   // update it on qty change) vs the owner's own value (which we never touch).
   var recAmtAuto = false;
   function recSuggestAmount() {
-    if (recTypeVal !== "sale" || !pick || !(pick.sale_price > 0)) return;
+    // Autofill the amount for SALES (price × qty) AND PURCHASES (cost × qty).
+    // Only fills an empty field, or one we previously auto-filled — never
+    // overwrites a value the owner typed themselves (recAmtAuto tracks this).
     var amtEl = document.getElementById("rec-amount");
     if (!amtEl) return;
-    // Only suggest into an empty field or one we previously auto-filled.
     if (amtEl.value !== "" && !recAmtAuto) return;
     var qty = parseFloat(document.getElementById("rec-qty").value) || 0;
-    if (qty <= 0) return;
-    // sale_price is stored PER BASE UNIT. If the owner is recording in a custom
-    // unit (e.g. 2 cartons where 1 carton = 12 pieces), convert the quantity to
-    // base units via the SAME factor the stock/COGS math uses (recUnitFactor =
-    // base units per 1 chosen unit) so the suggested amount matches what's sold.
+    if (qty <= 0 || !pick) return;
+    // Convert qty to base units (1 bag = 12 pieces → factor used by stock math).
     var baseQty = qty * recUnitFactor();
-    var suggested = money2(pick.sale_price * baseQty);
-    amtEl.value = suggested;
+    var unitPrice = 0;
+    if (recTypeVal === "sale" && pick.sale_price > 0) {
+      unitPrice = pick.sale_price;
+    } else if (recTypeVal === "purchase" && pick.cost > 0) {
+      unitPrice = pick.cost;
+    }
+    if (!(unitPrice > 0)) return;
+    amtEl.value = money2(unitPrice * baseQty);
     recAmtAuto = true;
     recBalanceHint();
   }
