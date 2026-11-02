@@ -3252,12 +3252,6 @@ _PAGE_HTML = """<!doctype html>
         <div class="chip" data-t="expense" onclick="recType('expense')">💸 Expense</div>
         <div class="chip hidden" data-t="produce" id="rec-type-produce" onclick="recType('produce')">🏭 Produce</div>
       </div>
-      <!-- Produce: waste field (mfg/hybrid only). Amount/cost are recipe-driven. -->
-      <div class="field hidden" id="rec-waste-wrap">
-        <label>Waste / spoilage (optional)</label>
-        <input id="rec-waste" type="number" inputmode="decimal" min="0" step="any" placeholder="units spoiled">
-        <div class="sub2">💡 Units that came out bad. Cost per good unit is worked out from your recipe.</div>
-      </div>
       <!-- Product picker (sale/purchase) — tap to choose from your catalog. -->
       <div class="field" id="rec-prod-wrap">
         <label id="rec-desc-label">What did you sell?</label>
@@ -3302,6 +3296,15 @@ _PAGE_HTML = """<!doctype html>
         <label id="rec-cost-label">Cost of goods (total, \u20a6) — optional</label>
         <input id="rec-cost" type="number" inputmode="decimal" min="0" step="any" placeholder="for accurate profit">
         <div class="sub2">💡 Leave blank to use the cost saved on the product. Enter the TOTAL cost for this sale (all units), not per-unit — it sets your profit.</div>
+      </div>
+      <!-- Produce: waste field comes AFTER quantity (mfg/hybrid only). It is
+           last because you first say WHAT you made and HOW MANY, then note any
+           spoilage. Amount/cost/customer/payment are hidden for produce — cost
+           is recipe-driven. The hint explains the cost impact. -->
+      <div class="field hidden" id="rec-waste-wrap">
+        <label>Waste / spoilage (optional)</label>
+        <input id="rec-waste" type="number" inputmode="decimal" min="0" step="any" placeholder="units spoiled">
+        <div class="sub2">💡 Units that came out bad. Their materials cost is shared over the good units, so your per-unit cost rises when there is waste.</div>
       </div>
       <div class="field">
         <label id="rec-who-label">Customer (optional)</label>
