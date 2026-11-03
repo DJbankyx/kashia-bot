@@ -267,6 +267,8 @@ def lambda_handler(event, context):
             return _site_label_write(event, user_id)
         if method == "POST" and path.endswith("/app/api/tag-types"):
             return _tag_types_write(event, user_id)
+        if method == "POST" and path.endswith("/app/api/settings"):
+            return _settings_write(event, user_id)
         # ── Writes (generate + deliver a payment receipt PDF, on-demand) ──
         if method == "POST" and path.endswith("/app/api/receipt"):
             return _receipt_send(event, user_id)
@@ -540,6 +542,9 @@ def _summary(event, user_id: str):
         "sites": known_sites,
         "tag_types": tag_types,
         "tag_summary": tag_summary,
+        # F5: strict stock guard — when true, the sale/produce overdraw guardrail
+        # becomes a hard-block (no confirm bypass). Default false (soft two-tap).
+        "strict_stock_guard": bool(user.get("strict_stock_guard", False)),
         "is_admin": _admin,
         "period": period,
         "period_label": label,
@@ -1069,14 +1074,18 @@ def _produce_write(event, user_id: str):
         return _json(400, {"error": "product key required"})
 
     prod = ProductionHandler(None, Database())
+    db_ref = Database()
     res = prod.produce_web(user_id, key, data.get("quantity"), data.get("waste"),
                            unit=str(data.get("unit", "") or ""),
                            confirm=bool(data.get("confirm")))
     if not res.get("ok"):
         err = str(res.get("error", ""))
-        # A soft, confirmable guardrail (not enough materials) → 409 so the
-        # client can re-send with confirm:true; a real failure → 400/404.
         if res.get("needs_confirm"):
+            # Respect strict_stock_guard: if on, block even with confirm:true.
+            _strict = bool((db_ref.get_user(user_id) or {}).get("strict_stock_guard", False))
+            if _strict:
+                return _json(400, {**res, "hard_block": True,
+                                   "error": err + " (strict mode is on — record purchases first)"})
             code = 409
         else:
             code = 404 if "not found" in err else 400
@@ -1253,12 +1262,10 @@ def _transaction_write(event, user_id: str):
 
     db = Database()
 
-    # ── SALE GUARDRAIL (soft, confirmable) — run BEFORE claiming the submit_id.
-    # If we claimed first, the confirm retry (same submit_id) would come back as
-    # a duplicate and the sale would never record. Checking here keeps the
-    # submit_id unclaimed until the owner confirms. 409 => client re-sends with
-    # confirm:true. Only sales, only when not already confirmed.
-    if tx_type == "sale" and not data.get("confirm") and not data.get("is_service_job"):
+    # ── SALE GUARDRAIL (soft confirmable, or hard-block when strict_stock_guard) ──
+    # Run BEFORE claiming the submit_id so a confirm retry on the same submit_id
+    # still works (an unclaimed id, not a duplicate).
+    if tx_type == "sale" and not data.get("is_service_job"):
         _guard_tx = TransactionHandler(None, db, None, None)
         _warn = _guard_tx._sale_stock_warning(user_id, {
             "type": "sale",
@@ -1267,8 +1274,14 @@ def _transaction_write(event, user_id: str):
             "catalog_product": data.get("catalog_product"),
         })
         if _warn:
-            return _json(409, {"ok": False, "error": _warn,
-                               "needs_confirm": True, "warning": _warn})
+            # In strict mode the bypass is refused regardless of confirm:true.
+            _strict = bool((db.get_user(user_id) or {}).get("strict_stock_guard", False))
+            if _strict:
+                return _json(400, {"ok": False, "error": _warn,
+                                   "hard_block": True})
+            if not data.get("confirm"):
+                return _json(409, {"ok": False, "error": _warn,
+                                   "needs_confirm": True, "warning": _warn})
 
     # Idempotency: claim the submit_id BEFORE any side effect. A retry/double
     # POST short-circuits here and returns the original result.
@@ -1598,6 +1611,21 @@ def _tag_types_write(event, user_id: str):
     db = Database()
     stored = set_tag_types(db, user_id, types if isinstance(types, list) else [])
     return _json(200, {"ok": True, "tag_types": stored})
+
+
+def _settings_write(event, user_id: str):
+    """Save owner-level settings. Currently supports:
+      {strict_stock_guard: bool} — hard-block overselling/over-producing.
+    Extensible: add more settings to the same route as needed."""
+    from services.database import Database
+    data = _parse_body(event)
+    db = Database()
+    changed = {}
+    if "strict_stock_guard" in data:
+        val = bool(data["strict_stock_guard"])
+        db.update_user_field(user_id, "strict_stock_guard", val)
+        changed["strict_stock_guard"] = val
+    return _json(200, {"ok": True, **changed})
 
 
 def _num_or_str(v):
@@ -2799,7 +2827,8 @@ _PAGE_HTML = """<!doctype html>
     </div>
     <div style="text-align:right;margin:2px 0 6px">
       <button class="linkbtn" onclick="openSiteLabel()" style="font-size:13px;color:var(--hint);margin-right:10px" id="crm-sitelabel-btn">⚙ Location name</button>
-      <button class="linkbtn" onclick="openPaymentLinks()" style="font-size:13px;color:var(--hint)">💳 Payment links</button>
+      <button class="linkbtn" onclick="openPaymentLinks()" style="font-size:13px;color:var(--hint);margin-right:10px">💳 Payment links</button>
+      <button class="linkbtn" onclick="toggleStrictGuard()" style="font-size:13px;color:var(--hint)" id="crm-guard-btn">🔒 Strict: off</button>
     </div>
     <input class="search" id="crmsearch" placeholder="Search people..." oninput="renderCrm()">
     <div id="crmlists"><div class="muted">Loading...</div></div>
@@ -3451,7 +3480,7 @@ window.onerror = function (msg, src, line, col, err) {
   // show). NO cost/accounting math lives in JS — the engine owns that.
   // Default "trading" keeps the control industry byte-for-byte unchanged even
   // before summary loads. Manufacturing + Hybrid share the mfg model (recipes).
-  var APP = { industry: "trading", siteLabel: "Location", knownSites: [], tagTypes: ["Location","Branch","Channel","Staff","Custom"], is_admin: false };
+  var APP = { industry: "trading", siteLabel: "Location", knownSites: [], tagTypes: ["Location","Branch","Channel","Staff","Custom"], strictStockGuard: false, is_admin: false };
   function isTrading()  { return APP.industry === "trading"; }
   function isMfg()      { return APP.industry === "manufacturing"; }
   function isServices() { return APP.industry === "services"; }
@@ -3773,7 +3802,9 @@ window.onerror = function (msg, src, line, col, err) {
           APP.industry = d.industry;
         }
         if (d.site_label) APP.siteLabel = d.site_label;   // Stage 2 layer name
-        if (d.tag_types && d.tag_types.length) APP.tagTypes = d.tag_types;  // tag types (slice 2)
+        if (d.tag_types && d.tag_types.length) APP.tagTypes = d.tag_types;
+        APP.strictStockGuard = !!d.strict_stock_guard;
+        renderStrictGuardBtn();   // reflect current state in the toggle
         // Phase 2: reveal the Admin tab only for configured admins.
         APP.is_admin = !!d.is_admin;
         var _ta = document.getElementById("tab-admin");
@@ -4962,6 +4993,29 @@ window.onerror = function (msg, src, line, col, err) {
       .catch(function (e) {
         btn.disabled = false;
         err.textContent = (e && e.message) || "Could not save.";
+      });
+  };
+  // Stock guard toggle (F5): flip strict_stock_guard on/off.
+  // Off (default) = soft two-tap confirm; On = hard-block, no bypass.
+  function renderStrictGuardBtn() {
+    var btn = document.getElementById("crm-guard-btn");
+    if (!btn) return;
+    btn.textContent = "[Guard] " + (APP.strictStockGuard ? "strict on" : "strict off");
+    btn.style.color = APP.strictStockGuard ? "var(--accent)" : "var(--hint)";
+  }
+  window.toggleStrictGuard = function () {
+    var next = !APP.strictStockGuard;
+    var label = next ? "ON (hard block — can't sell/produce what you don't have)" :
+                       "OFF (soft — asks to confirm)";
+    if (!window.confirm("Stock guard: " + label + "\\n\\nChange it?")) return;
+    apiPost("api/settings", { strict_stock_guard: next })
+      .then(function () {
+        APP.strictStockGuard = next;
+        renderStrictGuardBtn();
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+      })
+      .catch(function (e) {
+        if (tg && tg.showAlert) tg.showAlert((e && e.message) || "Could not save.");
       });
   };
   // Site-label setting (Stage 2): name the sub-account layer.
@@ -7521,7 +7575,10 @@ window.onerror = function (msg, src, line, col, err) {
           })
           .catch(function (e) {
             pbtn.disabled = false;
-            if (e && e.body && e.body.needs_confirm && !pBody.confirm) {
+            if (e && e.body && e.body.hard_block) {
+              err0.textContent = (e.body.error || e.message) || "Blocked: not enough materials.";
+              if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
+            } else if (e && e.body && e.body.needs_confirm && !pBody.confirm) {
               pBody.confirm = true;
               err0.textContent = (e.body.warning || e.message) + " — tap Save again to proceed.";
               if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("warning");
@@ -7738,7 +7795,11 @@ window.onerror = function (msg, src, line, col, err) {
         })
         .catch(function (e) {
           btn.disabled = false;
-          if (e && e.body && e.body.needs_confirm && !body.confirm) {
+          if (e && e.body && e.body.hard_block) {
+            // Strict mode: no bypass — show a final block message.
+            err.textContent = (e.body.error || e.message) || "Blocked: not enough stock.";
+            if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
+          } else if (e && e.body && e.body.needs_confirm && !body.confirm) {
             body.confirm = true;
             err.textContent = (e.body.warning || e.message) + " — tap Save again to proceed.";
             if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("warning");
