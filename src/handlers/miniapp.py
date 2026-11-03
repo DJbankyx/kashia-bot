@@ -7539,6 +7539,28 @@ window.onerror = function (msg, src, line, col, err) {
       drop.appendChild(row);
     });
     drop.classList.remove("hidden");
+    // Flip upward if the list would be hidden under the on-screen keyboard.
+    // Use visualViewport (available in Telegram WebView) for the actual visible
+    // height; fall back to window.innerHeight. A 30px buffer keeps it clear of
+    // the keyboard edge.
+    var rect = input.getBoundingClientRect();
+    var vp = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+    var spaceBelow = vp - rect.bottom - 30;
+    var spaceAbove = rect.top - 30;
+    var dropH = Math.min(drop.scrollHeight, 210);
+    if (spaceBelow < dropH && spaceAbove > spaceBelow) {
+      // Not enough room below — open upward.
+      drop.style.top = "auto";
+      drop.style.bottom = "100%";
+      drop.style.marginTop = "0";
+      drop.style.marginBottom = "4px";
+    } else {
+      // Enough room below (or keyboard not up yet) — normal downward.
+      drop.style.top = "100%";
+      drop.style.bottom = "auto";
+      drop.style.marginTop = "4px";
+      drop.style.marginBottom = "0";
+    }
   };
   // Hide the dropdown shortly after blur (delay lets a tap register first).
   window.recWhoBlur = function () {
@@ -7547,6 +7569,17 @@ window.onerror = function (msg, src, line, col, err) {
       if (drop) { drop.classList.add("hidden"); }
     }, 150);
   };
+  // Reposition the open dropdown when the keyboard resizes the viewport (iOS /
+  // Android). This way an already-visible list flips upward when the keyboard
+  // appears, rather than staying in the now-invisible region below.
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", function () {
+      var drop = document.getElementById("rec-who-drop");
+      if (drop && !drop.classList.contains("hidden")) {
+        recWhoFilter();   // re-run the positioning logic with the new viewport height
+      }
+    });
+  }
   window.saveRecord = function () {
     var err0 = document.getElementById("rec-err");
     // PRODUCE: a separate, simpler path — pick a finished good, enter quantity
