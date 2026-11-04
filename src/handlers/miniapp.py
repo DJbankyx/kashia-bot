@@ -269,6 +269,14 @@ def lambda_handler(event, context):
             return _tag_types_write(event, user_id)
         if method == "POST" and path.endswith("/app/api/settings"):
             return _settings_write(event, user_id)
+        if method == "GET" and path.endswith("/app/api/cash-ledger"):
+            return _cash_ledger_read(event, user_id)
+        if method == "GET" and path.endswith("/app/api/loans"):
+            return _loans_read(event, user_id)
+        if method == "POST" and path.endswith("/app/api/loan"):
+            return _loan_write(event, user_id)
+        if method == "POST" and path.endswith("/app/api/loan-repayment"):
+            return _loan_repayment_write(event, user_id)
         # ── Writes (generate + deliver a payment receipt PDF, on-demand) ──
         if method == "POST" and path.endswith("/app/api/receipt"):
             return _receipt_send(event, user_id)
@@ -528,7 +536,16 @@ def _summary(event, user_id: str):
     except Exception:
         known_sites = []
 
-    # Admin flag (Phase 2): reveal the admin inbox tab only for configured admins.
+        # F3+F4: loan balance for the dashboard loans card (visible when > 0).
+        loan_balance = 0
+        try:
+            from features.transactions import TransactionHandler
+            _th = TransactionHandler(None, db, None, None)
+            _loans = _th.get_loans(user_id)
+            loan_balance = int(_loans.get("total_outstanding", 0))
+        except Exception as e:
+            logger.debug(f"loan_balance failed: {e}")
+            loan_balance = 0
     try:
         from features.admin import is_admin as _is_admin
         _admin = _is_admin(user_id)
@@ -545,6 +562,7 @@ def _summary(event, user_id: str):
         # F5: strict stock guard — when true, the sale/produce overdraw guardrail
         # becomes a hard-block (no confirm bypass). Default false (soft two-tap).
         "strict_stock_guard": bool(user.get("strict_stock_guard", False)),
+        "loan_balance": loan_balance,
         "is_admin": _admin,
         "period": period,
         "period_label": label,
@@ -1628,6 +1646,86 @@ def _settings_write(event, user_id: str):
     return _json(200, {"ok": True, **changed})
 
 
+def _cash_ledger_read(event, user_id: str):
+    """Cash ledger (F3): list of cash_adjustment rows — every in/out move that
+    feeds the Cash at Hand tile. Query: ?limit=<n> (default 50). Returns rows
+    newest-first with direction, reason, amount, date, lender (for loans)."""
+    from services.database import Database
+    qs = event.get("queryStringParameters") or {}
+    try:
+        limit = max(1, min(200, int(qs.get("limit") or 50)))
+    except (TypeError, ValueError):
+        limit = 50
+    db = Database()
+    txns = db.get_transactions(user_id, limit=1000) or []
+    rows = [t for t in txns
+            if t.get("type") == "cash_adjustment" and not t.get("deleted")]
+    rows.sort(key=lambda t: t.get("created_at", t.get("date", "")), reverse=True)
+    out = []
+    for t in rows[:limit]:
+        ed = t.get("extra_details") or {}
+        reason = str(ed.get("reason") or t.get("reason") or "adjustment")
+        direction = str(ed.get("direction") or t.get("cash_direction") or "in")
+        out.append({
+            "tx_id": str(t.get("transaction_id") or ""),
+            "amount": int(float(t.get("amount", 0) or 0)),
+            "direction": direction,
+            "reason": reason,
+            "desc": str(t.get("description") or t.get("item_name") or "Cash move"),
+            "lender": str(ed.get("lender") or ""),
+            "date": str(t.get("date") or ""),
+            "at": str(t.get("created_at") or ""),
+        })
+    return _json(200, {"count": len(out), "rows": out})
+
+
+def _loans_read(event, user_id: str):
+    """Active loans list (F4): loan rows minus repayments. Returns
+    {loans:[{tx_id,lender,amount,repaid,outstanding,date}], total_outstanding}."""
+    from services.database import Database
+    from features.transactions import TransactionHandler
+    db = Database()
+    th = TransactionHandler(None, db, None, None)
+    return _json(200, th.get_loans(user_id))
+
+
+def _loan_write(event, user_id: str):
+    """Record a new loan (F4). Body: {amount, lender?}. Stored as a
+    cash_adjustment direction=in reason=loan. Returns {ok, tx_id, ...}."""
+    from services.database import Database
+    from features.transactions import TransactionHandler
+    data = _parse_body(event)
+    db = Database()
+    th = TransactionHandler(None, db, None, None)
+    res = th.record_cash_adjustment(
+        user_id, amount=data.get("amount"), direction="in",
+        reason="loan", lender=str(data.get("lender") or "").strip())
+    if not res.get("ok"):
+        return _json(400, res)
+    return _json(200, res)
+
+
+def _loan_repayment_write(event, user_id: str):
+    """Record a loan repayment (F4). Body: {amount, loan_tx_id, lender?}.
+    Stored as cash_adjustment direction=out reason=loan_repayment."""
+    from services.database import Database
+    from features.transactions import TransactionHandler
+    data = _parse_body(event)
+    loan_tx_id = str(data.get("loan_tx_id") or "").strip()
+    if not loan_tx_id:
+        return _json(400, {"error": "loan_tx_id required"})
+    db = Database()
+    th = TransactionHandler(None, db, None, None)
+    res = th.record_cash_adjustment(
+        user_id, amount=data.get("amount"), direction="out",
+        reason="loan_repayment",
+        lender=str(data.get("lender") or "").strip(),
+        loan_tx_id=loan_tx_id)
+    if not res.get("ok"):
+        return _json(400, res)
+    return _json(200, res)
+
+
 def _num_or_str(v):
     """Return a number as int (when whole) or float, else the original string.
     Keeps production quantities clean for JSON ('400' not '400.0', '0.5' kept)."""
@@ -2643,6 +2741,19 @@ _PAGE_HTML = """<!doctype html>
     </div>
     <!-- "By tag" summary (slice 3): money in/out grouped by tag for the period. -->
     <div id="dash-tags"></div>
+    <!-- Loans card (F4): visible only when there are active loans -->
+    <div class="card hidden" id="dash-loans-card">
+      <div class="k">Loans outstanding</div>
+      <div class="v neg" id="dash-loans-val">—</div>
+      <div class="sub">Money borrowed, not yet repaid</div>
+      <button class="btn cancel" style="width:100%;margin-top:10px" onclick="openLoans()">View / repay loans</button>
+    </div>
+    <!-- Cash ledger mini-card (F3): last few cash movements + see-all link -->
+    <div class="card hidden" id="dash-cashledger-card">
+      <div class="k">Recent cash movements</div>
+      <div id="dash-cashledger-rows"></div>
+      <button class="linkbtn" style="margin-top:6px;font-size:13px;color:var(--accent)" onclick="openCashLedger()">See all movements &rsaquo;</button>
+    </div>
     <div id="dashmsg" class="muted"></div>
   </div>
 
@@ -3126,6 +3237,7 @@ _PAGE_HTML = """<!doctype html>
         <div class="chips" id="cash-reason">
           <div class="chip active" data-cr="withdrawal" onclick="cashReason('withdrawal')">🏧 Owner withdrawal</div>
           <div class="chip" data-cr="injection" onclick="cashReason('injection')">➕ Money in (capital)</div>
+          <div class="chip" data-cr="loan" onclick="cashReason('loan')">💸 Loan received</div>
           <div class="chip" data-cr="bank_transfer" onclick="cashReason('bank_transfer')">🏦 Bank/cash transfer</div>
           <div class="chip" data-cr="correction" onclick="cashReason('correction')">✏️ Correction</div>
           <div class="chip" data-cr="opening" onclick="cashReason('opening')">🏁 Set opening balance</div>
@@ -3143,10 +3255,53 @@ _PAGE_HTML = """<!doctype html>
         <input id="cash-amount" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 5000">
         <div class="sub2" id="cash-amount-hint"></div>
       </div>
+      <!-- Lender name — shown only for Loan received -->
+      <div class="field hidden" id="cash-lender-wrap">
+        <label>Lender (who you borrowed from)</label>
+        <input id="cash-lender" placeholder="e.g. Uncle John, Bank name" autocomplete="off">
+        <div class="sub2">This is recorded as a liability — you can track repayments from the Loans card on the dashboard.</div>
+      </div>
       <div class="sheeterr" id="cash-err"></div>
       <div class="actions">
         <button class="btn cancel" onclick="closeCashAdjust()">Cancel</button>
         <button class="btn save" id="cash-save" onclick="saveCashAdjust()">Record</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loans overlay (F4): list of active loans + repay form -->
+  <div id="loansOverlay" class="overlay hidden">
+    <div class="sheet" style="max-height:88vh;overflow-y:auto">
+      <h2>Loans</h2>
+      <div class="sub2">Money you borrowed that is not yet fully repaid. Tap a loan to record a repayment.</div>
+      <div id="loans-list" style="margin-top:12px"><div class="muted">Loading\u2026</div></div>
+      <!-- Repay form (shown when a loan is tapped) -->
+      <div id="loans-repay-wrap" class="hidden" style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px">
+        <div class="k" id="loans-repay-label">Repay loan</div>
+        <div class="field" style="margin-top:8px">
+          <label>Amount repaid (\u20a6)</label>
+          <input id="loans-repay-amount" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 10000">
+        </div>
+        <div class="sheeterr" id="loans-repay-err"></div>
+        <div class="actions">
+          <button class="btn cancel" onclick="closeLoansRepay()">Cancel</button>
+          <button class="btn save" id="loans-repay-save" onclick="saveLoansRepay()">Record repayment</button>
+        </div>
+      </div>
+      <div class="actions" style="margin-top:16px">
+        <button class="btn cancel" onclick="closeLoans()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cash Ledger overlay (F3): full history of cash movements -->
+  <div id="cashLedgerOverlay" class="overlay hidden">
+    <div class="sheet" style="max-height:88vh;overflow-y:auto">
+      <h2>Cash movements</h2>
+      <div class="sub2">Every adjustment that affects your Cash at Hand — newest first.</div>
+      <div id="cashledger-list" style="margin-top:12px"><div class="muted">Loading\u2026</div></div>
+      <div class="actions" style="margin-top:16px">
+        <button class="btn cancel" onclick="closeCashLedger()">Close</button>
       </div>
     </div>
   </div>
@@ -3480,7 +3635,7 @@ window.onerror = function (msg, src, line, col, err) {
   // show). NO cost/accounting math lives in JS — the engine owns that.
   // Default "trading" keeps the control industry byte-for-byte unchanged even
   // before summary loads. Manufacturing + Hybrid share the mfg model (recipes).
-  var APP = { industry: "trading", siteLabel: "Location", knownSites: [], tagTypes: ["Location","Branch","Channel","Staff","Custom"], strictStockGuard: false, is_admin: false };
+  var APP = { industry: "trading", siteLabel: "Location", knownSites: [], tagTypes: ["Location","Branch","Channel","Staff","Custom"], strictStockGuard: false, loanBalance: 0, is_admin: false };
   function isTrading()  { return APP.industry === "trading"; }
   function isMfg()      { return APP.industry === "manufacturing"; }
   function isServices() { return APP.industry === "services"; }
@@ -3804,7 +3959,9 @@ window.onerror = function (msg, src, line, col, err) {
         if (d.site_label) APP.siteLabel = d.site_label;   // Stage 2 layer name
         if (d.tag_types && d.tag_types.length) APP.tagTypes = d.tag_types;
         APP.strictStockGuard = !!d.strict_stock_guard;
-        renderStrictGuardBtn();   // reflect current state in the toggle
+        APP.loanBalance = d.loan_balance || 0;
+        renderStrictGuardBtn();
+        renderLoansCard();     // show/hide loans card based on balance
         // Phase 2: reveal the Admin tab only for configured admins.
         APP.is_admin = !!d.is_admin;
         var _ta = document.getElementById("tab-admin");
@@ -3860,6 +4017,7 @@ window.onerror = function (msg, src, line, col, err) {
           msg.textContent = d.uncosted_sales + " sale(s) have no cost set - profit may be overstated.";
         }
         renderTagSummary(d);   // "By tag" card (slice 3)
+        loadCashLedgerCard();  // "Cash movements" mini-card (F3)
       })
       .catch(function (e) {
         // Clear the "Loading…" state so the user isn't stuck staring at it.
@@ -3919,6 +4077,142 @@ window.onerror = function (msg, src, line, col, err) {
     recTagType = (ty === "Untyped") ? "" : ty;
     recTagValue = val;
     loadRecords();
+  };
+
+  // ── Loans (F4) ──────────────────────────────────────────────────────────────
+  var loansRepayCtx = null;   // {tx_id, lender, outstanding}
+  function renderLoansCard() {
+    var card = document.getElementById("dash-loans-card");
+    if (!card) return;
+    var bal = APP.loanBalance || 0;
+    card.classList.toggle("hidden", bal <= 0);
+    var val = document.getElementById("dash-loans-val");
+    if (val) val.textContent = naira(bal);
+  }
+  window.openLoans = function () {
+    document.getElementById("loansOverlay").classList.remove("hidden");
+    var list = document.getElementById("loans-list");
+    list.innerHTML = '<div class="muted">Loading\u2026</div>';
+    api("api/loans")
+      .then(function (d) { renderLoansList(d.loans || []); })
+      .catch(function (e) {
+        list.innerHTML = '<span class="err">' + escapeHtml((e && e.message) || "Could not load") + '</span>';
+      });
+  };
+  window.closeLoans = function () {
+    document.getElementById("loansOverlay").classList.add("hidden");
+    closeLoansRepay();
+  };
+  function renderLoansList(loans) {
+    var list = document.getElementById("loans-list");
+    if (!loans.length) { list.innerHTML = '<div class="muted">No active loans.</div>'; return; }
+    list.innerHTML = "";
+    loans.forEach(function (lo) {
+      var div = document.createElement("div");
+      div.className = "item tappable";
+      div.innerHTML =
+        '<div><div class="name">' + escapeHtml(lo.lender || "Unnamed lender") + '</div>' +
+        '<div class="meta">' + escapeHtml(lo.date || "") +
+        (lo.repaid > 0 ? ' \u00b7 repaid ' + naira(lo.repaid) : '') + '</div></div>' +
+        '<div class="right"><div class="stock neg">' + naira(lo.outstanding) + ' left</div>' +
+        '<div class="meta">' + naira(lo.amount) + ' total</div></div>';
+      div.onclick = (function (loan) { return function () { openLoansRepay(loan); }; })(lo);
+      list.appendChild(div);
+    });
+  }
+  function openLoansRepay(loan) {
+    loansRepayCtx = loan;
+    var lbl = document.getElementById("loans-repay-label");
+    if (lbl) lbl.textContent = "Repay: " + (loan.lender || "loan") + " (" + naira(loan.outstanding) + " outstanding)";
+    document.getElementById("loans-repay-amount").value = "";
+    document.getElementById("loans-repay-err").textContent = "";
+    document.getElementById("loans-repay-save").disabled = false;
+    var wrap = document.getElementById("loans-repay-wrap");
+    if (wrap) wrap.classList.remove("hidden");
+  }
+  window.closeLoansRepay = function () {
+    loansRepayCtx = null;
+    var wrap = document.getElementById("loans-repay-wrap");
+    if (wrap) wrap.classList.add("hidden");
+  };
+  window.saveLoansRepay = function () {
+    if (!loansRepayCtx) return;
+    var err = document.getElementById("loans-repay-err");
+    var amt = parseFloat(document.getElementById("loans-repay-amount").value) || 0;
+    if (amt <= 0) { err.textContent = "Enter an amount greater than 0."; return; }
+    if (amt > loansRepayCtx.outstanding) {
+      err.textContent = "Amount exceeds the outstanding balance (" + naira(loansRepayCtx.outstanding) + ").";
+      return;
+    }
+    var btn = document.getElementById("loans-repay-save");
+    btn.disabled = true; err.textContent = "";
+    apiPost("api/loan-repayment", {
+      amount: amt, loan_tx_id: loansRepayCtx.tx_id, lender: loansRepayCtx.lender || ""
+    }).then(function () {
+      closeLoansRepay();
+      loadSummary();
+      openLoans();
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    }).catch(function (e) {
+      btn.disabled = false;
+      err.textContent = (e && e.message) || "Could not record repayment.";
+    });
+  };
+
+  // ── Cash Ledger (F3) ────────────────────────────────────────────────────────
+  function loadCashLedgerCard() {
+    var card = document.getElementById("dash-cashledger-card");
+    var rows = document.getElementById("dash-cashledger-rows");
+    if (!card || !rows) return;
+    api("api/cash-ledger?limit=4")
+      .then(function (d) {
+        var items = d.rows || [];
+        if (!items.length) { card.classList.add("hidden"); return; }
+        card.classList.remove("hidden");
+        rows.innerHTML = "";
+        items.forEach(function (r) {
+          var div = document.createElement("div");
+          div.className = "item";
+          var arrow = r.direction === "in" ? "+" : "-";
+          var col = r.direction === "in" ? "pos" : "neg";
+          var label = r.lender ? escapeHtml(r.lender) + " (loan)" : escapeHtml(r.desc || r.reason);
+          div.innerHTML =
+            '<div><div class="name">' + label + '</div>' +
+            '<div class="meta">' + escapeHtml(r.date || "") + '</div></div>' +
+            '<div class="right"><div class="stock ' + col + '">' + arrow + naira(r.amount) + '</div></div>';
+          rows.appendChild(div);
+        });
+      })
+      .catch(function () { card.classList.add("hidden"); });
+  }
+  window.openCashLedger = function () {
+    document.getElementById("cashLedgerOverlay").classList.remove("hidden");
+    var list = document.getElementById("cashledger-list");
+    list.innerHTML = '<div class="muted">Loading\u2026</div>';
+    api("api/cash-ledger?limit=200")
+      .then(function (d) {
+        var items = d.rows || [];
+        if (!items.length) { list.innerHTML = '<div class="muted">No cash movements yet.</div>'; return; }
+        list.innerHTML = "";
+        items.forEach(function (r) {
+          var div = document.createElement("div");
+          div.className = "item";
+          var arrow = r.direction === "in" ? "+" : "-";
+          var col = r.direction === "in" ? "pos" : "neg";
+          var label = r.lender ? escapeHtml(r.lender) + " (loan)" : escapeHtml(r.desc || r.reason);
+          div.innerHTML =
+            '<div><div class="name">' + label + '</div>' +
+            '<div class="meta">' + escapeHtml(r.date || "") + '</div></div>' +
+            '<div class="right"><div class="stock ' + col + '">' + arrow + naira(r.amount) + '</div></div>';
+          list.appendChild(div);
+        });
+      })
+      .catch(function (e) {
+        list.innerHTML = '<span class="err">' + escapeHtml((e && e.message) || "Could not load") + '</span>';
+      });
+  };
+  window.closeCashLedger = function () {
+    document.getElementById("cashLedgerOverlay").classList.add("hidden");
   };
 
   function loadCharts() {
@@ -5247,6 +5541,10 @@ window.onerror = function (msg, src, line, col, err) {
     cashReasonVal = "withdrawal"; cashDirVal = "out";
     document.getElementById("cash-amount").value = "";
     document.getElementById("cash-err").textContent = "";
+    var lenderEl = document.getElementById("cash-lender");
+    if (lenderEl) lenderEl.value = "";
+    var lenderWrap = document.getElementById("cash-lender-wrap");
+    if (lenderWrap) lenderWrap.classList.add("hidden");
     document.getElementById("cash-save").disabled = false;
     // Show the current balance for context (from the last loaded summary).
     var cur = document.getElementById("cashhand");
@@ -5285,11 +5583,22 @@ window.onerror = function (msg, src, line, col, err) {
     amtLabel.textContent = "Amount (\u20a6)";
     if (amtHint) amtHint.textContent = "";
     if (amtInput.value && cashReasonVal !== "opening") { /* keep typed value */ }
-    // Withdrawal is always out; capital injection always in. Bank transfer +
-    // correction can go either way, so let the owner pick the direction.
-    if (r === "withdrawal") { cashDir("out"); dirWrap.style.display = "none"; }
-    else if (r === "injection") { cashDir("in"); dirWrap.style.display = "none"; }
-    else { dirWrap.style.display = ""; }
+    // Withdrawal is always out; capital injection always in. Loan is always in.
+    // Bank transfer + correction can go either way.
+    var lenderWrap = document.getElementById("cash-lender-wrap");
+    if (r === "withdrawal") {
+      cashDir("out"); dirWrap.style.display = "none";
+      if (lenderWrap) lenderWrap.classList.add("hidden");
+    } else if (r === "injection") {
+      cashDir("in"); dirWrap.style.display = "none";
+      if (lenderWrap) lenderWrap.classList.add("hidden");
+    } else if (r === "loan") {
+      cashDir("in"); dirWrap.style.display = "none";
+      if (lenderWrap) lenderWrap.classList.remove("hidden");
+    } else {
+      dirWrap.style.display = "";
+      if (lenderWrap) lenderWrap.classList.add("hidden");
+    }
   };
   window.cashDir = function (d) {
     cashDirVal = d;
@@ -5319,6 +5628,22 @@ window.onerror = function (msg, src, line, col, err) {
       return;
     }
     if (amt <= 0) { err.textContent = "Enter an amount greater than 0."; return; }
+    // For a loan, use the dedicated route which stores the lender properly.
+    if (cashReasonVal === "loan") {
+      var lender = (document.getElementById("cash-lender").value || "").trim();
+      btn.disabled = true;
+      apiPost("api/loan", { amount: amt, lender: lender })
+        .then(function () {
+          closeCashAdjust();
+          if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+          loadSummary();
+        })
+        .catch(function (e) {
+          btn.disabled = false;
+          err.textContent = (e && e.message) || "Could not record the loan.";
+        });
+      return;
+    }
     btn.disabled = true;
     apiPost("api/cash-adjust", { amount: amt, direction: cashDirVal, reason: cashReasonVal })
       .then(function () {

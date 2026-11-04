@@ -1690,7 +1690,7 @@ class TransactionHandler:
             return None
 
     def record_cash_adjustment(self, phone_number: str, amount, direction: str,
-                               reason: str = "") -> dict:
+                               reason: str = "", **kwargs) -> dict:
         """Record a MANUAL cash movement that is NOT a sale/purchase/expense:
         owner withdrawal, capital injection, bank<->cash transfer, or a
         correction. Stored as type='cash_adjustment' so it is counted by
@@ -1719,20 +1719,21 @@ class TransactionHandler:
                 "injection": "Capital injection",
                 "bank_transfer": "Bank/cash transfer",
                 "correction": "Cash correction",
+                # F4: personal/business loans (liability, not owner capital).
+                "loan": "Loan received",
+                "loan_repayment": "Loan repayment",
             }
             desc = label_map.get(reason, "Cash adjustment")
+            # Loan: carry lender name in extra_details for the loans ledger.
+            extra: dict = {"direction": direction, "reason": reason, "source": "miniapp"}
+            if reason in ("loan", "loan_repayment") and kwargs.get("lender"):
+                extra["lender"] = str(kwargs["lender"]).strip()[:80]
+            if reason == "loan_repayment" and kwargs.get("loan_tx_id"):
+                extra["loan_tx_id"] = str(kwargs["loan_tx_id"]).strip()
 
             result = self.db.save_transaction(
-                phone_number,
-                amt,
-                "cash_adjustment",
-                desc,
-                "Cash Adjustment",
-                extra_details={
-                    "direction": direction,
-                    "reason": reason,
-                    "source": "miniapp",
-                },
+                phone_number, amt, "cash_adjustment", desc, "Cash Adjustment",
+                extra_details=extra,
             )
             tx_id = result.get("transaction_id", "") if isinstance(result, dict) else ""
             return {
@@ -1746,6 +1747,54 @@ class TransactionHandler:
         except Exception as e:
             logger.error(f"record_cash_adjustment error: {e}")
             return {"ok": False, "error": "could not record — please try again"}
+
+    def get_loans(self, phone_number: str) -> dict:
+        """Return active loans (borrowed but not fully repaid) for the Mini-App
+        loans dashboard (F4). Derives from cash_adjustment rows with reason=loan
+        or reason=loan_repayment. Kobo-precise. Never raises; returns empty list
+        on error.
+
+        Returns {loans: [{tx_id, lender, amount, repaid, outstanding, date}],
+                 total_outstanding}.
+        """
+        try:
+            from utils.money import money_round, to_money
+            txns = self.db.get_transactions(phone_number, limit=2000) or []
+            adj = [t for t in txns if t.get("type") == "cash_adjustment"
+                   and not t.get("deleted")]
+            loans_map = {}
+            for t in adj:
+                ed = t.get("extra_details") or {}
+                reason = str(ed.get("reason") or t.get("reason") or "").lower()
+                tx_id = str(t.get("transaction_id") or "")
+                if reason == "loan":
+                    loans_map[tx_id] = {
+                        "tx_id": tx_id,
+                        "lender": str(ed.get("lender") or "").strip(),
+                        "amount": money_round(t.get("amount") or 0),
+                        "repaid": to_money(0),
+                        "date": str(t.get("date") or ""),
+                        "at": str(t.get("created_at") or ""),
+                    }
+                elif reason == "loan_repayment":
+                    target = str(ed.get("loan_tx_id") or "").strip()
+                    if target and target in loans_map:
+                        loans_map[target]["repaid"] = (
+                            to_money(loans_map[target]["repaid"])
+                            + to_money(t.get("amount") or 0))
+            loans = []
+            for lo in loans_map.values():
+                outstanding = money_round(to_money(lo["amount"]) - to_money(lo["repaid"]))
+                lo["repaid"] = money_round(lo["repaid"])
+                lo["outstanding"] = max(0, outstanding)
+                if lo["outstanding"] > 0:
+                    loans.append(lo)
+            loans.sort(key=lambda x: x.get("date", ""), reverse=True)
+            total_outstanding = money_round(sum(to_money(l["outstanding"]) for l in loans))
+            return {"loans": loans, "total_outstanding": total_outstanding}
+        except Exception as e:
+            logger.warning(f"get_loans failed: {e}")
+            return {"loans": [], "total_outstanding": 0}
 
     def void_transaction_web(self, phone_number: str, tx_id: str) -> dict:
         """Delete a recorded transaction and REVERSE its side-effects so the
