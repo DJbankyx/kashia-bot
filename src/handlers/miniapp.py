@@ -536,16 +536,16 @@ def _summary(event, user_id: str):
     except Exception:
         known_sites = []
 
-        # F3+F4: loan balance for the dashboard loans card (visible when > 0).
+    # F3+F4: loan balance for the dashboard loans card (visible when > 0).
+    loan_balance = 0
+    try:
+        from features.transactions import TransactionHandler
+        _th = TransactionHandler(None, db, None, None)
+        _loans = _th.get_loans(user_id)
+        loan_balance = int(_loans.get("total_outstanding", 0))
+    except Exception as e:
+        logger.debug(f"loan_balance failed: {e}")
         loan_balance = 0
-        try:
-            from features.transactions import TransactionHandler
-            _th = TransactionHandler(None, db, None, None)
-            _loans = _th.get_loans(user_id)
-            loan_balance = int(_loans.get("total_outstanding", 0))
-        except Exception as e:
-            logger.debug(f"loan_balance failed: {e}")
-            loan_balance = 0
     try:
         from features.admin import is_admin as _is_admin
         _admin = _is_admin(user_id)
