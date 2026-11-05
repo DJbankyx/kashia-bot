@@ -1690,19 +1690,93 @@ def _loans_read(event, user_id: str):
 
 
 def _loan_write(event, user_id: str):
-    """Record a new loan (F4). Body: {amount, lender?}. Stored as a
-    cash_adjustment direction=in reason=loan. Returns {ok, tx_id, ...}."""
+    """Record a new loan (F4). Body: {amount, lender?, interest_total?,
+    interest_rate?, interest_term?, interest_mode?}. Stored as a
+    cash_adjustment direction=in reason=loan. If interest is provided,
+    spreads it as a prepaid expense over the term (or 12 months for total-only).
+    Returns {ok, tx_id, interest_tx_id?, ...}."""
     from services.database import Database
     from features.transactions import TransactionHandler
+    from utils.money import money_round, to_money
+    from decimal import Decimal
     data = _parse_body(event)
     db = Database()
     th = TransactionHandler(None, db, None, None)
+
     res = th.record_cash_adjustment(
         user_id, amount=data.get("amount"), direction="in",
         reason="loan", lender=str(data.get("lender") or "").strip())
     if not res.get("ok"):
         return _json(400, res)
-    return _json(200, res)
+
+    loan_tx_id = res.get("transaction_id", "")
+
+    # ── Optional interest: spread as a prepaid expense over the term ──
+    interest_tx_id = None
+    interest_mode = str(data.get("interest_mode") or "none")
+    principal = float(data.get("amount") or 0)
+    lender_name = str(data.get("lender") or "").strip()
+
+    total_interest = 0.0
+    term_months = 12
+    if interest_mode == "total":
+        total_interest = float(data.get("interest_total") or 0)
+        term_months = int(data.get("interest_term") or 12)
+    elif interest_mode == "calc":
+        rate = float(data.get("interest_rate") or 0)
+        term_months = max(1, int(data.get("interest_term") or 12))
+        total_interest = principal * (rate / 100) * (term_months / 12)
+
+    if total_interest > 0 and term_months > 0:
+        try:
+            from datetime import date, timedelta
+            from utils.money import money_round, to_money
+            from decimal import Decimal
+
+            total_int = money_round(total_interest)
+            desc = f"Loan interest" + (f" – {lender_name}" if lender_name else "")
+            # Split total interest evenly over term_months; last part absorbs rounding.
+            per_month = money_round(to_money(total_int) / Decimal(str(term_months)))
+            parts = [per_month] * (term_months - 1)
+            parts.append(money_round(to_money(total_int) - to_money(per_month) * (term_months - 1)))
+
+            today = date.today()
+            for i, part in enumerate(parts):
+                # Spread monthly expense recognition rows (NO cash movement —
+                # payment_method=prepaid means it hits P&L only, not cash).
+                exp_date = (today.replace(day=1) if i == 0
+                            else (today.replace(day=1) +
+                                  timedelta(days=32 * i)).replace(day=1))
+                row = db.save_transaction(
+                    user_id, part, "expense",
+                    f"{desc} ({i + 1}/{term_months})",
+                    "Loan Interest",
+                    sub_category="Loan Interest",
+                    vendor=lender_name or "",
+                    item_name=desc,
+                    payment_method="prepaid",
+                    extra_details={
+                        "source": "miniapp",
+                        "loan_tx_id": loan_tx_id,
+                        "interest_index": i + 1,
+                        "interest_total_periods": term_months,
+                        "interest_total_amount": total_int,
+                    },
+                )
+                tx_id = row.get("transaction_id", "") if isinstance(row, dict) else ""
+                if tx_id:
+                    db.update_transaction(user_id, tx_id, {"date": exp_date.strftime("%Y-%m-%d")})
+                if i == 0:
+                    interest_tx_id = tx_id
+        except Exception as e:
+            logger.warning(f"loan interest spread failed: {e}")
+
+    result = {"ok": True, **res}
+    if interest_tx_id:
+        result["interest_tx_id"] = interest_tx_id
+        result["interest_total"] = money_round(total_interest)
+        result["interest_term"] = term_months
+    return _json(200, result)
 
 
 def _loan_repayment_write(event, user_id: str):
@@ -1746,7 +1820,7 @@ def _records(event, user_id: str):
 
     qs = event.get("queryStringParameters") or {}
     tx_type = (qs.get("type") or "sale").lower()
-    if tx_type not in ("sale", "purchase", "expense", "production"):
+    if tx_type not in ("sale", "purchase", "expense", "production", "cash_adjustment"):
         tx_type = "sale"
     period = (qs.get("period") or "month").lower()
     if period not in VALID_PERIODS:
@@ -1873,6 +1947,13 @@ def _records(event, user_id: str):
             "tag": _row_tag_value(t),
             "tag_type": _row_tag_type(t),
         }
+        # Cash adjustment rows carry direction/reason/lender — surface them so
+        # the Records cash tab can render them as the cash ledger.
+        if tx_type == "cash_adjustment":
+            ed = t.get("extra_details") or {}
+            row["direction"] = str(ed.get("direction") or t.get("cash_direction") or "in")
+            row["reason"] = str(ed.get("reason") or "adjustment")
+            row["lender"] = str(ed.get("lender") or "")
         # Production rows carry a rich batch summary in extra_details — surface
         # it so the web Records view mirrors the chat production summary (batch #,
         # good/waste, cost per unit, materials used).
@@ -2748,12 +2829,6 @@ _PAGE_HTML = """<!doctype html>
       <div class="sub">Money borrowed, not yet repaid</div>
       <button class="btn cancel" style="width:100%;margin-top:10px" onclick="openLoans()">View / repay loans</button>
     </div>
-    <!-- Cash ledger mini-card (F3): last few cash movements + see-all link -->
-    <div class="card hidden" id="dash-cashledger-card">
-      <div class="k">Recent cash movements</div>
-      <div id="dash-cashledger-rows"></div>
-      <button class="linkbtn" style="margin-top:6px;font-size:13px;color:var(--accent)" onclick="openCashLedger()">See all movements &rsaquo;</button>
-    </div>
     <div id="dashmsg" class="muted"></div>
   </div>
 
@@ -3136,6 +3211,7 @@ _PAGE_HTML = """<!doctype html>
       <div class="chip" data-rt="purchase" onclick="recSetType('purchase')">📦 Purchases</div>
       <div class="chip" data-rt="expense" onclick="recSetType('expense')">💸 Expenses</div>
       <div class="chip hidden" data-rt="production" id="rec-tab-production" onclick="recSetType('production')">🏭 Production</div>
+      <div class="chip" data-rt="cash_adjustment" onclick="recSetType('cash_adjustment')">💵 Cash</div>
     </div>
     <div class="chips" id="rec-chips"></div>
     <div class="chips hidden" id="rec-more-panel" style="flex-wrap:wrap"></div>
@@ -3252,7 +3328,7 @@ _PAGE_HTML = """<!doctype html>
       </div>
       <div class="field">
         <label id="cash-amount-label">Amount (\u20a6)</label>
-        <input id="cash-amount" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 5000">
+        <input id="cash-amount" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 5000" oninput="cashInterestPreview()">
         <div class="sub2" id="cash-amount-hint"></div>
       </div>
       <!-- Lender name — shown only for Loan received -->
@@ -3260,6 +3336,31 @@ _PAGE_HTML = """<!doctype html>
         <label>Lender (who you borrowed from)</label>
         <input id="cash-lender" placeholder="e.g. Uncle John, Bank name" autocomplete="off">
         <div class="sub2">This is recorded as a liability — you can track repayments from the Loans card on the dashboard.</div>
+      </div>
+      <!-- Interest fields — shown when Loan received is selected -->
+      <div class="field hidden" id="cash-interest-wrap">
+        <label>Interest (optional)</label>
+        <div class="chips" id="cash-interest-chips">
+          <div class="chip active" data-ci="none" onclick="cashInterest('none')">No interest</div>
+          <div class="chip" data-ci="total" onclick="cashInterest('total')">Enter total</div>
+          <div class="chip" data-ci="calc" onclick="cashInterest('calc')">Rate + term</div>
+        </div>
+        <div class="field hidden" style="margin-top:8px" id="cash-int-total-wrap">
+          <label>Total interest (\u20a6)</label>
+          <input id="cash-int-total" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 60000">
+        </div>
+        <div id="cash-int-calc-wrap" class="hidden" style="margin-top:8px">
+          <div class="row" style="gap:8px">
+            <div style="flex:1"><label>Rate (% per year)</label>
+              <input id="cash-int-rate" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 20">
+            </div>
+            <div style="flex:1"><label>Term (months)</label>
+              <input id="cash-int-term" type="number" inputmode="numeric" min="1" step="1" placeholder="e.g. 12">
+            </div>
+          </div>
+          <div class="sub2" id="cash-int-preview" style="margin-top:4px"></div>
+        </div>
+        <div class="sub2" id="cash-int-hint" style="margin-top:4px">Interest is spread as a monthly expense over the loan term — your P&amp;L gets a fair monthly cost, not a one-time hit.</div>
       </div>
       <div class="sheeterr" id="cash-err"></div>
       <div class="actions">
@@ -4017,7 +4118,6 @@ window.onerror = function (msg, src, line, col, err) {
           msg.textContent = d.uncosted_sales + " sale(s) have no cost set - profit may be overstated.";
         }
         renderTagSummary(d);   // "By tag" card (slice 3)
-        loadCashLedgerCard();  // "Cash movements" mini-card (F3)
       })
       .catch(function (e) {
         // Clear the "Loading…" state so the user isn't stuck staring at it.
@@ -5545,6 +5645,8 @@ window.onerror = function (msg, src, line, col, err) {
     if (lenderEl) lenderEl.value = "";
     var lenderWrap = document.getElementById("cash-lender-wrap");
     if (lenderWrap) lenderWrap.classList.add("hidden");
+    var intWrap = document.getElementById("cash-interest-wrap");
+    if (intWrap) intWrap.classList.add("hidden");
     document.getElementById("cash-save").disabled = false;
     // Show the current balance for context (from the last loaded summary).
     var cur = document.getElementById("cashhand");
@@ -5595,15 +5697,46 @@ window.onerror = function (msg, src, line, col, err) {
     } else if (r === "loan") {
       cashDir("in"); dirWrap.style.display = "none";
       if (lenderWrap) lenderWrap.classList.remove("hidden");
+      // Show the interest fields for a loan
+      var intWrap = document.getElementById("cash-interest-wrap");
+      if (intWrap) intWrap.classList.remove("hidden");
+      cashInterest("none");   // reset to no-interest default
     } else {
       dirWrap.style.display = "";
       if (lenderWrap) lenderWrap.classList.add("hidden");
+      var intWrapOther = document.getElementById("cash-interest-wrap");
+      if (intWrapOther) intWrapOther.classList.add("hidden");
     }
   };
   window.cashDir = function (d) {
     cashDirVal = d;
     cashSyncChips("cash-dir", d, "data-cd");
   };
+  // Interest mode for loan form: none | total | calc (rate + term)
+  var cashIntMode = "none";
+  window.cashInterest = function (mode) {
+    cashIntMode = mode;
+    cashSyncChips("cash-interest-chips", mode, "data-ci");
+    var tWrap = document.getElementById("cash-int-total-wrap");
+    var cWrap = document.getElementById("cash-int-calc-wrap");
+    if (tWrap) tWrap.classList.toggle("hidden", mode !== "total");
+    if (cWrap) cWrap.classList.toggle("hidden", mode !== "calc");
+    cashInterestPreview();
+  };
+  function cashInterestPreview() {
+    var prev = document.getElementById("cash-int-preview");
+    if (!prev || cashIntMode !== "calc") return;
+    var principal = parseFloat(document.getElementById("cash-amount").value) || 0;
+    var rate = parseFloat(document.getElementById("cash-int-rate").value) || 0;
+    var term = parseInt(document.getElementById("cash-int-term").value) || 0;
+    if (principal > 0 && rate > 0 && term > 0) {
+      var total = Math.round(principal * (rate / 100) * (term / 12));
+      var monthly = Math.round(total / term);
+      prev.textContent = "Total interest: " + naira(total) + " (" + naira(monthly) + "/month over " + term + " months)";
+    } else {
+      prev.textContent = "";
+    }
+  }
   window.saveCashAdjust = function () {
     var err = document.getElementById("cash-err");
     err.textContent = "";
@@ -5631,8 +5764,22 @@ window.onerror = function (msg, src, line, col, err) {
     // For a loan, use the dedicated route which stores the lender properly.
     if (cashReasonVal === "loan") {
       var lender = (document.getElementById("cash-lender").value || "").trim();
+      // Gather interest data
+      var intData = {};
+      if (cashIntMode === "total") {
+        var intTotal = parseFloat(document.getElementById("cash-int-total").value) || 0;
+        if (intTotal > 0) { intData.interest_total = intTotal; intData.interest_mode = "total"; }
+      } else if (cashIntMode === "calc") {
+        var iRate = parseFloat(document.getElementById("cash-int-rate").value) || 0;
+        var iTerm = parseInt(document.getElementById("cash-int-term").value) || 0;
+        if (iRate > 0 && iTerm > 0) {
+          intData.interest_rate = iRate;
+          intData.interest_term = iTerm;
+          intData.interest_mode = "calc";
+        }
+      }
       btn.disabled = true;
-      apiPost("api/loan", { amount: amt, lender: lender })
+      apiPost("api/loan", Object.assign({ amount: amt, lender: lender }, intData))
         .then(function () {
           closeCashAdjust();
           if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
@@ -5676,6 +5823,7 @@ window.onerror = function (msg, src, line, col, err) {
     var _word = (t === "sale" ? _ts.sales
                  : t === "purchase" ? _ts.purchases
                  : t === "production" ? "production cost"
+                 : t === "cash_adjustment" ? "cash movements"
                  : "expenses");
     k.textContent = "Total " + String(_word).toLowerCase();
     // Export (Excel/PDF) covers sale/purchase/expense only — hide it for the
@@ -5816,6 +5964,32 @@ window.onerror = function (msg, src, line, col, err) {
       return;
     }
     list.innerHTML = "";
+
+    // Cash adjustment records (Records > Cash tab): direction-aware, reason label.
+    if (recTabType === "cash_adjustment") {
+      var reasonLabels = {
+        "withdrawal": "Owner withdrawal", "injection": "Capital injection",
+        "bank_transfer": "Bank/cash transfer", "correction": "Cash correction",
+        "loan": "Loan received", "loan_repayment": "Loan repayment",
+        "opening": "Opening balance"
+      };
+      rows.forEach(function (t) {
+        var isIn = (t.direction || "in") === "in";
+        var col = isIn ? "pos" : "neg";
+        var arrow = isIn ? "+" : "-";
+        var label = reasonLabels[t.reason] || (t.desc || "Cash move");
+        if (t.lender) label += " \u00b7 " + escapeHtml(t.lender);
+        var div = document.createElement("div");
+        div.className = "item";
+        div.innerHTML =
+          '<div><div class="name">' + escapeHtml(label) + '</div>' +
+          '<div class="meta">' + escapeHtml(t.date || "") + '</div></div>' +
+          '<div class="right"><div class="stock ' + col + '">' +
+          arrow + naira(t.amount || 0) + '</div></div>';
+        list.appendChild(div);
+      });
+      return;
+    }
 
     // Production records get their own richer layout (batch #, good/waste,
     // cost/unit, materials used) mirroring the chat production summary.
