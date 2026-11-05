@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Kashia WhatsApp Bot - Build 20261007182616
+Description: Kashia WhatsApp Bot - Build 20261105085713
 
 Globals:
   Function:
@@ -30,7 +30,7 @@ Resources:
     Type: AWS::Serverless::Api
     Properties:
       StageName: !Ref Stage
-      Description: Kashia WhatsApp Bot - Build 20261007182616
+      Description: Kashia WhatsApp Bot - Build 20261105085713
 
   # ============================================
   # LAMBDA FUNCTIONS
@@ -43,7 +43,7 @@ Resources:
       CodeUri: src/
       Layers:
         - !Ref DependenciesLayer
-      Description: Kashia WhatsApp Bot - Build 20261007182616
+      Description: Kashia WhatsApp Bot - Build 20261105085713
       Events:
         WebhookPost:
           Type: Api
@@ -83,7 +83,7 @@ Resources:
       CodeUri: src/
       Layers:
         - !Ref DependenciesLayer
-      Description: Kashia WhatsApp Bot - Build 20261007182616
+      Description: Kashia WhatsApp Bot - Build 20261105085713
       Timeout: 300
       # Async (EventBridge Schedule) invocation failures land here after Lambda's
       # built-in retries, so a failed daily/weekly report is not silently lost.
@@ -95,13 +95,13 @@ Resources:
           Type: Schedule
           Properties:
             Schedule: cron(0 19 * * ? *)
-            Description: Kashia WhatsApp Bot - Build 20261007182616
+            Description: Kashia WhatsApp Bot - Build 20261105085713
             Enabled: true
         WeeklyReport:
           Type: Schedule
           Properties:
             Schedule: cron(0 17 ? * SUN *)
-            Description: Kashia WhatsApp Bot - Build 20261007182616
+            Description: Kashia WhatsApp Bot - Build 20261105085713
             Enabled: true
       Policies:
         - DynamoDBCrudPolicy:
@@ -335,7 +335,7 @@ Resources:
           STAGE: !Ref Stage
           # Stamped by deploy.sh each deploy so the app footer can show which
           # build is actually live (settles "did my change deploy?" questions).
-          BUILD_STAMP: "20261007182616"
+          BUILD_STAMP: "20261105085713"
       Events:
         AppPageGet:
           Type: Api
@@ -522,6 +522,42 @@ Resources:
           Properties:
             RestApiId: !Ref WebhookApi
             Path: /app/api/opening-cash
+            Method: post
+        TagTypesWrite:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /app/api/tag-types
+            Method: post
+        SettingsWrite:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /app/api/settings
+            Method: post
+        CashLedgerGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /app/api/cash-ledger
+            Method: get
+        LoansGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /app/api/loans
+            Method: get
+        LoanWrite:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /app/api/loan
+            Method: post
+        LoanRepaymentWrite:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /app/api/loan-repayment
             Method: post
         VoidTransactionWrite:
           Type: Api
@@ -845,7 +881,7 @@ Resources:
     Type: AWS::Serverless::LayerVersion
     Properties:
       LayerName: !Sub kashia-dependencies-${Stage}
-      Description: Kashia WhatsApp Bot - Build 20261007182616
+      Description: Kashia WhatsApp Bot - Build 20261105085713
       ContentUri: layers/dependencies/layer.zip
       CompatibleRuntimes:
         - python3.12
@@ -855,7 +891,7 @@ Resources:
 # ============================================
 Outputs:
   WebhookUrl:
-    Description: Kashia WhatsApp Bot - Build 20261007182616
+    Description: Kashia WhatsApp Bot - Build 20261105085713
     Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/webhook"
   MiniAppUrl:
     Description: Telegram Mini App page URL (set as the bot Menu Button web_app url)
@@ -867,9 +903,9 @@ Outputs:
     Description: Point Telegram setWebhook at this URL
     Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/telegram"
   WebhookFunctionArn:
-    Description: Kashia WhatsApp Bot - Build 20261007182616
+    Description: Kashia WhatsApp Bot - Build 20261105085713
     Value: !GetAtt WebhookFunction.Arn
   ScheduledReportsFunctionArn:
-    Description: Kashia WhatsApp Bot - Build 20261007182616
+    Description: Kashia WhatsApp Bot - Build 20261105085713
     Value: !GetAtt ScheduledReportsFunction.Arn
 # force deploy Sat Jul  4 18:39:10 WAT 2026
